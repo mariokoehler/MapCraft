@@ -32,7 +32,8 @@ but the app isn't sold or advertised (user, 2026-11-14).
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
   copies.
-- The Rust toolchain isn't installed on this PC yet (no `rustc`, `cargo` or `rustup`).
+- Rust is installed for the Windows user (2026-11-14): `rustup` stable (1.100.0), MSVC target,
+  with VS 2022 Build Tools (C++ workload). See "Build and run".
 - Decided (2026-11-14): egui + walkers (§3.2); a tile-provider abstraction starting with OSM,
   online for v1 (§3.5(b)); licence MIT OR Apache-2.0 (§1.3). The user's library is surveyed
   (§2.8).
@@ -104,3 +105,12 @@ but the app isn't sold or advertised (user, 2026-11-14).
 Not set up yet. Planned: one Cargo project, `cargo run` for a dev build, `cargo test`, `cargo
 clippy` (a linter, like SpotBugs/Checkstyle in one) and `cargo fmt` before each commit. Fill this
 in at M1.
+
+**Toolchain** (per Windows user, shared by all Rust projects):
+- `rustup` manages Rust like SDKMAN manages JDKs. It lives in `%USERPROFILE%\.rustup`, with
+  `cargo`, `rustc` and the tools in `%USERPROFILE%\.cargo\bin`, which is on the user PATH.
+- `rustup update` upgrades to the latest stable.
+- A shell started before the install may not see `cargo` yet. Prepend `%USERPROFILE%\.cargo\bin`
+  to `PATH` for that session.
+- Linking uses MSVC from VS 2022 Build Tools (C++ workload, Windows SDK). Without it, builds
+  fail at the link step.

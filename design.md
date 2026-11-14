@@ -312,8 +312,10 @@ results back (§3.7).
 
 ### 3.2 Tech stack
 
-**Rust** (user, 2026-11-14), stable toolchain via `rustup`. Rust isn't installed on this PC yet
-(checked 2026-11-14).
+**Rust** (user, 2026-11-14), stable toolchain via `rustup`, target `x86_64-pc-windows-msvc`. On
+Windows it needs Microsoft's linker and the Windows SDK, which come with the Visual Studio Build
+Tools' C++ workload. Installed on this PC: Rust 1.100.0 with clippy and rustfmt, and Build Tools
+2022 17.14 with Windows SDK 10.0.26100 (verified 2026-11-14, a test build).
 
 **UI stack** (the hardest decision to reverse). The options as compared:
 
@@ -575,9 +577,8 @@ Milestones are rough and get refined as we go.
 
 - **M0 — Decisions & spikes** (now). Done: the tile provider, the UI stack, offline as later
   (user, 2026-11-14), the library survey (§2.8), the licence (§1.3) and the public GitHub repo
-  (https://github.com/mariokoehler/MapCraft). Still to do:
+  (https://github.com/mariokoehler/MapCraft), and the Rust toolchain (§3.2). Still to do:
   - answer the remaining questions in §4;
-  - install the Rust toolchain;
   - spike: how long `lightcraft-cli render --size 256` takes per RAW file, as one process per file
     versus a long-lived `mcp`/`run --script` session;
   - spike: how many of the user's files have an embedded preview of at least 256 px (§2.2(b));
