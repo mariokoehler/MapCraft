@@ -73,8 +73,9 @@ but the app isn't sold or advertised (user, 2026-11-14).
   (`design.md` §3.8).
 - **The repo will be public:** no API keys, personal paths beyond the defaults, or personal photos
   in it. Test images are our own or generated.
-- **Commits** are GPG-signed. If signing fails, start Kleopatra
-  (`C:\Program Files (x86)\Gpg4win\bin\kleopatra.exe`) and retry; never `--no-gpg-sign`.
+- **Commits are not signed** in this repo (user, 2026-11-14): the GPG key is for the user's job
+  only. `commit.gpgsign = false` is set in the repo's local git config. The global Kleopatra rule
+  doesn't apply here.
 
 ## Tools outside the repo
 
