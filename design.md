@@ -401,6 +401,10 @@ date, camera, lens, coordinates, and actions **(user, 2026-11-14)**:
   after it. If PhotoCraft is already running, the file opens as a new tab there, and the second
   process exits within about 200 ms (verified 2026-11-14, PhotoCraft 0.22.0 and its `--help`).
   `--new-instance` forces a separate window.
+  - **Re-checked on PhotoCraft 0.23.1 (2026-11-14):** `photocraft.exe -- <path>` opens the file
+    in its own window. The hand-off to a running PhotoCraft didn't happen: three opens gave three
+    windows, although `--help` still describes it. Either way the file opens, which is all
+    MapCraft needs. `--` goes before the path, as `--help` advises for names starting with `-`.
 - **Open in LightCraft:** selects the photo in a running LightCraft (§3.6(c)).
 
 **As built in M3 (2026-11-14):**
@@ -797,7 +801,7 @@ for a photo library is close to where the user has been. That is accepted as not
 
 ### 3.6 Companion apps (checked 2026-11-14)
 
-Installed: **PhotoCraft 0.22.0** and **LightCraft 0.20.0**, both pure Rust, egui, MIT/Apache-2.0,
+Installed: **PhotoCraft 0.22.0** and **LightCraft 0.20.0** (since updated to 0.23.1 and 0.21.1; see (d)), both pure Rust, egui, MIT/Apache-2.0,
 alpha (verified 2026-11-14, `--version` and their READMEs). Repos:
 https://github.com/storytold/photocraft, https://github.com/storytold/lightcraft.
 
@@ -852,6 +856,30 @@ scratch library and a scratch settings folder):
   also switches the view would make this one call.
 - `lightcraft --library DIR` and `LIGHTCRAFT_CONFIG_DIR` keep experiments away from the user's
   real library and its "last opened" setting.
+
+**(d) Re-checked on LightCraft 0.21.1** (2026-11-14, a live GUI with `--control`, a scratch
+library and settings folder, generated photos, no scripted input):
+- **The view switch exists now.** Control method `ui.set {"view": "detail"}` shows the active
+  photo in the Detail view. Other values: `photoGrid`, `squareGrid`, `compare`, `survey`,
+  `reference`, `people` (from the error for an unknown value).
+- **Engine commands** go through the control method `engine.execute {command, params}`
+  (`docs/control-protocol.md`, read 2026-11-14). So the whole flow is a few JSON lines over one TCP
+  connection, without `lightcraft-cli`.
+- **Lookup, select, show:** `library.importPreview` (≈10 ms), then `library.select {ids, active}`,
+  then `ui.set {view: detail}`. It works even when the photo is outside the album being shown:
+  the Detail view shows it, while the filmstrip keeps showing the album.
+- **A second `lightcraft.exe`** while one runs doesn't hand off. It opens a second window that
+  says the library is already open in another process. So MapCraft must never start LightCraft
+  when one is running.
+- **`library.info`** returns the library's `path` when one is open, and no `path` (with
+  `persistent: false`) when none is. It is the check that the port is LightCraft and that it has
+  a library.
+- **XMP sidecars:** `library.xmpPreferences {}` returns `{autoWrite, naming}`; `autoWrite` is
+  off by default. When it is on, LightCraft writes sidecars next to the originals of photos edited
+  there. MapCraft reads it before offering an import.
+- `library.import` with `mode: "add"` references files in place and wrote nothing next to them
+  (checked). Its `move` mode removes the originals, so MapCraft always sends `add` explicitly.
+- `app.quit` closes the GUI over the port.
 
 ### 3.7 Background work
 
@@ -922,7 +950,7 @@ Unconfirmed defaults awaiting review:
   - the embedded preview before the paired JPEG;
   - 4 thumbnail workers;
   - no decoding of originals over 400 MB or 120 MP;
-  - the LightCraft fallback deferred to M6 or later;
+  - the LightCraft fallback deferred to Later (user, 2026-11-14);
   - placeholders without the "needs LightCraft" label of §2.2(c) until that fallback exists.
 - §2.4 (M4):
   - the representative prefers a photo with a made thumbnail; undated photos count as oldest;
@@ -950,7 +978,7 @@ Unconfirmed defaults awaiting review:
   that is, lies inside, or contains an existing source can't be added (it would duplicate
   photos; compared case-insensitively and through UNC paths).
 - §3.4: the data model.
-- §3.5(d): trimming the tile cache at startup, in M6.
+- §3.5(d): trimming the tile cache at startup (no milestone since M6 was cut down).
 - §3.6(a): `photo.allMetadata` as the fallback EXIF reader.
 
 ## 5. Roadmap
@@ -1002,18 +1030,26 @@ Milestones are rough and get refined as we go.
   badges, click to zoom, the strip for photos at one spot.
   - Checked by unit tests (counts kept at every level, nesting, order independence, same-spot
     groups, the representative), headless UI tests, and window captures on generated photos.
-- **M5 — Search & filters** (built 2026-11-14): GeoNames place search, photo search, date and source
+- **M5 — Search & filters** (done 2026-11-14; tried by the user): GeoNames place search, photo search, date and source
   filters.
   - Done 2026-11-14: search, both places and photos (§2.5), per the approved mockup; tried by
     the user.
   - Done 2026-11-14: filters (date, sources, cameras; §2.3) per the canvas `MapCraft — Filters`.
     Checked by unit tests (the SQL condition, months, camera merging), headless UI tests, and
     window captures on generated photos.
-- **M6 — Companion links & providers:** Open in PhotoCraft, Show in Explorer, Open in LightCraft
-  if M0's spike found a way; the keyed provider and PMTiles offline.
+- **M6 — Companion apps** (scoped 2026-11-14): Open in PhotoCraft, Open in LightCraft
+  (§3.6(c), (d)), and a Settings dialog for where the two apps are. Mockup: the canvas
+  `MapCraft — Companion apps`, awaiting review.
+  - Out of M6 (user, 2026-11-14): "the map actually looks fine, i think we don't need the keyed
+    provider at all". The keyed provider, offline PMTiles and the LightCraft thumbnail fallback
+    move to Later.
+  - The tile cache's size limit (§3.5(d)) was planned alongside the providers and now has no
+    milestone.
 - **M7 — Packaging:** an installer or a portable zip, an icon, the GitHub repo and CI.
 
-**Later:** manual placement of photos without GPS (and optionally writing GPS back), GPX track
+**Later:** a keyed tile provider and offline PMTiles (§3.5(b); walkers has a `pmtiles`
+feature, and its vector rendering needs the wgpu renderer, which eframe uses by default), the
+LightCraft thumbnail fallback (§2.2(d)), the tile cache's size limit (§3.5(d)), manual placement of photos without GPS (and optionally writing GPS back), GPX track
 tagging (maybe via LightCraft's `photo.autoTagTracklog`), "make a LightCraft album from this group or
 selection" (`album.create`, §3.6(a)), watched folders, a timeline/date slider, heatmap
 mode, multiple libraries, travel routes drawn between photos in time order.

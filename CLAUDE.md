@@ -28,7 +28,8 @@ but the app isn't sold or advertised (user, 2026-11-14).
 
 ## Current status (2026-11-14)
 
-**M5 built: search (tried by the user) and filters (awaiting the user's try).**
+**M5 done (2026-11-14, tried by the user). M6, the companion apps, is planned: its mockup
+(canvas `MapCraft — Companion apps`) awaits review.**
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
   copies.
@@ -106,7 +107,7 @@ but the app isn't sold or advertised (user, 2026-11-14).
 
 ## Tools outside the repo
 
-- **LightCraft 0.20.0** (an open-source Lightroom, pure Rust/egui):
+- **LightCraft 0.21.1** (an open-source Lightroom, pure Rust/egui):
   - CLI: `C:\Program Files\LightCraft\lightcraft-cli.exe`; GUI: `lightcraft.exe` beside it. Both
     paths are configurable in the app.
   - `render <in> -o <out> --size N` develops any file, RAW included.
@@ -120,13 +121,18 @@ but the app isn't sold or advertised (user, 2026-11-14).
     `--library` folder for experiments. For the GUI, also set `LIGHTCRAFT_CONFIG_DIR` to a scratch
     folder, or it may remember the scratch library as "last opened". Headless `run --library`
     calls left the real settings folder (`%APPDATA%\LightCraft`) untouched (checked 2026-11-14).
+  - The GUI's control port takes JSON lines; engine commands go through
+    `engine.execute {command, params}`, and `ui.screenshot {path}` lets LightCraft capture its
+    own window. Never start a second `lightcraft.exe`: it can't open a library already open.
   - Pitfall: Windows PowerShell 5.1 strips the quotes from JSON arguments (`bad JSON params`).
     Write JSON lines `{"command": id, "params": {…}}` to a file and pass `--script FILE` instead.
-- **PhotoCraft 0.22.0** (an open-source Photoshop, pure Rust/egui):
+- **PhotoCraft 0.23.1** (an open-source Photoshop, pure Rust/egui):
   - CLI: `C:\Program Files\PhotoCraft\photocraft-cli.exe`; GUI: `photocraft.exe` beside it.
   - `convert <in> <out>`, `info`, `run`, `batch`, `serve`, `mcp`; `commands` lists about 1,000
     engine commands.
   - No camera RAW.
+  - Test with `PHOTOCRAFT_CONFIG_DIR` set to a scratch folder, so the user's recent files stay
+    untouched.
 - Upstream repos: https://github.com/storytold/lightcraft, https://github.com/storytold/photocraft
   (docs in `docs/`, e.g. `docs/control-protocol.md`).
 
