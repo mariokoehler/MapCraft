@@ -11,4 +11,5 @@ pub mod paths;
 pub mod provider;
 pub mod settings;
 pub mod theme;
+pub mod thumbs;
 pub mod ui;

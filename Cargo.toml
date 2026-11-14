@@ -13,6 +13,8 @@ directories = "6"
 eframe = "0.37"
 egui = "0.37"
 egui_extras = { version = "0.37", default-features = false, features = ["svg"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
+jpeg-decoder = "0.3"
 kamadak-exif = "0.6"
 quick-xml = "0.42"
 rfd = "0.18"

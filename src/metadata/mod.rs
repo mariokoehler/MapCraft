@@ -112,6 +112,40 @@ pub fn read_image_from(mut file: File) -> Result<Metadata, ReadError> {
     }
 }
 
+/// The JPEG previews embedded in a RAW file (TIFF-based RAWs and RAF), for thumbnails
+/// (design.md §2.2(b)). Empty for files that aren't RAWs or carry none.
+pub fn embedded_previews(file: &mut File) -> Result<Vec<tiff::Embedded>, ReadError> {
+    file.seek(SeekFrom::Start(0)).map_err(io)?;
+    let mut magic = [0u8; 16];
+    let n = file.read(&mut magic).map_err(io)?;
+    let magic = &magic[..n];
+    if magic.starts_with(b"II*\0") || magic.starts_with(b"MM\0*") {
+        return tiff::embedded(&mut tiff::Bytes::new(&mut *file, 0).map_err(io)?)
+            .map_err(ReadError::Format);
+    }
+    if magic.starts_with(b"FUJIFILMCCD-RAW") {
+        // RAF: big-endian offset and length of the embedded JPEG at bytes 84 and 88.
+        let mut hdr = [0u8; 8];
+        file.seek(SeekFrom::Start(84))
+            .and_then(|_| file.read_exact(&mut hdr))
+            .map_err(io)?;
+        let off = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as u64;
+        let len = u32::from_be_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as u64;
+        let mut bytes = tiff::Bytes::new(&mut *file, 0).map_err(io)?;
+        return Ok(tiff::jpeg_dimensions(&mut bytes, off)
+            .map(|(width, height)| {
+                vec![tiff::Embedded {
+                    offset: off,
+                    len,
+                    width,
+                    height,
+                }]
+            })
+            .unwrap_or_default());
+    }
+    Ok(Vec::new())
+}
+
 /// A JPEG starting at `start`: walk its segments to the EXIF block (APP1 `Exif\0\0`).
 fn read_jpeg(mut file: File, start: u64) -> Result<Metadata, ReadError> {
     let mut pos = start + 2;

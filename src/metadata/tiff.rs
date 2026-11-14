@@ -174,6 +174,107 @@ impl<R: Read + Seek> Tiff<'_, R> {
     }
 }
 
+/// A JPEG embedded in a file, ready to be cut out: absolute position and length in the file,
+/// and its pixel size (from the JPEG's own SOF marker).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Embedded {
+    pub offset: u64,
+    pub len: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The JPEGs embedded in a TIFF structure (CR2, DNG, NEF, ARW…): every directory in the main
+/// chain and its SubIFDs, where the image is one JPEG (`JPEGInterchangeFormat` and its length,
+/// or a single strip). Lossless JPEGs are the RAW sensor data, not previews (design.md §2.2(b)
+/// pitfalls), and are left out.
+pub fn embedded<R: Read + Seek>(bytes: &mut Bytes<R>) -> Result<Vec<Embedded>, String> {
+    let hdr = bytes.get(0, 8)?;
+    let order = match &hdr[0..2] {
+        b"II" => Order::Little,
+        b"MM" => Order::Big,
+        _ => return Err("not a TIFF structure".into()),
+    };
+    let mut t = Tiff { bytes, order };
+    let mut out = Vec::new();
+    let mut todo = vec![order.u32(&hdr[4..8])];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(off) = todo.pop() {
+        if off == 0 || !seen.insert(off) || seen.len() > 16 {
+            continue;
+        }
+        let Ok(entries) = t.ifd(off) else { continue };
+        // The next directory in the chain follows the entries.
+        if let Ok(next) = t.bytes.get(off as u64 + 2 + entries.len() as u64 * 12, 4) {
+            todo.push(t.order.u32(&next));
+        }
+        if let Some(sub) = Tiff::<R>::find(&entries, 0x14A) {
+            match sub.count {
+                1 => todo.extend(t.uint(sub)),
+                n if n <= 32 => {
+                    if let Ok(v) = t.value(sub) {
+                        todo.extend(v.as_chunks::<4>().0.iter().map(|c| t.order.u32(c)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let pair = |a: u16, b: u16, t: &mut Tiff<'_, R>| {
+            let start = Tiff::<R>::find(&entries, a).filter(|e| e.count == 1)?;
+            let len = Tiff::<R>::find(&entries, b).filter(|e| e.count == 1)?;
+            Some((t.uint(start)?, t.uint(len)?))
+        };
+        let Some((start, len)) = pair(0x201, 0x202, &mut t).or_else(|| pair(0x111, 0x117, &mut t))
+        else {
+            continue;
+        };
+        if let Some((w, h)) = jpeg_dimensions(t.bytes, start as u64) {
+            out.push(Embedded {
+                offset: t.bytes.base + start as u64,
+                len: len as u64,
+                width: w,
+                height: h,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The size of a baseline or progressive JPEG at TIFF offset `off`, from its SOF marker; `None`
+/// for anything else, lossless JPEGs included.
+pub fn jpeg_dimensions<R: Read + Seek>(bytes: &mut Bytes<R>, off: u64) -> Option<(u32, u32)> {
+    // Walk the segments by their lengths (a few small reads), rather than scanning a fixed
+    // buffer: a camera JPEG's EXIF segment alone can fill the first 64 KB (Fujifilm RAFs).
+    if bytes.get(off, 2).ok()? != [0xFF, 0xD8] {
+        return None;
+    }
+    let mut pos = off + 2;
+    for _ in 0..64 {
+        let hdr = bytes.get(pos, 4).ok()?;
+        if hdr[0] != 0xFF {
+            return None;
+        }
+        let m = hdr[1];
+        if m == 0xFF {
+            pos += 1; // fill byte
+            continue;
+        }
+        let seg = u16::from_be_bytes([hdr[2], hdr[3]]) as u64;
+        match m {
+            0xC0..=0xC2 => {
+                let sof = bytes.get(pos + 5, 4).ok()?;
+                let h = u16::from_be_bytes([sof[0], sof[1]]) as u32;
+                let w = u16::from_be_bytes([sof[2], sof[3]]) as u32;
+                return Some((w, h));
+            }
+            // Lossless JPEG (RAW sensor data), other coding, or the scan before any SOF.
+            0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF | 0xDA | 0xD9 => return None,
+            _ => pos += 2 + seg,
+        }
+    }
+    None
+}
+
 /// Reads the metadata from a TIFF structure (a TIFF-based file, or an EXIF block).
 pub fn read<R: Read + Seek>(bytes: &mut Bytes<R>) -> Result<Metadata, String> {
     let hdr = bytes.get(0, 8)?;
