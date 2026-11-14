@@ -684,9 +684,12 @@ The look and the structure of the screens are designed in **Claude Design** (use
 - Claude then builds the screen in egui from the canvas.
 - Mockups are for the first layout, new screens and bigger changes. Small tweaks go straight into
   code.
-- Canvases so far: `MapCraft — Main window`, with six states: browsing, a photo selected from a
-  group strip, search, an import running, a source offline, and an empty library. Each has a
-  dark/light switch.
+- Canvases so far, each artboard with a dark/light switch:
+  - `MapCraft — Main window` (approved 2026-11-14), with six states: browsing, a photo selected
+    from a group strip, search, an import running, a source offline, and an empty library.
+  - `MapCraft — Import` (M2, awaiting review), with five states: "Add photo folder" with the
+    folder tree, the import running (with the proposed position dots), the finished summary, the
+    sources list, and removing a source.
 
 **A design system of MapCraft's own** (user, 2026-11-14) is its own canvas,
 `MapCraft — Design system` (done 2026-11-14; the user made it in Claude Design). It holds:
