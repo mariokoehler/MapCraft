@@ -320,9 +320,10 @@ struct Dots<'a> {
     edge: Color32,
 }
 
-/// Dots closer than this many pixels are drawn once: at low zoom thousands of photos share a
-/// few pixels, and drawing each would only cost time (until M4 groups them).
-const DOT_CELL: f32 = 3.0;
+/// Dots closer than this many pixels are drawn once: a dot is 12 px wide, so closer neighbours
+/// can't be told apart anyway, and drawing each would only cost time (until M4 groups them).
+/// Measured with 100,000 photos over Europe (2026-11-14): see design.md §2.3.
+const DOT_CELL: f32 = 5.0;
 
 impl Plugin for Dots<'_> {
     fn run(self: Box<Self>, ui: &mut Ui, _: &egui::Response, projector: &Projector, _: &MapMemory) {
@@ -339,9 +340,9 @@ impl Plugin for Dots<'_> {
             if !seen.insert(cell) {
                 continue;
             }
+            // Two shapes per dot: the dark edge, then the pin colour with its white ring.
             painter.circle_filled(pos, 6.0, self.edge);
-            painter.circle_filled(pos, 5.0, self.ring);
-            painter.circle_filled(pos, 3.0, self.fill);
+            painter.circle(pos, 4.0, self.fill, Stroke::new(2.0, self.ring));
         }
     }
 }

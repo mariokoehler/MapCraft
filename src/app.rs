@@ -465,6 +465,48 @@ mod tests {
     }
 
     #[test]
+    fn the_add_folder_dialog_walks_a_chosen_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let photos = dir.path().join("photos");
+        crate::demo::make_demo(&photos, 16).unwrap();
+        let data = dir.path().join("data");
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1280.0, 800.0))
+            .build_ui_state(
+                move |ui, app: &mut Option<MapCraftApp>| {
+                    let app = app.get_or_insert_with(|| {
+                        egui_extras::install_image_loaders(ui.ctx());
+                        MapCraftApp::new(
+                            ui.ctx(),
+                            Config {
+                                data_folder: data.clone(),
+                                tiles: false,
+                                open: Some(StartDialog::AddFolder(Some(photos.clone()))),
+                                perf: false,
+                            },
+                        )
+                    });
+                    app.frame(ui);
+                },
+                None,
+            );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            h.run_steps(2);
+            if h.query_by_label("Import 16 photos").is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the dialog never counted the photos"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        h.get_by_label("Add photo folder");
+        h.get_by_label("2019-05-04_Lisbon");
+    }
+
+    #[test]
     fn the_empty_map_offers_to_add_a_folder() {
         let dir = tempfile::tempdir().unwrap();
         let mut h = harness(dir.path());

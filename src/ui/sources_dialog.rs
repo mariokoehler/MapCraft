@@ -151,18 +151,26 @@ impl SourcesDialog {
                     let c = counts.get(&s.id).copied().unwrap_or_default();
                     let selected = self.selected == Some(s.id);
                     let cell = ui.vertical(|ui| {
+                        // A fixed column: long labels and paths truncate with "…" (the full
+                        // path shows on hover) instead of wrapping letter by letter.
+                        ui.set_width(280.0);
                         let name = RichText::new(&s.label).color(if selected {
                             p.accent
                         } else {
                             p.text_strong
                         });
-                        ui.label(name);
-                        ui.label(
-                            RichText::new(s.root_path.to_string_lossy())
-                                .monospace()
-                                .small()
-                                .color(p.text_weak),
-                        );
+                        ui.add(egui::Label::new(name).truncate());
+                        let path = s.root_path.to_string_lossy();
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(path.as_ref())
+                                    .monospace()
+                                    .small()
+                                    .color(p.text_weak),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(path.as_ref());
                     });
                     let row = egui::Id::unique(("source-row", s.id));
                     if ui

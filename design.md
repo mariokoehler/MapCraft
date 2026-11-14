@@ -192,7 +192,10 @@ preview at all gets a placeholder tile marked "needs LightCraft" **(user, 2026-1
   has read its position, and becomes its thumbnail marker once the thumbnail exists. Reading
   metadata costs one small read per file, but a thumbnail needs a decode, so thumbnails are made
   by a background job after the import (M3), and the map is useful from the first minute. In M2
-  every photo is a dot.
+  every photo is a dot. Dots closer than 5 px are drawn once. With 100,000 photos over Europe
+  at continent zoom (the worst case), the release build draws about 30 frames per second, with
+  8 ms of UI work per frame (measured 2026-11-14, `--fill-library` and `--perf`). M4's grouping
+  replaces this.
 - **Groups** (§2.4): drawn as the thumbnail of one representative photo, with a count badge.
   Clicking zooms to the group's extent. If a group can't split any further (photos taken at the
   same spot), clicking opens a strip of its photos instead **(user, 2026-11-14)**.
@@ -763,10 +766,17 @@ Milestones are rough and get refined as we go.
 - **M2 — Library & import** (in progress): SQLite schema, add a source, a background scan,
   EXIF/GPS reading, progress, rescan.
   - Done: the metadata reader, the library database and the headless import with rescan, moves
-    and missing photos, checked on three real folders (§3.4). Dev command:
-    `mapcraft --import <folder> --data <scratch folder>`.
-  - Next: mockups for "Add folder…" with the folder tree, the import summary and the sources
-    list; then that UI, the progress chip and simple position dots on the map.
+    and missing photos, checked on real folders (§3.4); folder picks as decisions (§2.8(f)).
+  - Done, the UI (canvas `MapCraft — Import`, approved):
+    - "Add photo folder" and "Change folders…" with the tree;
+    - the sources list with rescan and remove;
+    - the progress chip with cancel;
+    - toasts with the numbers;
+    - position dots;
+    - "zoom to all photos".
+
+    Checked by headless UI tests (`egui_kittest`) and by captures of the untouched window, on
+    generated photos. Not yet tried by the user on the real library.
 - **M3 — Thumbnails on the map:** the thumbnail pipeline (§2.2(b)) with LightCraft for RAW,
   markers as thumbnails, hover and select, the detail panel.
 - **M4 — Grouping:** clustering per zoom (§2.4), count badges, click to zoom, the strip for photos

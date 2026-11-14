@@ -312,15 +312,20 @@ impl FolderDialog {
                 } else {
                     p.text_disabled
                 };
-                ui.label(RichText::new(name).color(ink));
+                // The count is right-aligned; the name gets the rest and is truncated with "…",
+                // so a long path never widens the dialog or runs into the count.
+                let count = if f.never {
+                    "never imported".to_owned()
+                } else if f.unreadable {
+                    "can't be read".to_owned()
+                } else {
+                    self.tree.total(&k).map_or("…".to_owned(), thousands)
+                };
+                let name_w = (ui.available_width() - 90.0).max(40.0);
+                ui.allocate_ui(egui::vec2(name_w, 18.0), |ui| {
+                    ui.add(egui::Label::new(RichText::new(name).color(ink)).truncate());
+                });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let count = if f.never {
-                        "never imported".to_owned()
-                    } else if f.unreadable {
-                        "can't be read".to_owned()
-                    } else {
-                        self.tree.total(&k).map_or("…".to_owned(), thousands)
-                    };
                     ui.label(RichText::new(count).small().color(p.text_weak));
                 });
             });

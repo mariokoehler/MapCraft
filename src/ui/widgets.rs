@@ -235,7 +235,10 @@ pub fn dialog(
                     });
                 });
             separator(ui, p);
-            Frame::NONE.inner_margin(Margin::same(12)).show(ui, body);
+            Frame::NONE.inner_margin(Margin::same(12)).show(ui, |ui| {
+                ui.set_max_width(width - 24.0); // content never widens the dialog
+                body(ui)
+            });
             separator(ui, p);
             Frame::NONE
                 .inner_margin(Margin::symmetric(12, 8))

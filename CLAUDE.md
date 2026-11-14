@@ -28,7 +28,7 @@ but the app isn't sold or advertised (user, 2026-11-14).
 
 ## Current status (2026-11-14)
 
-**M2 in progress: the import works headless; its UI is next (mockups first).**
+**M2 built: importing folders, rescans and the sources list work; awaiting the user's try.**
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
   copies.
@@ -40,8 +40,8 @@ but the app isn't sold or advertised (user, 2026-11-14).
 - M0 is done (2026-11-14): the spikes (results in `design.md` §2.2(b), §2.6, §3.6(c)), and GPS
   comes from EXIF and XMP only in v1 (§2.8(g)). The design system and the main
   window's mockup exist and are approved (§3.9).
-- M1 is done (2026-11-14), tested by the user. M2's backend is done and checked on real folders
-  (`design.md` §3.4); next are the mockups for its screens, then the UI (`design.md` §5).
+- M1 is done (2026-11-14), tested by the user. M2 is built (`design.md` §5): the import is
+  checked on real folders, the UI on generated photos; the user's own try is next, then M3.
 - **The user's real photo library is read-only to us.** Never write, rename or create sidecars
   there. Its path stays out of the repo (it's in Claude's local memory).
 
@@ -52,8 +52,10 @@ but the app isn't sold or advertised (user, 2026-11-14).
 - The tile provider (`src/provider.rs`) and the bootstrap settings (`src/settings.rs`).
 - The metadata reader: our own TIFF/EXIF reader for TIFF, DNG, CR2, JPEG and RAF, plus XMP
   sidecars (`src/metadata/`).
-- The library (SQLite, `src/library/`) and the headless import with rescan, moves and missing
-  photos (`src/import/`). No UI for it yet.
+- The library (SQLite, `src/library/`) and the import with rescan, moves, missing photos and
+  folder decisions (`src/import/`), run in the background by `src/jobs.rs`.
+- The import UI: add folder / change folders, sources, progress, toasts, position dots
+  (`src/ui/`). Generated test photos: `src/demo.rs`.
 
 ## How we work
 
@@ -139,6 +141,15 @@ committed):
   folder headless and prints the summary and GPS rates per file type. Run it from the release
   build and pipe its output (`cmd /c "… 2>&1"`): the release exe is a GUI-subsystem app and
   prints nothing to a console otherwise.
+- More dev flags:
+  - `--open add-folder[=<folder>]` or `--open sources` starts with that dialog open (for
+    comparing with the mockups);
+  - `--perf` logs the frame time every 3 s;
+  - `--make-demo <folder> [n]` writes generated photos;
+  - `--fill-library <scratch data> <n>` writes synthetic rows.
+- UI tests: `egui_kittest` drives the whole app headless (`src/app.rs` tests), finding widgets
+  by their accessible names. Its accessibility check fails on unnamed icon buttons, so use
+  `widgets::ghost` or `widgets::named`.
 - Probes (read-only, aggregates only): `cargo run --release --example exif_probe -- <list>`
   (our reader against `kamadak-exif`), `xmp_probe -- <folder>`, `unc_check -- <path>`.
 - Pitfall: `kamadak-exif` reads a whole TIFF-based file (a 25 MB RAW) before parsing, and fails
@@ -152,8 +163,14 @@ committed):
   `%USERPROFILE%\.cargo\registry\src\` or let the compiler say, not from memory.
 - Pitfall: never script real mouse or keyboard input to test the GUI. Windows often refuses to
   bring the app to the front, and the input lands in whatever the user has open (it did once,
-  2026-11-14, in their browser). Screenshots of an untouched window are fine. Test interaction
-  headlessly (e.g. `egui_kittest`) or ask the user to try it.
+  2026-11-14, in their browser). Test interaction headlessly (`egui_kittest`) or ask the user.
+- Pitfall: capture a window with `PrintWindow` (its own contents), never by copying the screen
+  area. A screen copy picks up whatever covers the window; it once captured the user's other
+  work (2026-11-14). The capture script is in the scratchpad (`scripts\shot.ps1`), and every
+  capture is deleted after use.
+- Pitfall: the borrow checker forbids two closures holding `&mut self` at once, for example a
+  dialog's body and button row. Let the button row set local flags, and act on them after the
+  dialog has drawn.
 
 **Toolchain** (per Windows user, shared by all Rust projects):
 - `rustup` manages Rust like SDKMAN manages JDKs. It lives in `%USERPROFILE%\.rustup`, with

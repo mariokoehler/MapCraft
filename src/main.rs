@@ -36,6 +36,9 @@ fn main() -> eframe::Result {
         _ => None,
     };
     let perf = args.iter().any(|a| a == "--perf");
+    if open.is_some() {
+        info!("start dialog: {open:?}");
+    }
 
     let Some(locations) = Locations::from_system() else {
         error!("Windows didn't report the AppData folders; can't start");
