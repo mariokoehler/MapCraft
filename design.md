@@ -920,6 +920,10 @@ library and settings folder, generated photos, no scripted input):
   place-name download, which runs only when the user clicks it and sends nothing about them
   (§2.5, M5, unconfirmed). Logs don't contain coordinates
   **(user, 2026-11-14)**.
+- **LightCraft's control port** (M6): MapCraft starts LightCraft with `--control` on a free
+  loopback port, which has no password (§3.6(c)): while LightCraft runs, any program on this
+  computer could drive it. MapCraft sends it the photo's path, and checks with `library.info`
+  that LightCraft is what answers before sending any path. The Settings dialog says so.
 - API keys are stored in `settings.toml` in plain text **(user, 2026-11-14)**, which is outside the
   repo. The repo is public (§3.5), so a key never goes into code, tests or committed config. The
   Windows Credential Manager is the better place if this ever matters.

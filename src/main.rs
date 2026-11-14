@@ -56,7 +56,7 @@ fn main() -> eframe::Result {
         error!("Windows didn't report the AppData folders; can't start");
         std::process::exit(1);
     };
-    let settings = load_settings(&locations);
+    let (settings, writable) = load_settings(&locations);
     // `--data <folder>` overrides the data folder for this run only (tests and trials with
     // generated photos never touch the real library).
     let data_override = flag("--data").map(std::path::PathBuf::from);
@@ -92,7 +92,7 @@ fn main() -> eframe::Result {
                 launch: true,
                 network: true,
                 settings,
-                settings_file: Some(locations.settings_file),
+                settings_file: writable.then_some(locations.settings_file),
             };
             Ok(Box::new(app::MapCraftApp::new(&cc.egui_ctx, config)))
         }),
@@ -174,7 +174,9 @@ fn dev_make_demo(args: &[String]) -> i32 {
 
 /// Reads the settings. A missing file is created with the defaults; an unreadable one is left
 /// untouched (never overwritten) and the defaults are used for this run.
-fn load_settings(locations: &Locations) -> Settings {
+/// The settings, and whether MapCraft may write them back: never over a file it couldn't read,
+/// so a typo is never replaced by the defaults.
+fn load_settings(locations: &Locations) -> (Settings, bool) {
     let path = &locations.settings_file;
     let existed = path.exists();
     match Settings::load_from(path) {
@@ -182,11 +184,11 @@ fn load_settings(locations: &Locations) -> Settings {
             if !existed && let Err(e) = settings.save_to(path) {
                 warn!("can't write the default settings: {e}");
             }
-            settings
+            (settings, true)
         }
         Err(e) => {
-            error!("{e}; using the defaults and leaving the file as it is");
-            Settings::default()
+            error!("{e}; using the defaults, and changes this session aren't saved");
+            (Settings::default(), false)
         }
     }
 }

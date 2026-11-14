@@ -370,7 +370,10 @@ impl MapCraftApp {
     /// Whether the companion apps are where the settings say.
     fn find_companions(&mut self) {
         let c = &self.settings.companions;
-        self.found = [c.photocraft.is_file(), c.lightcraft.is_file()];
+        self.found = [
+            companions::is_app(&c.photocraft),
+            companions::is_app(&c.lightcraft),
+        ];
     }
 
     fn save_settings(&self) {
@@ -388,7 +391,11 @@ impl MapCraftApp {
         let photocraft = if !self.found[0] {
             Some(missing(Companion::PhotoCraft))
         } else if !companions::photocraft_opens(&d.original_name) {
-            Some("PhotoCraft can't open camera RAW files".to_owned())
+            Some(if companions::is_raw(&d.original_name) {
+                "PhotoCraft can't open camera RAW files".to_owned()
+            } else {
+                "PhotoCraft can't open this type of file".to_owned()
+            })
         } else {
             None
         };

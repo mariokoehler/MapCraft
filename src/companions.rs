@@ -23,6 +23,9 @@ use tracing::{info, warn};
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 /// One request's answer. A lookup on a NAS may read the file, so this is generous.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+/// The first answer, `library.info`: LightCraft answers it at once, so a port that stays
+/// silent belongs to something else (or a LightCraft still starting: asked again).
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Windows: start a console program without flashing a console window.
 #[cfg(windows)]
@@ -41,6 +44,42 @@ impl Companion {
             Self::LightCraft => "LightCraft",
         }
     }
+}
+
+/// Camera RAW types among those the import reads (`import::scan`), DNG included.
+pub fn is_raw(file_name: &str) -> bool {
+    let ext = Path::new(file_name)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "dng"
+            | "cr2"
+            | "cr3"
+            | "crw"
+            | "nef"
+            | "nrw"
+            | "arw"
+            | "srf"
+            | "sr2"
+            | "raf"
+            | "orf"
+            | "rw2"
+            | "pef"
+            | "srw"
+            | "x3f"
+            | "3fr"
+            | "iiq"
+    )
+}
+
+/// Whether `path` can be a companion app: an `.exe` that exists. A `.cmd` or `.bat` would pass
+/// file names through `cmd.exe`, which reads `&` and `%` in them (see `launch`).
+pub fn is_app(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+        && path.is_file()
 }
 
 /// File types PhotoCraft opens (its README, checked 2026-11-14): no camera RAW, DNG included.
@@ -181,9 +220,11 @@ fn run(req: &Request, report: &mut impl FnMut(Event)) -> Result<Event, Failure> 
             "library.import",
             json!({"paths": [req.file], "mode": "add"}),
         )?;
+        // New, already there, or brought back from LightCraft's Recently Deleted.
         let id = r["imported"]
             .get(0)
             .or_else(|| r["duplicates"].get(0).map(|d| &d["existing"]))
+            .or_else(|| r["restored"].get(0))
             .and_then(Value::as_i64);
         match id {
             Some(id) => id,
@@ -280,7 +321,10 @@ impl Conn {
     /// Whether this is LightCraft with a library open: `library.info` names the library's path
     /// then. Anything else on the port fails to parse, which counts as no answer.
     fn has_library(&mut self) -> Result<bool, Failure> {
-        let r = self.command("library.info", json!({}))?;
+        let _ = self.writer.set_read_timeout(Some(HANDSHAKE_TIMEOUT));
+        let r = self.command("library.info", json!({}));
+        let _ = self.writer.set_read_timeout(Some(REPLY_TIMEOUT));
+        let r = r?;
         if r.get("photos").is_none() {
             return Err(Failure::NoAnswer);
         }
@@ -434,6 +478,21 @@ mod tests {
         for no in ["a.CR3", "b.cr2", "c.RAF", "d.dng", "e.nef", "f"] {
             assert!(!photocraft_opens(no), "{no}");
         }
+    }
+
+    #[test]
+    fn apps_are_exe_files_and_raws_are_named() {
+        let dir = tempfile::tempdir().unwrap();
+        for f in ["photocraft.exe", "photocraft.cmd"] {
+            std::fs::write(dir.path().join(f), b"").unwrap();
+        }
+        assert!(is_app(&dir.path().join("photocraft.exe")));
+        assert!(
+            !is_app(&dir.path().join("photocraft.cmd")),
+            "never through cmd.exe"
+        );
+        assert!(!is_app(&dir.path().join("lightcraft.exe")), "missing");
+        assert!(is_raw("a.CR3") && is_raw("b.dng") && !is_raw("c.heic") && !is_raw("d.jpg"));
     }
 
     #[test]

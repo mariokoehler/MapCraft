@@ -77,7 +77,7 @@ impl SettingsDialog {
     fn check(&mut self, i: usize, version: bool, ctx: &egui::Context) {
         let path = self.paths[i].trim().to_owned();
         self.checked[i] = self.paths[i].clone();
-        self.status[i] = if !Path::new(&path).is_file() {
+        self.status[i] = if !companions::is_app(Path::new(&path)) {
             Status::Missing
         } else if version && self.run_tools {
             let (tx, c) = (self.versions.0.clone(), ctx.clone());
