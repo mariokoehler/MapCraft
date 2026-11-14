@@ -159,9 +159,10 @@ committed):
   by their accessible names. Its accessibility check fails on unnamed icon buttons, so use
   `widgets::ghost` or `widgets::named`.
   - Painted things (markers) need an `interact` rect with a name to be found.
+  - Paint transient decorations (a spinner over an image) with `paint_at`, never `ui.put`/`add`:
+    an extra widget shifts the layout and the ids below it, and clicks get lost.
   - Wait for the thumbnail job (`thumbs.is_none()`) before `h.run()`: its chip's spinner keeps
     the frame repainting.
-  - A click in a just-opened side panel's first frames can be lost. Step a few frames first.
 - Probes (read-only, aggregates only): `cargo run --release --example exif_probe -- <list>`
   (our reader against `kamadak-exif`), `xmp_probe -- <folder>`, `unc_check -- <path>`.
 - Pitfall: `kamadak-exif` reads a whole TIFF-based file (a 25 MB RAW) before parsing, and fails

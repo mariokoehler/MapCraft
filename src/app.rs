@@ -626,6 +626,11 @@ impl MapCraftApp {
                 .show(ui, |ui| {
                     let face = match self.previews.get(&ctx, d) {
                         Some(Ok(t)) => PreviewFace::Image(t),
+                        // Can't be made now (the source offline): the thumbnail, if there's one.
+                        Some(Err(())) if d.thumb_made => match self.map.thumbnail(d.id) {
+                            Some(t) => PreviewFace::Image(t),
+                            None => PreviewFace::None,
+                        },
                         Some(Err(())) => PreviewFace::None,
                         None => PreviewFace::Loading(self.map.thumbnail(d.id)),
                     };
@@ -883,9 +888,6 @@ mod tests {
         });
         assert!(h.query_all_by_label(&name).count() >= 1, "the name row");
         h.get_by_label("Demo trips"); // the source row
-        // A click in the panel's first few frames is lost under kittest (the button doesn't
-        // move; the cause isn't pinned down, and no person clicks that fast), so let it settle.
-        h.run_steps(5);
         h.get_by_label("Show in Explorer").click();
         h.run_steps(2);
         h.get_by_label("Open").click();
@@ -904,6 +906,16 @@ mod tests {
         h.run_steps(3);
         assert!(h.query_by_label("Photo details").is_none());
         assert_eq!(h.state().as_ref().unwrap().map.selected(), None);
+        // Removing the source deletes the kept preview with the thumbnails.
+        let source = h.state().as_ref().unwrap().sources[0].id;
+        h.state_mut()
+            .as_mut()
+            .unwrap()
+            .change(Change::Remove(source));
+        step_until(&mut h, "the sweep", |h| {
+            h.state().as_ref().unwrap().thumbs.is_none()
+                && !thumbs::path(dir.path(), id, thumbs::PREVIEW).exists()
+        });
     }
 
     #[test]

@@ -130,11 +130,13 @@ impl Textures {
             .filter(|e| matches!(e, Entry::Ready { .. }))
             .count();
         if ready > TEXTURE_CAP {
+            // Never what the last frame drew: with more markers in view than the cap, evicting
+            // those would reload and evict them again every frame. The cap gives way instead.
             let mut by_age: Vec<(u64, i64)> = self
                 .entries
                 .iter()
                 .filter_map(|(id, e)| match e {
-                    Entry::Ready { used, .. } => Some((*used, *id)),
+                    Entry::Ready { used, .. } if *used + 1 < self.frame => Some((*used, *id)),
                     _ => None,
                 })
                 .collect();

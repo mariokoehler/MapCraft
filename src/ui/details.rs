@@ -108,10 +108,11 @@ pub fn folder_parts(root: &Path, rel_dir: &str) -> (String, String) {
 
 /// The original's full path, for Show in Explorer and Open (with the source's root as given).
 pub fn original_path(root: &Path, d: &PhotoDetail) -> PathBuf {
+    // Backslashes throughout: `explorer /select` falls back to a default folder on a `/` path.
     let dir = if d.rel_dir.is_empty() {
         root.to_path_buf()
     } else {
-        root.join(&d.rel_dir)
+        root.join(d.rel_dir.replace('/', "\\"))
     };
     dir.join(&d.original_name)
 }
@@ -305,7 +306,12 @@ impl DetailPanel {
                 rect.right_bottom() - egui::vec2(22.0, 22.0),
                 egui::vec2(14.0, 14.0),
             );
-            ui.put(at, egui::Spinner::new().size(14.0).color(p.text_weak));
+            // Painted, not added: a widget here would move the layout below the box while
+            // the preview loads, and shift the ids of the buttons under it.
+            egui::Spinner::new()
+                .size(14.0)
+                .color(p.text_weak)
+                .paint_at(ui, at);
         }
     }
 
