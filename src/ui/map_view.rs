@@ -1,9 +1,15 @@
 //! The map and everything drawn over it (design system "Map layout"): the photos as thumbnail
-//! markers and position dots (design.md §2.3, `markers`), controls top-right, scale bar bottom-left, the provider's attribution
+//! markers, groups and position dots (design.md §2.3, §2.4; `markers`, `cluster`), the strip of
+//! a group at one spot, controls top-right, scale bar bottom-left, the provider's attribution
 //! flush bottom-right of the *visible* map, and the empty-library card while there are no photos.
+//!
+//! The groups are built on a background thread (`Builder`) whenever the photos change; the map
+//! draws from the newest finished build, which owns the snapshot of photos it was made from.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use egui::{
     Align2, Area, Button, CornerRadius, Frame, Id, Margin, Order, Rect, RichText, Sense, Stroke,
@@ -13,12 +19,14 @@ use walkers::{
     HttpTiles, Map, MapMemory, MercatorProjection, Plugin, Position, Projection, Projector, lat_lon,
 };
 
+use crate::cluster::{self, Clusters, MAX_LEVEL};
 use crate::import::Bounds;
 use crate::library::{PhotoPoint, Thumb};
 use crate::provider::Provider;
 use crate::theme::Palette;
 use crate::ui::icons::Icon;
 use crate::ui::markers::{self, Face, Look, Textures};
+use crate::ui::strip::{Strip, StripAction};
 use crate::ui::widgets;
 
 /// Where the map opens while the library is empty: central Europe.
@@ -39,9 +47,11 @@ pub struct MapView {
     memory: MapMemory,
     home: Position,
     points: Vec<PhotoPoint>,
-    /// The photos shown as markers at a whole-number zoom, and per point whether it's one of
-    /// them (`markers::pick`); recomputed when the zoom level or the points change.
-    picked: Option<(i32, Vec<usize>, Vec<bool>)>,
+    /// The newest finished grouping, and the thread that makes them.
+    clusters: Option<Arc<Clusters>>,
+    builder: Builder,
+    /// The photos of a group at one spot, while its strip is open.
+    strip: Option<Strip>,
     textures: Textures,
     /// File names of photos with a marker, for their accessible names; filled by the app.
     names: HashMap<i64, String>,
@@ -73,7 +83,9 @@ impl MapView {
             memory,
             home: lat_lon(HOME.0, HOME.1),
             points: Vec::new(),
-            picked: None,
+            clusters: None,
+            builder: Builder::new(ctx.clone()),
+            strip: None,
             textures: Textures::new(data.to_path_buf(), ctx),
             names: HashMap::new(),
             wanted_names: Vec::new(),
@@ -99,8 +111,27 @@ impl MapView {
         {
             self.selected = None;
         }
+        if let Some(strip) = &mut self.strip {
+            let alive: HashSet<i64> = points.iter().map(|p| p.id).collect();
+            strip.retain(|id| alive.contains(&id));
+            if strip.is_empty() {
+                self.strip = None;
+            }
+        }
+        self.builder.request(points.clone());
         self.points = points;
-        self.picked = None;
+    }
+
+    /// Closes the strip; true if one was open (Esc closes it before clearing the selection).
+    pub fn close_strip(&mut self) -> bool {
+        self.strip.take().is_some()
+    }
+
+    /// The groups are built for the current photos (tests wait for this).
+    pub fn grouped(&self) -> bool {
+        self.clusters
+            .as_ref()
+            .is_some_and(|c| c.points().len() == self.points.len())
     }
 
     pub fn select(&mut self, id: Option<i64>) {
@@ -159,27 +190,20 @@ impl MapView {
         keys: bool,
     ) -> (Rect, Option<MapAction>) {
         self.keys = keys;
-        let zoom = self.memory.zoom().floor() as i32;
-        if self.picked.as_ref().is_none_or(|(z, _, _)| *z != zoom) {
-            let picked = markers::pick(&self.points, zoom);
-            let mut is_picked = vec![false; self.points.len()];
-            for &i in &picked {
-                is_picked[i] = true;
-            }
-            self.picked = Some((zoom, picked, is_picked));
+        if let Some(c) = self.builder.latest() {
+            self.clusters = Some(c);
         }
-        let (_, picked, is_picked) = self.picked.as_ref().expect("just set");
         self.textures.begin_frame(ui.ctx());
         let mut out = PhotosOut::default();
         let photos = Photos {
+            clusters: self.clusters.as_deref(),
             points: &self.points,
-            picked,
-            is_picked,
             textures: &mut self.textures,
             names: &self.names,
             wanted: &mut self.wanted_names,
             palette: p,
             selected: self.selected,
+            strip: self.strip.as_ref(),
             out: &mut out,
         };
         let tiles = self.tiles.as_mut().map(|t| t as &mut dyn walkers::Tiles);
@@ -189,12 +213,44 @@ impl MapView {
             .with_plugin(photos);
         let rect = ui.add(map).rect;
         self.hovered = out.hovered;
-        let mut action = match (out.clicked, out.background_clicked) {
-            (Some(id), _) => Some(MapAction::Select(Some(id))),
-            (None, true) if self.selected.is_some() => Some(MapAction::Select(None)),
-            _ => None,
-        };
         self.last_rect = rect;
+        // The strip belongs to one zoom level's group.
+        if self
+            .strip
+            .as_ref()
+            .is_some_and(|s| Some(s.level) != out.level)
+        {
+            self.strip = None;
+        }
+        let mut action = match out.clicked {
+            Some(Clicked::Photo(id)) => Some(MapAction::Select(Some(id))),
+            Some(Clicked::Group(z, i)) => {
+                self.open_group(z, i);
+                None
+            }
+            None if out.background_clicked => {
+                self.strip = None;
+                self.selected.is_some().then_some(MapAction::Select(None))
+            }
+            None => None,
+        };
+        if let (Some(strip), Some(tip)) = (&mut self.strip, out.strip_tip) {
+            let a = strip.show(
+                ui.ctx(),
+                p,
+                tip,
+                rect,
+                &mut self.textures,
+                &self.names,
+                &mut self.wanted_names,
+                self.selected,
+            );
+            match a {
+                Some(StripAction::Close) => self.strip = None,
+                Some(StripAction::Select(id)) => action = Some(MapAction::Select(Some(id))),
+                None => {}
+            }
+        }
         self.zoom_keys(ui);
 
         self.controls(ui, p, rect);
@@ -204,6 +260,39 @@ impl MapView {
             action = Some(a);
         }
         (rect, action)
+    }
+
+    /// A click on group `i` of level `z`: zoom in until it falls apart, or, if it never does
+    /// (photos at one spot), open its strip (design.md §2.3).
+    fn open_group(&mut self, z: usize, i: usize) {
+        let Some(c) = self.clusters.clone() else {
+            return;
+        };
+        let (_, nodes) = c.level(z as f64);
+        let node = nodes[i];
+        match c.split_level(z, i) {
+            Some(split) => {
+                // Fit its extent, but never less than the level where it splits: the fit keeps
+                // a margin and stops at street level, which could leave it one marker.
+                let fit = fit_zoom(node.bounds(), self.last_rect.size());
+                let target = fit.max(split as f64).min(MAX_LEVEL as f64);
+                let b = node.bounds();
+                self.memory.center_at(lat_lon(
+                    (b.min_lat + b.max_lat) / 2.0,
+                    (b.min_lon + b.max_lon) / 2.0,
+                ));
+                let _ = self.memory.set_zoom(target);
+            }
+            None => {
+                let pts = c.points();
+                let photos = c
+                    .members(z, i)
+                    .into_iter()
+                    .map(|m| (pts[m as usize].id, pts[m as usize].taken))
+                    .collect();
+                self.strip = Some(Strip::new(photos, node.lat_lon(), z));
+            }
+        }
     }
 
     /// `+`/`-` zoom (design.md §2.3; walkers has no keyboard handling). `=` counts as `+`, since
@@ -415,32 +504,54 @@ fn empty_state(ui: &Ui, p: &Palette, map: Rect) -> Option<MapAction> {
     action
 }
 
-/// The photos on the map (design.md §2.3): markers for the picked ones, dots for the rest.
-/// A dot is a pin-coloured dot in a white ring with a dark edge, so it reads on pale land and on
-/// saturated tiles alike (design system, map rules).
+/// The photos on the map (design.md §2.3, §2.4): per node of the current zoom level a marker
+/// (a photo, or a group with its count), or a dot for a single photo whose thumbnail isn't made
+/// yet. Before the first grouping is built, every photo is a dot. A dot is a pin-coloured dot in
+/// a white ring with a dark edge, so it reads on pale land and on saturated tiles alike.
 struct Photos<'a> {
+    clusters: Option<&'a Clusters>,
     points: &'a [PhotoPoint],
-    picked: &'a [usize],
-    is_picked: &'a [bool],
     textures: &'a mut Textures,
     names: &'a HashMap<i64, String>,
     wanted: &'a mut Vec<i64>,
     palette: &'a Palette,
     selected: Option<i64>,
+    strip: Option<&'a Strip>,
     out: &'a mut PhotosOut,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Clicked {
+    Photo(i64),
+    /// A group: its level and index.
+    Group(usize, usize),
 }
 
 #[derive(Default)]
 struct PhotosOut {
     hovered: Option<(i64, Rect)>,
-    clicked: Option<i64>,
+    clicked: Option<Clicked>,
     background_clicked: bool,
+    /// The level drawn this frame.
+    level: Option<usize>,
+    /// Where the open strip points: just above its group's marker.
+    strip_tip: Option<egui::Pos2>,
 }
 
 /// Dots closer than this many pixels are drawn once: a dot is 12 px wide, so closer neighbours
-/// can't be told apart anyway, and drawing each would only cost time (until M4 groups them).
-/// Measured with 100,000 photos over Europe (2026-11-14): see design.md §2.3.
+/// can't be told apart anyway (only before the first grouping, when every photo is a dot).
 const DOT_CELL: f32 = 5.0;
+
+/// One marker to draw this frame.
+struct Shown {
+    level_index: usize,
+    pos: egui::Pos2,
+    count: u32,
+    /// The photo it shows (the group's representative).
+    rep: PhotoPoint,
+    /// Screen radius of the area a group covers (for the hover halo).
+    reach: f32,
+}
 
 impl Plugin for Photos<'_> {
     fn run(
@@ -448,107 +559,158 @@ impl Plugin for Photos<'_> {
         ui: &mut Ui,
         response: &egui::Response,
         projector: &Projector,
-        _: &MapMemory,
+        memory: &MapMemory,
     ) {
         let p = self.palette;
         let clip = ui.clip_rect();
-        let screen = |pt: &PhotoPoint| {
-            let v = projector.project(lat_lon(pt.lat, pt.lon));
+        let screen = |lat: f64, lon: f64| {
+            let v = projector.project(lat_lon(lat, lon));
             egui::pos2(v.x, v.y)
         };
-
-        // The markers in view, southern ones in front (they're nearer the viewer's eye line).
-        let mut shown: Vec<(&PhotoPoint, egui::Pos2)> = self
-            .picked
-            .iter()
-            .map(|&i| (&self.points[i], screen(&self.points[i])))
-            .filter(|(_, pos)| clip.intersects(markers::frame_rect(p, *pos, true).expand(4.0)))
-            .collect();
-        shown.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
-
-        // The dots, under the markers. A dot right at a marker's pin is left out: the marker
-        // stands for that spot (M4's count badge will say how many), and the pile of dots
-        // would only blot out the pin.
-        {
-            const NEAR: f32 = 10.0;
-            let mut pins: HashMap<(i32, i32), Vec<egui::Pos2>> = HashMap::new();
-            for (_, pos) in &shown {
-                let bin = ((pos.x / NEAR).floor() as i32, (pos.y / NEAR).floor() as i32);
-                pins.entry(bin).or_default().push(*pos);
-            }
-            let under_a_pin = |pos: egui::Pos2| {
-                let (bx, by) = ((pos.x / NEAR).floor() as i32, (pos.y / NEAR).floor() as i32);
-                (-1..=1).any(|dx| {
-                    (-1..=1).any(|dy| {
-                        pins.get(&(bx + dx, by + dy))
-                            .is_some_and(|v| v.iter().any(|q| q.distance(pos) < NEAR))
-                    })
-                })
-            };
+        let dot = |ui: &Ui, pos: egui::Pos2| {
             let painter = ui.painter();
-            let dot_clip = clip.expand(8.0);
-            let mut seen = HashSet::new();
-            for (i, pt) in self.points.iter().enumerate() {
-                if self.is_picked[i] {
-                    continue;
-                }
-                let pos = screen(pt);
-                if !dot_clip.contains(pos) {
-                    continue;
-                }
-                let cell = ((pos.x / DOT_CELL) as i32, (pos.y / DOT_CELL) as i32);
-                if !seen.insert(cell) || under_a_pin(pos) {
-                    continue;
-                }
-                // Two shapes per dot: the dark edge, then the pin colour with its white ring.
-                painter.circle_filled(pos, 6.0, p.map_marker_edge);
-                painter.circle(pos, 4.0, p.map_pin, Stroke::new(2.0, p.map_marker_frame));
-            }
-        }
-
-        // Interaction first (egui hit-tests against last frame's rects, so the order of
-        // registration is the stacking order), then painting with the hover known.
-        let mut hovered = None;
-        for (pt, pos) in &shown {
-            let rect = markers::frame_rect(p, *pos, false);
-            let hit = rect.union(Rect::from_center_size(*pos, egui::vec2(10.0, 12.0)));
-            let r = ui.interact(hit, Id::unique(("photo-marker", pt.id)), Sense::click());
-            let name = match self.names.get(&pt.id) {
-                Some(n) => format!("Photo {n}"),
-                None => {
-                    self.wanted.push(pt.id);
-                    "Photo".to_owned()
-                }
-            };
-            widgets::named(&r, &name, true);
-            if r.hovered() {
-                hovered = Some(pt.id);
-            }
-            if r.clicked() {
-                self.out.clicked = Some(pt.id);
-            }
-        }
+            // Two shapes per dot: the dark edge, then the pin colour with its white ring.
+            painter.circle_filled(pos, 6.0, p.map_marker_edge);
+            painter.circle(pos, 4.0, p.map_pin, Stroke::new(2.0, p.map_marker_frame));
+        };
         if response.clicked() {
             self.out.background_clicked = true;
         }
 
-        let mut last = Vec::new();
-        for (pt, pos) in shown {
-            let (hover, sel) = (hovered == Some(pt.id), self.selected == Some(pt.id));
-            if hover || sel {
-                last.push((pt, pos, hover, sel)); // drawn on top
+        let Some(c) = self.clusters else {
+            let dot_clip = clip.expand(8.0);
+            let mut seen = HashSet::new();
+            for pt in self.points {
+                let pos = screen(pt.lat, pt.lon);
+                let cell = ((pos.x / DOT_CELL) as i32, (pos.y / DOT_CELL) as i32);
+                if dot_clip.contains(pos) && seen.insert(cell) {
+                    dot(ui, pos);
+                }
+            }
+            return;
+        };
+
+        let (level, nodes) = c.level(memory.zoom());
+        self.out.level = Some(level);
+        let pts = c.points();
+        // Cull in world units first (cheap): the visible area plus a marker's size around it.
+        let world = |pos: egui::Pos2| {
+            let g = projector.unproject(egui::vec2(pos.x, pos.y));
+            cluster::mercator(g.y(), g.x())
+        };
+        let view = clip.expand(p.size_marker + 24.0);
+        let (x0, y0) = world(view.left_top());
+        let (x1, y1) = world(view.right_bottom());
+        let mut shown = Vec::new();
+        for (i, n) in nodes.iter().enumerate() {
+            if n.x < x0 || n.x > x1 || n.y < y0 || n.y > y1 {
                 continue;
             }
-            let face = face(self.textures, pt);
-            markers::paint(ui, p, pos, face, false, false);
-        }
-        last.sort_by_key(|(_, _, hover, _)| *hover); // the hovered one topmost
-        for (pt, pos, hover, sel) in last {
-            if hover {
-                self.out.hovered = Some((pt.id, markers::frame_rect(p, pos, true)));
+            let (lat, lon) = n.lat_lon();
+            let pos = screen(lat, lon);
+            if !clip.intersects(markers::frame_rect(p, pos, true).expand(16.0)) {
+                continue;
             }
-            let face = face(self.textures, pt);
-            markers::paint(ui, p, pos, face, hover, sel);
+            let rep = pts[n.rep as usize];
+            if n.count == 1 && rep.thumb == Thumb::Pending {
+                dot(ui, pos);
+                continue;
+            }
+            let reach = if n.count > 1 {
+                let b = n.bounds();
+                [
+                    (b.min_lat, b.min_lon),
+                    (b.min_lat, b.max_lon),
+                    (b.max_lat, b.min_lon),
+                    (b.max_lat, b.max_lon),
+                ]
+                .iter()
+                .map(|&(a, o)| screen(a, o).distance(pos))
+                .fold(0.0, f32::max)
+            } else {
+                0.0
+            };
+            shown.push(Shown {
+                level_index: i,
+                pos,
+                count: n.count,
+                rep,
+                reach,
+            });
+        }
+        // Southern markers in front (they're nearer the viewer's eye line).
+        shown.sort_by(|a, b| a.pos.y.total_cmp(&b.pos.y));
+
+        // Interaction first (egui hit-tests against last frame's rects, so the order of
+        // registration is the stacking order), then painting with the hover known.
+        let mut hovered = None;
+        for m in &shown {
+            let rect = markers::frame_rect(p, m.pos, false);
+            let hit = rect.union(Rect::from_center_size(m.pos, egui::vec2(10.0, 12.0)));
+            let key = if m.count > 1 {
+                (
+                    "photo-group",
+                    level as i64 * 1_000_000_000 + m.level_index as i64,
+                )
+            } else {
+                ("photo-marker", m.rep.id)
+            };
+            let r = ui.interact(hit, Id::unique(key), Sense::click());
+            let name = if m.count > 1 {
+                format!("Group of {} photos", m.count)
+            } else {
+                match self.names.get(&m.rep.id) {
+                    Some(n) => format!("Photo {n}"),
+                    None => {
+                        self.wanted.push(m.rep.id);
+                        "Photo".to_owned()
+                    }
+                }
+            };
+            widgets::named(&r, &name, true);
+            if r.hovered() {
+                hovered = Some(m.level_index);
+            }
+            if r.clicked() {
+                self.out.clicked = Some(if m.count > 1 {
+                    Clicked::Group(level, m.level_index)
+                } else {
+                    Clicked::Photo(m.rep.id)
+                });
+            }
+        }
+
+        let is_selected = |m: &Shown| {
+            self.selected == Some(m.rep.id) || self.strip.is_some_and(|s| s.contains(m.rep.id))
+        };
+        let mut last = Vec::new();
+        for m in &shown {
+            let (hover, sel) = (hovered == Some(m.level_index), is_selected(m));
+            if sel && self.strip.is_some() {
+                self.out.strip_tip = Some(egui::pos2(
+                    m.pos.x,
+                    markers::frame_rect(p, m.pos, false).top() - 16.0,
+                ));
+            }
+            if hover || sel {
+                last.push((m, hover, sel)); // drawn on top
+                continue;
+            }
+            let face = face(self.textures, &m.rep);
+            markers::paint(ui, p, m.pos, face, m.count, false, false);
+        }
+        last.sort_by_key(|(_, hover, _)| *hover); // the hovered one topmost
+        for (m, hover, sel) in last {
+            if hover && m.count > 1 {
+                // The halo: the area the group covers.
+                ui.painter()
+                    .circle_filled(m.pos, m.reach.clamp(24.0, 600.0), p.map_cluster_halo);
+            }
+            if hover && m.count == 1 {
+                self.out.hovered = Some((m.rep.id, markers::frame_rect(p, m.pos, true)));
+            }
+            let face = face(self.textures, &m.rep);
+            markers::paint(ui, p, m.pos, face, m.count, hover, sel);
         }
     }
 }
@@ -561,6 +723,57 @@ fn face<'t>(textures: &'t mut Textures, pt: &PhotoPoint) -> Face<'t> {
     match textures.get(pt.id) {
         Look::Ready(t) => Face::Image(t),
         Look::Loading | Look::Failed => Face::Placeholder,
+    }
+}
+
+/// Builds the groups off the UI thread. Requests are coalesced (only the newest snapshot is
+/// built); when only thumbnail states or dates changed, the previous groups are kept and just
+/// their representatives chosen again.
+struct Builder {
+    requests: Sender<Vec<PhotoPoint>>,
+    results: Receiver<Arc<Clusters>>,
+}
+
+impl Builder {
+    fn new(ctx: egui::Context) -> Self {
+        let (requests, rx) = mpsc::channel::<Vec<PhotoPoint>>();
+        let (tx, results) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("mapcraft-groups".into())
+            .spawn(move || {
+                let mut last: Option<Arc<Clusters>> = None;
+                while let Ok(mut points) = rx.recv() {
+                    while let Ok(newer) = rx.try_recv() {
+                        points = newer;
+                    }
+                    let c = Arc::new(match &last {
+                        Some(l) if l.same_positions(&points) => l.with_points(points),
+                        _ => {
+                            let t = std::time::Instant::now();
+                            let n = points.len();
+                            let c = Clusters::build(points);
+                            tracing::debug!("grouped {n} photos in {:?}", t.elapsed());
+                            c
+                        }
+                    });
+                    last = Some(c.clone());
+                    if tx.send(c).is_err() {
+                        break;
+                    }
+                    ctx.request_repaint();
+                }
+            })
+            .expect("spawn the group builder");
+        Self { requests, results }
+    }
+
+    fn request(&self, points: Vec<PhotoPoint>) {
+        let _ = self.requests.send(points);
+    }
+
+    /// The newest finished build since last asked, if any.
+    fn latest(&self) -> Option<Arc<Clusters>> {
+        self.results.try_iter().last()
     }
 }
 

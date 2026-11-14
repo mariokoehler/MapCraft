@@ -38,6 +38,7 @@ icons! {
     Scan => "scan",
     Layers => "layers",
     ChevronRight => "chevron-right",
+    ChevronLeft => "chevron-left",
     ChevronDown => "chevron-down",
     Check => "check",
     X => "x",

@@ -95,6 +95,8 @@ pub struct PhotoPoint {
     pub lat: f64,
     pub lon: f64,
     pub thumb: Thumb,
+    /// The capture time as a sortable number, `yyyymmddhhmmss` (0 when undated).
+    pub taken: i64,
 }
 
 /// One photo as the hover card and the detail panel show it.
@@ -383,7 +385,10 @@ impl Library {
     /// Positions of every photo that has one and isn't missing.
     pub fn positions(&self) -> Result<Vec<PhotoPoint>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, lat, lon, thumb_state FROM photo WHERE lat IS NOT NULL AND state = 'ok'",
+            "SELECT id, lat, lon, thumb_state,
+                        coalesce(CAST(replace(replace(replace(substr(taken_at, 1, 19),
+                            '-', ''), 'T', ''), ':', '') AS INTEGER), 0)
+                 FROM photo WHERE lat IS NOT NULL AND state = 'ok'",
         )?;
         stmt.query_map([], |r| {
             Ok(PhotoPoint {
@@ -395,6 +400,7 @@ impl Library {
                     THUMB_FAILED => Thumb::Failed,
                     _ => Thumb::Pending,
                 },
+                taken: r.get(4)?,
             })
         })?
         .collect()

@@ -1,9 +1,7 @@
-//! Photo markers on the map (design.md §2.3, M3): a 64 px thumbnail in a white frame with a
-//! pointer and a pin at the photo's position (design system, "Photo marker").
-//!
-//! Until M4 groups photos, one photo per *cell* of a fixed world grid shows as a thumbnail and
-//! the others in that cell stay dots (design.md §2.3, unconfirmed). The grid is anchored to the
-//! world at the whole-number zoom, not to the screen, so panning never swaps which photo shows.
+//! Photo markers on the map (design.md §2.3): a 64 px thumbnail in a white frame with a
+//! pointer and a pin at the photo's position, and for a group the same with stacked frames
+//! behind and a count badge (design system, "Photo marker" and "Group marker"). Which photos and
+//! groups show is decided by `cluster`.
 //!
 //! The thumbnails are read and decoded on a background thread (`Textures`); the UI thread only
 //! uploads finished images, for the markers it draws, and keeps a bounded number of them.
@@ -14,53 +12,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use egui::{Color32, ColorImage, Pos2, Rect, Shape, Stroke, TextureHandle, TextureOptions, Ui};
 
-use crate::library::{PhotoPoint, Thumb};
 use crate::theme::Palette;
 use crate::thumbs::{self, THUMB};
 use crate::ui::icons::Icon;
 
-/// The world grid's cell edge in screen pixels at the whole-number zoom: a 68 px marker plus
-/// room to see the map between neighbours.
-pub const CELL: f64 = 80.0;
-
 /// The most marker textures kept on the GPU (a 256 px thumbnail is about 0.2 MB). A screen holds
 /// about 200 cells, so this covers a screen and some panning back and forth.
 const TEXTURE_CAP: usize = 400;
-
-/// The position of `lat`/`lon` in the world's pixels at `zoom` (Web Mercator, 256 px tiles), the
-/// same space the map's tiles are cut from.
-pub fn world_px(lat: f64, lon: f64, zoom: i32) -> (f64, f64) {
-    let size = 256.0 * 2f64.powi(zoom);
-    let x = (lon + 180.0) / 360.0 * size;
-    let lat = lat.clamp(-85.051_128_78, 85.051_128_78).to_radians();
-    let y = (1.0 - (lat.tan() + 1.0 / lat.cos()).ln() / std::f64::consts::PI) / 2.0 * size;
-    (x, y)
-}
-
-/// Which photos show as markers at `zoom`: per grid cell, the photo with the lowest id among
-/// those with a thumbnail, else the lowest id among the placeholders. Returns indices into
-/// `points`; photos still waiting for their thumbnail never take a cell (they stay dots).
-pub fn pick(points: &[PhotoPoint], zoom: i32) -> Vec<usize> {
-    let mut best: HashMap<(i64, i64), usize> = HashMap::new();
-    let rank = |p: &PhotoPoint| (p.thumb != Thumb::Ok, p.id);
-    for (i, p) in points.iter().enumerate() {
-        if p.thumb == Thumb::Pending {
-            continue;
-        }
-        let (x, y) = world_px(p.lat, p.lon, zoom);
-        let cell = ((x / CELL).floor() as i64, (y / CELL).floor() as i64);
-        best.entry(cell)
-            .and_modify(|b| {
-                if rank(p) < rank(&points[*b]) {
-                    *b = i;
-                }
-            })
-            .or_insert(i);
-    }
-    let mut out: Vec<usize> = best.into_values().collect();
-    out.sort_unstable();
-    out
-}
 
 /// A marker texture, as `Textures::get` finds it.
 pub enum Look<'a> {
@@ -202,11 +160,43 @@ pub fn frame_rect(p: &Palette, pos: Pos2, hovered: bool) -> Rect {
     }
 }
 
-/// Paints one marker (design system "Photo marker": frame, edge, shadow, pointer, pin).
-pub fn paint(ui: &Ui, p: &Palette, pos: Pos2, face: Face<'_>, hovered: bool, selected: bool) {
+/// A group's count as its badge shows it: `214`, `1.2k`, `12k`, `1.2M` (rounded down, so it
+/// never claims more photos than there are).
+pub fn count_text(n: u32) -> String {
+    match n {
+        0..1_000 => n.to_string(),
+        1_000..10_000 => format!("{}.{}k", n / 1_000, n / 100 % 10),
+        10_000..1_000_000 => format!("{}k", n / 1_000),
+        _ => format!("{}.{}M", n / 1_000_000, n / 100_000 % 10),
+    }
+}
+
+/// Paints one marker (design system "Photo marker": frame, edge, shadow, pointer, pin). With
+/// `count` > 1 it's a group marker: two frames stacked behind it and a count badge.
+pub fn paint(
+    ui: &Ui,
+    p: &Palette,
+    pos: Pos2,
+    face: Face<'_>,
+    count: u32,
+    hovered: bool,
+    selected: bool,
+) {
     let painter = ui.painter();
     let rect = frame_rect(p, pos, hovered);
     let radius = p.radius_sm;
+    if count > 1 {
+        // The stack: frames offset up and right, the farther one first.
+        for off in [6.0, 3.0] {
+            let r = rect.translate(egui::vec2(off, -off));
+            painter.rect_filled(
+                r.expand(p.stroke_marker_edge),
+                radius + 1,
+                p.map_marker_edge,
+            );
+            painter.rect_filled(r, radius, p.map_marker_frame);
+        }
+    }
     let (frame, stroke) = if selected {
         (p.map_marker_frame_selected, p.stroke_marker_selected)
     } else {
@@ -267,56 +257,41 @@ pub fn paint(ui: &Ui, p: &Palette, pos: Pos2, face: Face<'_>, hovered: bool, sel
     // The pin: the exact position, a pin-coloured dot in a 1 px frame ring.
     painter.circle_filled(pos, 3.5, p.map_marker_frame);
     painter.circle_filled(pos, 2.5, p.map_pin);
+
+    if count > 1 {
+        // The badge: top right, 9 px above the frame and 12 px past it; a frame ring and an
+        // edge ring around it.
+        let text = painter.layout_no_wrap(
+            count_text(count),
+            egui::FontId::new(11.0, egui::FontFamily::Name(crate::theme::SEMIBOLD.into())),
+            p.map_badge_text,
+        );
+        let h = p.size_badge;
+        let w = (text.size().x + 10.0).max(h);
+        let badge = Rect::from_min_size(
+            egui::pos2(rect.right() + 12.0 - w, rect.top() - 9.0),
+            egui::vec2(w, h),
+        );
+        let round = (h / 2.0) as u8;
+        painter.rect_filled(badge.expand(2.5), round + 3, p.map_marker_edge);
+        painter.rect_filled(badge.expand(1.5), round + 2, p.map_marker_frame);
+        painter.rect_filled(badge, round, p.map_badge_bg);
+        painter.galley(badge.center() - text.size() / 2.0, text, p.map_badge_text);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn pt(id: i64, lat: f64, lon: f64, thumb: Thumb) -> PhotoPoint {
-        PhotoPoint {
-            id,
-            lat,
-            lon,
-            thumb,
-        }
-    }
-
     #[test]
-    fn world_pixels_match_the_tile_grid() {
-        // Zoom 0 is one 256 px tile: the origin at the top left, Greenwich and the equator
-        // in the middle.
-        let (x, y) = world_px(0.0, 0.0, 0);
-        assert!((x - 128.0).abs() < 1e-9 && (y - 128.0).abs() < 1e-9);
-        let (x, y) = world_px(85.051_128_78, -180.0, 3);
-        assert!(x.abs() < 1e-6 && y.abs() < 1e-6);
-        // Each zoom step doubles the pixels.
-        let (a, _) = world_px(48.2, 16.37, 10);
-        let (b, _) = world_px(48.2, 16.37, 11);
-        assert!((b - 2.0 * a).abs() < 1e-6);
-    }
-
-    #[test]
-    fn one_photo_per_cell_shows_and_the_choice_is_stable() {
-        let points = vec![
-            pt(5, 64.1466, -21.9426, Thumb::Ok),
-            pt(3, 64.1467, -21.9427, Thumb::Failed), // same cell, a placeholder
-            pt(9, 64.1468, -21.9425, Thumb::Ok),     // same cell, higher id
-            pt(1, 64.1469, -21.9424, Thumb::Pending), // waiting: never a marker
-            pt(7, 38.7223, -9.1393, Thumb::Failed),  // alone in its cell
-        ];
-        let shown: Vec<i64> = pick(&points, 12).iter().map(|&i| points[i].id).collect();
-        assert_eq!(
-            shown,
-            vec![5, 7],
-            "thumbnails beat placeholders, then the lowest id"
-        );
-        // The order of the points doesn't matter.
-        let mut rev = points.clone();
-        rev.reverse();
-        let shown: Vec<i64> = pick(&rev, 12).iter().map(|&i| rev[i].id).collect();
-        assert_eq!(shown.len(), 2);
-        assert!(shown.contains(&5) && shown.contains(&7));
+    fn badge_counts_round_down() {
+        assert_eq!(count_text(2), "2");
+        assert_eq!(count_text(999), "999");
+        assert_eq!(count_text(1_250), "1.2k");
+        assert_eq!(count_text(9_999), "9.9k");
+        assert_eq!(count_text(12_800), "12k");
+        assert_eq!(count_text(1_250_000), "1.2M");
     }
 
     #[test]

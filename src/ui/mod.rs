@@ -7,6 +7,7 @@ pub mod icons;
 pub mod map_view;
 pub mod markers;
 pub mod sources_dialog;
+pub mod strip;
 pub mod toasts;
 pub mod top_bar;
 pub mod widgets;

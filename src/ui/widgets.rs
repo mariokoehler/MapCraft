@@ -175,6 +175,18 @@ pub fn ghost(ui: &mut Ui, p: &Palette, icon: Icon, hint: &str, enabled: bool) ->
     }
 }
 
+/// A ghost button in `ink` (for dark grounds such as the strip's scrim).
+pub fn ghost_on(ui: &mut Ui, p: &Palette, icon: Icon, hint: &str, ink: Color32) -> Response {
+    let size = ui.spacing().interact_size.y.min(20.0);
+    let r = ui.add(
+        Button::image(icon.image(p.size_icon_sm, ink))
+            .frame_when_inactive(false)
+            .min_size(Vec2::splat(size)),
+    );
+    named(&r, hint, true);
+    r.on_hover_text(hint)
+}
+
 /// Gives an icon-only button its accessible name (a screen reader's label, like `aria-label`;
 /// design system: "aria-label on icon-only buttons"). The text before a colon is the name:
 /// "Zoom to all photos: no photos yet" → "Zoom to all photos".

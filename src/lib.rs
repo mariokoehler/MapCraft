@@ -2,6 +2,7 @@
 //! and the dev probes in `examples/` all use it.
 
 pub mod app;
+pub mod cluster;
 pub mod demo;
 pub mod import;
 pub mod jobs;

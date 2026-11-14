@@ -597,7 +597,7 @@ impl MapCraftApp {
         let dialog_open =
             self.folder_dialog.is_some() || self.sources_dialog.is_some() || self.narrow.is_some();
 
-        // Keys: Ctrl+I shows or hides the panel, Esc clears the selection.
+        // Keys: Ctrl+I shows or hides the panel, Esc closes the strip or clears the selection.
         if !dialog_open && !ctx.egui_wants_keyboard_input() {
             let (ctrl_i, esc) = ctx.input_mut(|i| {
                 (
@@ -608,7 +608,8 @@ impl MapCraftApp {
             if ctrl_i && self.detail.is_some() {
                 self.panel_open = !self.panel_open;
             }
-            if esc && self.detail.is_some() {
+            // Esc closes the strip first, then clears the selection.
+            if esc && !self.map.close_strip() && self.detail.is_some() {
                 self.select(None);
             }
         }
@@ -916,6 +917,94 @@ mod tests {
             h.state().as_ref().unwrap().thumbs.is_none()
                 && !thumbs::path(dir.path(), id, thumbs::PREVIEW).exists()
         });
+    }
+
+    /// Waits until thumbnails are made and the groups built for them.
+    fn settled(h: &mut Harness<'static, Option<MapCraftApp>>) {
+        step_until(h, "thumbnails and groups", |h| {
+            let app = h.state().as_ref().unwrap();
+            app.thumbs.is_none() && app.map.grouped()
+        });
+    }
+
+    /// The markers in view: (photos, groups).
+    fn markers(h: &Harness<'static, Option<MapCraftApp>>) -> (usize, usize) {
+        (
+            h.query_all_by_label_contains("Photo").count(),
+            h.query_all_by_label_contains("Group of").count(),
+        )
+    }
+
+    #[test]
+    fn clicking_a_group_zooms_in_until_it_falls_apart() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 40); // five photos around each of seven cities
+        let mut h = harness(dir.path());
+        settled(&mut h);
+        h.run_steps(2);
+        assert_eq!(markers(&h), (0, 7), "a group per city at continent zoom");
+        h.get_all_by_label("Group of 5 photos")
+            .next()
+            .unwrap()
+            .click();
+        step_until(&mut h, "the zoom", |h| {
+            let (photos, groups) = markers(h);
+            photos + groups >= 2
+        });
+        assert_eq!(
+            h.query_all_by_label("Group of 5 photos").count(),
+            0,
+            "the group fell apart (and the other cities are out of view)"
+        );
+    }
+
+    #[test]
+    fn a_group_at_one_spot_opens_its_strip() {
+        let dir = tempfile::tempdir().unwrap();
+        let photos = dir.path().join("photos");
+        std::fs::create_dir_all(&photos).unwrap();
+        for (i, date) in [
+            "2023:05:19 21:06:14",
+            "2023:05:19 21:07:00",
+            "2023:05:20 08:00:00",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let jpeg = crate::demo::photo_with_gps(53.5436, 9.9893, date, i as f64 / 3.0);
+            std::fs::write(photos.join(format!("SPOT_{i}.jpg")), jpeg).unwrap();
+        }
+        {
+            let mut lib = Library::open(&dir.path().join("library.sqlite")).unwrap();
+            let src = lib
+                .add_source(&photos, None, "Spot", &Scope::all())
+                .unwrap();
+            crate::import::run(&mut lib, src, &Default::default(), 2, |_| {}).unwrap();
+        }
+        let mut h = harness(dir.path());
+        settled(&mut h);
+        h.get_by_label("Group of 3 photos").click();
+        step_until(&mut h, "the strip", |h| {
+            h.query_by_label("3 photos at this spot").is_some()
+                && h.query_by_label("Photo SPOT_1.jpg").is_some()
+        });
+        h.get_by_label("19 May – 20 May 2023");
+        h.get_by_label("Photo SPOT_1.jpg").click();
+        step_until(&mut h, "the panel", |h| {
+            h.query_by_label("Photo details").is_some()
+        });
+        assert!(
+            h.query_by_label("3 photos at this spot").is_some(),
+            "the strip stays"
+        );
+        // Esc closes the strip first, then clears the selection.
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(h.query_by_label("3 photos at this spot").is_none());
+        assert!(h.query_by_label("Photo details").is_some());
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(h.query_by_label("Photo details").is_none());
     }
 
     #[test]

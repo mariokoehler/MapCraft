@@ -91,6 +91,13 @@ pub struct Palette {
     pub size_panel: f32,
     pub panel_margin: f32,
     pub interact_height: f32,
+    // Added for M4's groups and the strip.
+    pub map_cluster_halo: Color32,
+    pub map_selection_outline: Color32,
+    pub map_scrim_dark: Color32,
+    pub map_scrim_dark_text: Color32,
+    pub size_strip_thumb: f32,
+    pub stroke_focus: f32,
 }
 
 impl Palette {
@@ -160,6 +167,12 @@ impl Palette {
             size_panel: t.px("size-panel"),
             panel_margin: t.px("panel-margin"),
             interact_height: t.px("interact-height"),
+            map_cluster_halo: t.color("map-cluster-halo"),
+            map_selection_outline: t.color("map-selection-outline"),
+            map_scrim_dark: t.color("map-scrim-dark"),
+            map_scrim_dark_text: t.color("map-scrim-dark-text"),
+            size_strip_thumb: t.px("size-strip-thumb"),
+            stroke_focus: t.px("stroke-focus"),
         }
     }
 }
