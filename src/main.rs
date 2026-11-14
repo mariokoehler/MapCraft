@@ -28,7 +28,8 @@ fn main() -> eframe::Result {
             .and_then(|i| args.get(i + 1))
     };
     // `--open add-folder[=<folder>]`, `--open sources`, `--open details`, `--open strip`,
-    // `--open filters[=<year>]` or `--open search=<text>`: start with that dialog, the first
+    // `--open filters[=<year>]`, `--open settings` or `--open search=<text>`: start with that
+    // dialog, the first
     // photo selected, the first strip open, a year's photos only, or the text searched
     // (screenshots).
     let open = match flag("--open").map(String::as_str) {
@@ -36,6 +37,7 @@ fn main() -> eframe::Result {
         Some("details") => Some(app::StartDialog::Details),
         Some("strip") => Some(app::StartDialog::Strip),
         Some("filters") => Some(app::StartDialog::Filters(None)),
+        Some("settings") => Some(app::StartDialog::Settings),
         Some(s) if s.starts_with("filters=") => {
             Some(app::StartDialog::Filters(s[8..].parse().ok()))
         }
@@ -89,6 +91,8 @@ fn main() -> eframe::Result {
                 perf,
                 launch: true,
                 network: true,
+                settings,
+                settings_file: Some(locations.settings_file),
             };
             Ok(Box::new(app::MapCraftApp::new(&cc.egui_ctx, config)))
         }),

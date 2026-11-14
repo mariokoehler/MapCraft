@@ -177,6 +177,16 @@ pub enum PanelAction {
     Close,
     ShowInExplorer,
     Open,
+    PhotoCraft,
+    LightCraft,
+}
+
+/// Whether the companion buttons work for this photo: `None` if so, else why not (their hover
+/// text; canvas `MapCraft — Companion apps`, artboard 2).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompanionButtons {
+    pub photocraft: Option<String>,
+    pub lightcraft: Option<String>,
 }
 
 /// What the panel shows in its preview box.
@@ -201,6 +211,7 @@ impl DetailPanel {
         p: &Palette,
         d: &PhotoDetail,
         preview: PreviewFace<'_>,
+        apps: &CompanionButtons,
     ) -> Option<PanelAction> {
         let mut action = None;
         // Header: title and close.
@@ -261,10 +272,34 @@ impl DetailPanel {
                             {
                                 action = Some(PanelAction::Open);
                             }
-                            b(ui, Icon::Brush, "PhotoCraft", false)
-                                .on_disabled_hover_text("Edit in PhotoCraft: not available yet");
-                            b(ui, Icon::Sliders, "LightCraft", false)
-                                .on_disabled_hover_text("Develop in LightCraft: not available yet");
+                            for (icon, text, off, hint, a) in [
+                                (
+                                    Icon::Brush,
+                                    "PhotoCraft",
+                                    &apps.photocraft,
+                                    "Edit in PhotoCraft",
+                                    PanelAction::PhotoCraft,
+                                ),
+                                (
+                                    Icon::Sliders,
+                                    "LightCraft",
+                                    &apps.lightcraft,
+                                    "Show in LightCraft",
+                                    PanelAction::LightCraft,
+                                ),
+                            ] {
+                                let r = b(ui, icon, text, off.is_none());
+                                match off {
+                                    None => {
+                                        if r.on_hover_text(hint).clicked() {
+                                            action = Some(a);
+                                        }
+                                    }
+                                    Some(why) => {
+                                        r.on_disabled_hover_text(why.as_str());
+                                    }
+                                }
+                            }
                         });
                     });
                 self.sections(ui, p, d);

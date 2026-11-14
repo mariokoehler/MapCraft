@@ -13,6 +13,9 @@ use crate::ui::widgets::{self, Tone, thousands};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ToastAction {
     ZoomTo(Bounds),
+    /// Show the photo in LightCraft again.
+    RetryLightCraft,
+    OpenSettings,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +34,14 @@ pub struct Toasts {
 impl Toasts {
     pub fn replace(&mut self, toasts: Vec<Toast>) {
         self.list = toasts;
+    }
+
+    pub fn remove_titled(&mut self, title: &str) {
+        self.list.retain(|t| t.title != title);
+    }
+
+    pub fn titles(&self) -> Vec<&str> {
+        self.list.iter().map(|t| t.title.as_str()).collect()
     }
 
     /// Draws the toasts bottom-left of the map, above the scale bar.
@@ -195,6 +206,16 @@ pub fn for_failure(message: &str) -> Toast {
         title: "Import failed".into(),
         text: format!("{message}. Nothing was lost; try again when the folder is reachable."),
         action: None,
+    }
+}
+
+/// A toast that isn't about an import: an app that couldn't start, LightCraft's answers.
+pub fn note(tone: Tone, title: &str, text: &str, action: Option<(&str, ToastAction)>) -> Toast {
+    Toast {
+        tone,
+        title: title.to_owned(),
+        text: text.to_owned(),
+        action: action.map(|(l, a)| (l.to_owned(), a)),
     }
 }
 

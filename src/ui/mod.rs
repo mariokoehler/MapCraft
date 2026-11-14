@@ -8,6 +8,7 @@ pub mod icons;
 pub mod map_view;
 pub mod markers;
 pub mod search;
+pub mod settings_dialog;
 pub mod sources_dialog;
 pub mod strip;
 pub mod toasts;

@@ -12,22 +12,25 @@ use std::time::{Duration, Instant};
 use egui::{Frame, Panel, RichText, Stroke};
 use tracing::{error, info};
 
+use crate::companions::{self, Companion, Event as LcEvent, Failure};
 use crate::filter::{Facets, Filter};
 use crate::import::scope::Scope;
 use crate::jobs::{ImportJob, JobEvent, ThumbEvent, ThumbJob};
 use crate::launch::{self, Launch};
 use crate::library::{Counts, Library, PhotoDetail, Source};
 use crate::provider::Provider;
+use crate::settings::Settings;
 use crate::theme::{self, Palette, ThemeKind, Tokens};
-use crate::ui::details::{self, DetailPanel, PanelAction, PreviewFace, Previews};
+use crate::ui::details::{self, CompanionButtons, DetailPanel, PanelAction, PreviewFace, Previews};
 use crate::ui::filters::{self, FilterPanel, FiltersAction};
 use crate::ui::folder_dialog::{FolderAction, FolderDialog};
 use crate::ui::map_view::{MapAction, MapView};
 use crate::ui::search::{SearchAction, SearchBox};
+use crate::ui::settings_dialog::{SettingsAction, SettingsDialog};
 use crate::ui::sources_dialog::{SourcesAction, SourcesDialog};
-use crate::ui::toasts::{self, ToastAction, Toasts};
+use crate::ui::toasts::{self, Toast, ToastAction, Toasts};
 use crate::ui::top_bar::{self, BarFilters, Running, Task, TopBarAction};
-use crate::ui::widgets::{self, thousands};
+use crate::ui::widgets::{self, Tone, thousands};
 
 /// Parallel metadata readers per import (design.md §3.4, user-confirmed).
 const READERS: usize = 4;
@@ -35,6 +38,19 @@ const READERS: usize = 4;
 const THUMB_WORKERS: usize = 4;
 /// How often the map's dots refresh while an import writes.
 const RELOAD_EVERY: Duration = Duration::from_secs(1);
+
+/// The toast while LightCraft starts; it gives way to the outcome.
+const STARTING: &str = "Opening in LightCraft…";
+
+/// The toast for a photo whose source can't be reached (a sleeping or unplugged drive).
+fn unreachable(d: &PhotoDetail) -> Toast {
+    toasts::note(
+        Tone::Error,
+        &format!("Can't reach “{}” right now", d.source_label),
+        "Its drive or share isn't answering. Try again when it's reachable.",
+        None,
+    )
+}
 
 /// A dialog to open at start (dev flag `--open`), for comparing screens with the mockups.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +66,7 @@ pub enum StartDialog {
     Search(String),
     /// The filter panel open, or (with a year) that year's photos shown, the panel closed.
     Filters(Option<u32>),
+    Settings,
 }
 
 pub struct Config {
@@ -63,6 +80,9 @@ pub struct Config {
     pub launch: bool,
     /// Downloads other than tiles may run when the user asks (the place names; off in tests).
     pub network: bool,
+    /// The settings as loaded, and where to save them when they change (`None`: not saved).
+    pub settings: Settings,
+    pub settings_file: Option<PathBuf>,
 }
 
 /// A change to the library that waits until the thumbnail job has stopped. The job writes
@@ -113,7 +133,22 @@ pub struct MapCraftApp {
     launch: bool,
     /// What Show in Explorer and Open asked for, when `launch` is off (for the tests).
     launched: Vec<(Launch, i64)>,
-    launch_errors: (Sender<String>, Receiver<String>),
+    /// What the companion buttons asked for, when `launch` is off: app, photo, add to LightCraft.
+    companion_calls: Vec<(Companion, i64, bool)>,
+    launch_errors: (Sender<Toast>, Receiver<Toast>),
+    settings: Settings,
+    settings_file: Option<PathBuf>,
+    settings_dialog: Option<SettingsDialog>,
+    /// Whether each companion app's file is there (PhotoCraft, LightCraft).
+    found: [bool; 2],
+    /// LightCraft's answers, from the thread that talks to it.
+    lightcraft: (Sender<LcEvent>, Receiver<LcEvent>),
+    /// A request to LightCraft is running, for this photo.
+    lc_busy: bool,
+    lc_photo: Option<PhotoDetail>,
+    /// The photo LightCraft doesn't have, while asking whether to add it; and whether
+    /// LightCraft writes XMP sidecars.
+    lc_add: Option<(PhotoDetail, bool)>,
     search: SearchBox,
     /// The filters (session only, design.md §2.3) and what the panel offers.
     filter: Filter,
@@ -172,7 +207,16 @@ impl MapCraftApp {
             hover: None,
             launch: config.launch,
             launched: Vec::new(),
+            companion_calls: Vec::new(),
             launch_errors: mpsc::channel(),
+            found: [false; 2],
+            settings: config.settings,
+            settings_file: config.settings_file,
+            settings_dialog: None,
+            lightcraft: mpsc::channel(),
+            lc_busy: false,
+            lc_photo: None,
+            lc_add: None,
             search: SearchBox::new(
                 config.data_folder.join("library.sqlite"),
                 &config.data_folder,
@@ -185,6 +229,7 @@ impl MapCraftApp {
             shown: 0,
         };
         app.refresh();
+        app.find_companions();
         // Thumbnails left over from the last session (or never made) are made now.
         if let Some(lib) = &app.lib
             && lib.thumb_counts().is_ok_and(|(_, pending)| pending > 0)
@@ -217,6 +262,7 @@ impl MapCraftApp {
                 app.filter.dates = Some((year * 100 + 1, year * 100 + 12));
                 app.filter_changed();
             }
+            Some(StartDialog::Settings) => app.open_settings(ctx),
             None => {}
         }
         app
@@ -302,15 +348,313 @@ impl MapCraftApp {
         let (errors, ctx) = (self.launch_errors.0.clone(), self.ctx.clone());
         std::thread::spawn(move || {
             let result = match crate::import::reachable_root(&d.root, d.unc.as_deref()) {
-                Some(root) => launch::spawn(kind, &details::original_path(&root, &d))
-                    .map_err(|e| format!("Can't start Explorer ({e})")),
-                None => Err(format!("Can't reach “{}” right now", d.source_label)),
+                Some(root) => {
+                    launch::spawn(kind, &details::original_path(&root, &d)).map_err(|e| {
+                        toasts::note(
+                            Tone::Error,
+                            "Explorer couldn't be started",
+                            &e.to_string(),
+                            None,
+                        )
+                    })
+                }
+                None => Err(unreachable(&d)),
             };
-            if let Err(msg) = result {
-                let _ = errors.send(msg);
+            if let Err(t) = result {
+                let _ = errors.send(t);
                 ctx.request_repaint();
             }
         });
+    }
+
+    /// Whether the companion apps are where the settings say.
+    fn find_companions(&mut self) {
+        let c = &self.settings.companions;
+        self.found = [c.photocraft.is_file(), c.lightcraft.is_file()];
+    }
+
+    fn save_settings(&self) {
+        if let Some(f) = &self.settings_file
+            && let Err(e) = self.settings.save_to(f)
+        {
+            error!("can't save the settings: {e}");
+        }
+    }
+
+    /// Whether the companion buttons work for `d`, and why not (canvas artboard 2).
+    fn companion_buttons(&self, d: &PhotoDetail) -> CompanionButtons {
+        let missing =
+            |app: Companion| format!("{} wasn't found. Set where it is in Settings.", app.name());
+        let photocraft = if !self.found[0] {
+            Some(missing(Companion::PhotoCraft))
+        } else if !companions::photocraft_opens(&d.original_name) {
+            Some("PhotoCraft can't open camera RAW files".to_owned())
+        } else {
+            None
+        };
+        let lightcraft = if !self.found[1] {
+            Some(missing(Companion::LightCraft))
+        } else if self.lc_busy {
+            Some("Opening in LightCraft…".to_owned())
+        } else {
+            None
+        };
+        CompanionButtons {
+            photocraft,
+            lightcraft,
+        }
+    }
+
+    /// Opens the selected photo in PhotoCraft, from a background thread (the NAS may sleep).
+    fn open_in_photocraft(&mut self) {
+        let Some(d) = self.detail.clone() else { return };
+        if !self.launch {
+            self.companion_calls
+                .push((Companion::PhotoCraft, d.id, false));
+            return;
+        }
+        let app = self.settings.companions.photocraft.clone();
+        let (errors, ctx) = (self.launch_errors.0.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let result = match crate::import::reachable_root(&d.root, d.unc.as_deref()) {
+                Some(root) => {
+                    companions::open_in_photocraft(&app, &details::original_path(&root, &d))
+                        .map_err(|e| {
+                            error!("can't start PhotoCraft: {e}");
+                            toasts::note(
+                                Tone::Error,
+                                "PhotoCraft couldn't be started",
+                                "Check where it is in Settings.",
+                                Some(("Settings…", ToastAction::OpenSettings)),
+                            )
+                        })
+                }
+                None => Err(unreachable(&d)),
+            };
+            if let Err(t) = result {
+                let _ = errors.send(t);
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    /// Shows `d` (default: the selected photo) in LightCraft; `add`: add it to LightCraft's
+    /// library first, which the user agreed to.
+    fn show_in_lightcraft(&mut self, d: Option<PhotoDetail>, add: bool) {
+        let Some(d) = d.or_else(|| self.detail.clone()) else {
+            return;
+        };
+        if self.lc_busy {
+            return;
+        }
+        if !self.launch {
+            self.companion_calls
+                .push((Companion::LightCraft, d.id, add));
+            return;
+        }
+        self.lc_busy = true;
+        self.lc_photo = Some(d.clone());
+        let mut req = companions::Request {
+            app: self.settings.companions.lightcraft.clone(),
+            port: self.settings.companions.lightcraft_port,
+            file: PathBuf::new(),
+            add,
+            front: true,
+        };
+        let (tx, ctx) = (self.lightcraft.0.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let send = |e| {
+                let _ = tx.send(e);
+                ctx.request_repaint();
+            };
+            match crate::import::reachable_root(&d.root, d.unc.as_deref()) {
+                Some(root) => {
+                    req.file = details::original_path(&root, &d);
+                    companions::show_in_lightcraft(&req, send);
+                }
+                None => send(LcEvent::Failed(Failure::Refused(format!(
+                    "Can't reach “{}” right now.",
+                    d.source_label
+                )))),
+            }
+        });
+    }
+
+    /// LightCraft's answers: the toasts and the add dialog (canvas artboards 3 and 4).
+    fn poll_lightcraft(&mut self) {
+        while let Ok(e) = self.lightcraft.1.try_recv() {
+            self.lightcraft_event(e);
+        }
+    }
+
+    fn lightcraft_event(&mut self, e: LcEvent) {
+        let retry = Some(("Try again", ToastAction::RetryLightCraft));
+        let toast = match e {
+            LcEvent::Port(port) => {
+                self.settings.companions.lightcraft_port = Some(port);
+                self.save_settings();
+                return;
+            }
+            LcEvent::Starting => Some(toasts::note(
+                Tone::Info,
+                STARTING,
+                "Starting LightCraft. It opens the library you used last.",
+                None,
+            )),
+            LcEvent::Shown { front } => {
+                self.lc_busy = false;
+                (!front).then(|| {
+                    let name = self.lc_photo.as_ref().map_or("", |d| &d.original_name);
+                    toasts::note(
+                        Tone::Success,
+                        "Shown in LightCraft",
+                        &format!("{name} is open in LightCraft's Detail view."),
+                        None,
+                    )
+                })
+            }
+            LcEvent::NotInLibrary { sidecars } => {
+                self.lc_busy = false;
+                self.lc_add = self.lc_photo.clone().map(|d| (d, sidecars));
+                None
+            }
+            LcEvent::Failed(f) => {
+                self.lc_busy = false;
+                Some(match f {
+                    Failure::AlreadyOpen => toasts::note(
+                        Tone::Warning,
+                        "LightCraft is already open",
+                        "MapCraft can only show photos in a LightCraft it started. Close \
+                         LightCraft, then try again.",
+                        retry,
+                    ),
+                    Failure::NoLibrary => toasts::note(
+                        Tone::Warning,
+                        "LightCraft has no library open",
+                        "Open your library in LightCraft, then try again.",
+                        retry,
+                    ),
+                    Failure::NoAnswer => toasts::note(
+                        Tone::Error,
+                        "LightCraft didn't answer",
+                        "It may still be starting. Try again in a moment.",
+                        retry,
+                    ),
+                    Failure::CouldNotStart(e) => {
+                        error!("can't start LightCraft: {e}");
+                        toasts::note(
+                            Tone::Error,
+                            "LightCraft couldn't be started",
+                            "Check where it is in Settings.",
+                            Some(("Settings…", ToastAction::OpenSettings)),
+                        )
+                    }
+                    Failure::Refused(msg) => toasts::note(
+                        Tone::Error,
+                        "LightCraft couldn't show the photo",
+                        &msg,
+                        None,
+                    ),
+                })
+            }
+        };
+        // The "starting" toast gives way to whatever comes next.
+        self.toasts.remove_titled(STARTING);
+        if let Some(t) = toast {
+            self.toasts.replace(vec![t]);
+        }
+    }
+
+    fn open_settings(&mut self, ctx: &egui::Context) {
+        self.settings_dialog = Some(SettingsDialog::open(
+            &self.settings.companions,
+            self.launch,
+            ctx,
+        ));
+    }
+
+    fn settings_dialog(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = &mut self.settings_dialog else {
+            return;
+        };
+        match dialog.show(ctx, &self.palette) {
+            Some(SettingsAction::Save {
+                photocraft,
+                lightcraft,
+            }) => {
+                let c = &mut self.settings.companions;
+                if c.lightcraft != lightcraft {
+                    c.lightcraft_port = None;
+                }
+                c.photocraft = photocraft;
+                c.lightcraft = lightcraft;
+                self.save_settings();
+                self.find_companions();
+                self.settings_dialog = None;
+            }
+            Some(SettingsAction::Close) => self.settings_dialog = None,
+            None => {}
+        }
+    }
+
+    /// Asks whether to add a photo to LightCraft's library (canvas artboard 4).
+    fn add_dialog(&mut self, ctx: &egui::Context) {
+        let Some((d, sidecars)) = &self.lc_add else {
+            return;
+        };
+        let p = &self.palette;
+        let (mut add, mut cancel) = (false, false);
+        let close = widgets::dialog(
+            ctx,
+            p,
+            "lightcraft-add",
+            "Add this photo to LightCraft?",
+            460.0,
+            true,
+            |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{} isn't in your LightCraft library yet.",
+                        d.original_name
+                    ))
+                    .color(p.text_strong),
+                );
+                ui.label(
+                    RichText::new(
+                        "LightCraft adds it where it is: nothing is copied, moved or renamed. \
+                         Then MapCraft shows it there.",
+                    )
+                    .color(p.text_weak),
+                );
+                if *sidecars {
+                    let stem = std::path::Path::new(&d.original_name)
+                        .file_stem()
+                        .map_or(String::new(), |s| s.to_string_lossy().into_owned());
+                    ui.add_space(p.space_1);
+                    ui.horizontal_top(|ui| {
+                        ui.add(Tone::Warning.icon().image(p.size_icon_sm, p.status_warning));
+                        ui.label(
+                            RichText::new(format!(
+                                "Your LightCraft library writes changes into XMP sidecars: once \
+                                 you edit this photo there, LightCraft puts an {stem}.xmp next \
+                                 to it."
+                            ))
+                            .color(p.text_normal),
+                        );
+                    });
+                }
+            },
+            |ui| {
+                add = widgets::primary(ui, p, None, "Add to LightCraft", true).clicked();
+                cancel = widgets::secondary(ui, p, None, "Cancel", true).clicked();
+            },
+        );
+        if add {
+            let (d, _) = self.lc_add.take().expect("shown");
+            self.show_in_lightcraft(Some(d), true);
+        } else if cancel || close {
+            self.lc_add = None;
+        }
     }
 
     /// Makes `change` now, or once the running jobs have stopped (the thumbnail job is asked to).
@@ -651,6 +995,7 @@ impl MapCraftApp {
                 }
             }
             Some(TopBarAction::Filters) => self.search.close(),
+            Some(TopBarAction::Settings) => self.open_settings(&ctx),
             None => {}
         }
         // The search dropdown and the panel would overlap: the newer one stays.
@@ -670,13 +1015,17 @@ impl MapCraftApp {
             self.filter_changed();
         }
 
-        while let Ok(msg) = self.launch_errors.1.try_recv() {
-            self.toasts.replace(vec![toasts::for_failure(&msg)]);
+        while let Ok(t) = self.launch_errors.1.try_recv() {
+            self.toasts.replace(vec![t]);
         }
+        self.poll_lightcraft();
 
         let empty = self.counts.photos == 0 && self.job.is_none();
-        let dialog_open =
-            self.folder_dialog.is_some() || self.sources_dialog.is_some() || self.narrow.is_some();
+        let dialog_open = self.folder_dialog.is_some()
+            || self.sources_dialog.is_some()
+            || self.narrow.is_some()
+            || self.settings_dialog.is_some()
+            || self.lc_add.is_some();
 
         // Keys: Ctrl+I shows or hides the panel, Esc closes the strip or clears the selection.
         if !dialog_open && !ctx.egui_wants_keyboard_input() {
@@ -697,6 +1046,11 @@ impl MapCraftApp {
 
         // The detail panel, right of the map (design system "Map layout": 320 px).
         let mut panel_action = None;
+        let apps = self
+            .detail
+            .as_ref()
+            .map(|d| self.companion_buttons(d))
+            .unwrap_or_default();
         if self.panel_open
             && let Some(d) = &self.detail
         {
@@ -716,7 +1070,7 @@ impl MapCraftApp {
                         Some(Err(())) => PreviewFace::None,
                         None => PreviewFace::Loading(self.map.thumbnail(d.id)),
                     };
-                    panel_action = self.panel.show(ui, &p, d, face);
+                    panel_action = self.panel.show(ui, &p, d, face, &apps);
                 });
             let r = shown.response.rect;
             ui.painter().vline(
@@ -729,6 +1083,8 @@ impl MapCraftApp {
             Some(PanelAction::Close) => self.panel_open = false,
             Some(PanelAction::ShowInExplorer) => self.launch(Launch::ShowInExplorer),
             Some(PanelAction::Open) => self.launch(Launch::Open),
+            Some(PanelAction::PhotoCraft) => self.open_in_photocraft(),
+            Some(PanelAction::LightCraft) => self.show_in_lightcraft(None, false),
             None => {}
         }
 
@@ -806,13 +1162,25 @@ impl MapCraftApp {
             }
             None => {}
         }
-        if let Some(ToastAction::ZoomTo(b)) = self.toasts.show(&ctx, &p, map_rect) {
-            self.map.zoom_to(b);
+        match self.toasts.show(&ctx, &p, map_rect) {
+            Some(ToastAction::ZoomTo(b)) => self.map.zoom_to(b),
+            Some(ToastAction::RetryLightCraft) => {
+                self.toasts.replace(Vec::new());
+                let d = self.lc_photo.clone();
+                self.show_in_lightcraft(d, false);
+            }
+            Some(ToastAction::OpenSettings) => {
+                self.toasts.replace(Vec::new());
+                self.open_settings(&ctx);
+            }
+            None => {}
         }
 
         self.folder_dialog(&ctx);
         self.sources_dialog(&ctx);
         self.narrow_dialog(&ctx);
+        self.settings_dialog(&ctx);
+        self.add_dialog(&ctx);
 
         if let Some((since, total, frames)) = &mut self.perf {
             *total += started.elapsed();
@@ -869,6 +1237,8 @@ mod tests {
                                 perf: false,
                                 launch: false,
                                 network: false,
+                                settings: no_apps(),
+                                settings_file: None,
                             },
                         )
                     });
@@ -1503,6 +1873,8 @@ mod tests {
                                 perf: false,
                                 launch: false,
                                 network: false,
+                                settings: no_apps(),
+                                settings_file: None,
                             },
                         )
                     });
@@ -1584,5 +1956,188 @@ mod tests {
         h.run_steps(2);
         h.get_by_label("Rescan finished");
         h.get_by_label_contains("24 unchanged");
+    }
+
+    /// Settings whose companion apps aren't there: the real ones may be installed on this machine.
+    fn no_apps() -> Settings {
+        let mut s = Settings::default();
+        s.companions.photocraft = PathBuf::from(
+            r"C:
+owhere\photocraft.exe",
+        );
+        s.companions.lightcraft = PathBuf::from(
+            r"C:
+owhere\lightcraft.exe",
+        );
+        s
+    }
+
+    /// Points the companion settings at empty stand-in files, so the apps count as found.
+    fn fake_apps(h: &mut Harness<'static, Option<MapCraftApp>>, dir: &Path) {
+        let apps = dir.join("apps");
+        std::fs::create_dir_all(&apps).unwrap();
+        for f in ["photocraft.exe", "lightcraft.exe"] {
+            std::fs::write(apps.join(f), b"").unwrap();
+        }
+        let app = h.state_mut().as_mut().unwrap();
+        app.settings.companions.photocraft = apps.join("photocraft.exe");
+        app.settings.companions.lightcraft = apps.join("lightcraft.exe");
+        app.find_companions();
+    }
+
+    fn disabled(h: &Harness<'static, Option<MapCraftApp>>, label: &str) -> bool {
+        h.get_by_label(label).accesskit_node().is_disabled()
+    }
+
+    #[test]
+    fn the_companion_buttons_and_what_lightcraft_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 8);
+        let mut h = harness_with(dir.path(), Some(StartDialog::Details));
+        settled(&mut h);
+        // Not installed where the settings say: both off.
+        assert!(disabled(&h, "PhotoCraft") && disabled(&h, "LightCraft"));
+        fake_apps(&mut h, dir.path());
+        h.run_steps(2);
+        assert!(!disabled(&h, "PhotoCraft") && !disabled(&h, "LightCraft"));
+        h.get_by_label("PhotoCraft").click();
+        h.run_steps(2);
+        h.get_by_label("LightCraft").click();
+        h.run_steps(2);
+        let id = h.state().as_ref().unwrap().detail.as_ref().unwrap().id;
+        assert_eq!(
+            h.state().as_ref().unwrap().companion_calls,
+            vec![
+                (Companion::PhotoCraft, id, false),
+                (Companion::LightCraft, id, false)
+            ]
+        );
+
+        // LightCraft doesn't have the photo and writes sidecars: ask, and say so.
+        let send = |h: &mut Harness<'static, Option<MapCraftApp>>, e| {
+            let app = h.state_mut().as_mut().unwrap();
+            app.lc_photo = app.detail.clone();
+            app.lightcraft.0.send(e).unwrap();
+        };
+        send(&mut h, LcEvent::NotInLibrary { sidecars: true });
+        h.run_steps(3);
+        h.get_by_label("Add this photo to LightCraft?");
+        h.get_by_label_contains(".xmp next to it");
+        h.get_by_label("Add to LightCraft").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Add this photo to LightCraft?").is_none());
+        assert_eq!(
+            h.state().as_ref().unwrap().companion_calls.last(),
+            Some(&(Companion::LightCraft, id, true))
+        );
+        // Without sidecars, the dialog doesn't mention them; Cancel adds nothing.
+        send(&mut h, LcEvent::NotInLibrary { sidecars: false });
+        h.run_steps(3);
+        assert!(h.query_by_label_contains(".xmp next to it").is_none());
+        h.get_by_label("Cancel").click();
+        h.run_steps(3);
+        assert_eq!(h.state().as_ref().unwrap().companion_calls.len(), 3);
+
+        // Starting, then a LightCraft opened by hand: the toast offers to try again.
+        send(&mut h, LcEvent::Starting);
+        h.run_steps(2);
+        h.get_by_label("Opening in LightCraft…");
+        send(&mut h, LcEvent::Failed(Failure::AlreadyOpen));
+        h.run_steps(2);
+        assert!(h.query_by_label("Opening in LightCraft…").is_none());
+        h.get_by_label("LightCraft is already open");
+        h.get_by_label("Try again").click();
+        h.run_steps(2);
+        assert_eq!(
+            h.state().as_ref().unwrap().companion_calls.last(),
+            Some(&(Companion::LightCraft, id, false))
+        );
+        // A port MapCraft started LightCraft on is remembered.
+        send(&mut h, LcEvent::Port(51234));
+        h.run_steps(2);
+        assert_eq!(
+            h.state()
+                .as_ref()
+                .unwrap()
+                .settings
+                .companions
+                .lightcraft_port,
+            Some(51234)
+        );
+    }
+
+    #[test]
+    fn a_raw_photo_cant_go_to_photocraft() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 8);
+        let mut h = harness_with(dir.path(), Some(StartDialog::Details));
+        settled(&mut h);
+        fake_apps(&mut h, dir.path());
+        let app = h.state_mut().as_mut().unwrap();
+        let mut d = app.detail.clone().unwrap();
+        d.original_name = "IMG_0001.CR3".into();
+        let b = app.companion_buttons(&d);
+        assert_eq!(
+            b.photocraft.as_deref(),
+            Some("PhotoCraft can't open camera RAW files")
+        );
+        assert_eq!(b.lightcraft, None);
+        app.lc_busy = true;
+        assert!(
+            app.companion_buttons(&d).lightcraft.is_some(),
+            "one at a time"
+        );
+    }
+
+    #[test]
+    fn settings_say_what_was_found_and_save_the_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 4);
+        let mut h = harness_with(dir.path(), Some(StartDialog::Settings));
+        h.run_steps(2);
+        assert_eq!(h.get_all_by_label("Not found at this path").count(), 2);
+        let settings_file = dir.path().join("settings.toml");
+        h.state_mut().as_mut().unwrap().settings_file = Some(settings_file.clone());
+        h.state_mut()
+            .as_mut()
+            .unwrap()
+            .settings
+            .companions
+            .lightcraft_port = Some(4000);
+        h.run_steps(3);
+        // The defaults point into Program Files; the test can't rely on them, so only the
+        // stand-in below is checked as found.
+        let apps = dir.path().join("apps");
+        std::fs::create_dir_all(&apps).unwrap();
+        std::fs::write(apps.join("lightcraft.exe"), b"").unwrap();
+        h.get_by_label("LightCraft app").click();
+        h.run_steps(2);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.get_by_label("LightCraft app")
+            .type_text(&apps.join("lightcraft.exe").display().to_string());
+        h.run_steps(3);
+        h.get_by_label("Found");
+        h.get_by_label("PhotoCraft app").click();
+        h.run_steps(2);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.get_by_label("PhotoCraft app")
+            .type_text(&apps.join("nothing-here.exe").display().to_string());
+        h.run_steps(3);
+        h.get_by_label("Not found at this path");
+        h.get_by_label("Save").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Companion apps").is_none(), "closed");
+        let app = h.state().as_ref().unwrap();
+        assert_eq!(
+            app.settings.companions.lightcraft,
+            apps.join("lightcraft.exe")
+        );
+        assert_eq!(
+            app.settings.companions.lightcraft_port, None,
+            "another LightCraft: the old port means nothing"
+        );
+        assert_eq!(app.found, [false, true]);
+        let saved = Settings::load_from(&settings_file).unwrap();
+        assert_eq!(saved.companions, app.settings.companions);
     }
 }

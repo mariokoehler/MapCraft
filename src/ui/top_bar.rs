@@ -1,6 +1,5 @@
 //! The top bar (36 px): app mark, search, counts, import progress, actions (canvas
-//! `MapCraft — Import`), and the Filters button (`ui::filters`). Settings have no behaviour
-//! yet, so they are drawn disabled (search: `ui::search`).
+//! `MapCraft — Import`), the Filters button (`ui::filters`) and Settings (search: `ui::search`).
 
 use egui::{Align, Image, ImageSource, Layout, RichText, Sense, Stroke, Ui};
 
@@ -36,6 +35,7 @@ pub enum TopBarAction {
     Cancel,
     /// The Filters button opened or closed its panel.
     Filters,
+    Settings,
 }
 
 /// The filters as the top bar shows them: the panel's button, how many are set, and how many
@@ -73,7 +73,9 @@ pub fn show(
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add_space(p.space_1);
-            widgets::ghost(ui, p, Icon::Settings, "Settings: not available yet", false);
+            if widgets::ghost(ui, p, Icon::Settings, "Settings", true).clicked() {
+                action = Some(TopBarAction::Settings);
+            }
             // Folders can be added while thumbnails are made: the import waits for them to stop.
             let busy = running.is_some_and(|r| r.task == Task::Import);
             if widgets::ghost(ui, p, Icon::Folders, "Sources", true).clicked() {

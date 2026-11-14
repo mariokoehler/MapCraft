@@ -30,11 +30,16 @@ pub struct WindowSettings {
     pub height: f32,
 }
 
+/// Where the companion apps are (design.md §2.7). Their command-line tools are found beside
+/// them, for the version check.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CompanionSettings {
-    pub photocraft_cli: PathBuf,
-    pub lightcraft_cli: PathBuf,
+    pub photocraft: PathBuf,
+    pub lightcraft: PathBuf,
+    /// The control port of the LightCraft MapCraft last started, so a MapCraft restarted while
+    /// it runs can still drive it.
+    pub lightcraft_port: Option<u16>,
 }
 
 impl Default for WindowSettings {
@@ -49,8 +54,9 @@ impl Default for WindowSettings {
 impl Default for CompanionSettings {
     fn default() -> Self {
         Self {
-            photocraft_cli: PathBuf::from(r"C:\Program Files\PhotoCraft\photocraft-cli.exe"),
-            lightcraft_cli: PathBuf::from(r"C:\Program Files\LightCraft\lightcraft-cli.exe"),
+            photocraft: PathBuf::from(r"C:\Program Files\PhotoCraft\photocraft.exe"),
+            lightcraft: PathBuf::from(r"C:\Program Files\LightCraft\lightcraft.exe"),
+            lightcraft_port: None,
         }
     }
 }

@@ -17,6 +17,7 @@ pub enum Tone {
     Warning,
     Error,
     Offline,
+    Info,
 }
 
 impl Tone {
@@ -26,6 +27,7 @@ impl Tone {
             Self::Warning => (p.status_warning, p.status_warning_subtle),
             Self::Error => (p.status_error, p.status_error_subtle),
             Self::Offline => (p.status_offline, p.status_offline_subtle),
+            Self::Info => (p.status_info, p.status_info_subtle),
         }
     }
 
@@ -35,6 +37,7 @@ impl Tone {
             Self::Warning => Icon::TriangleAlert,
             Self::Error => Icon::CircleAlert,
             Self::Offline => Icon::WifiOff,
+            Self::Info => Icon::Info,
         }
     }
 }

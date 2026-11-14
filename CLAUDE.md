@@ -26,10 +26,10 @@ but the app isn't sold or advertised (user, 2026-11-14).
 - The model for these docs is the user's project LaunchWindow (a sibling folder of this one; its
   `CLAUDE.md` and `design.md`): mined for conventions, not code.
 
-## Current status (2026-11-14)
+## Current status (2026-11-15)
 
-**M5 done (2026-11-14, tried by the user). M6, the companion apps, is planned: its mockup
-(canvas `MapCraft — Companion apps`) awaits review.**
+**M6 built (2026-11-15): the companion apps, awaiting the user's try.** M5 is done (tried by
+the user).
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
   copies.
@@ -67,6 +67,8 @@ but the app isn't sold or advertised (user, 2026-11-14).
   (`src/search.rs`) and the field with its dropdown (`src/ui/search.rs`).
 - Filters: one SQL condition for map, counts and search (`src/filter.rs`), the panel, chips and
   no-match card (`src/ui/filters.rs`).
+- Companion apps: PhotoCraft launch and the LightCraft control-port client
+  (`src/companions.rs`), the Settings dialog (`src/ui/settings_dialog.rs`), the panel's buttons.
 
 ## How we work
 
@@ -124,6 +126,13 @@ but the app isn't sold or advertised (user, 2026-11-14).
   - The GUI's control port takes JSON lines; engine commands go through
     `engine.execute {command, params}`, and `ui.screenshot {path}` lets LightCraft capture its
     own window. Never start a second `lightcraft.exe`: it can't open a library already open.
+  - Pitfall: `LIGHTCRAFT_CONFIG_DIR` alone isn't enough. A LightCraft started without
+    `--library`, whose settings name no library (`libraryPath` in `ui.json`), opens the default
+    `%USERPROFILE%\Pictures\LightCraft Library`: the user's real one. It happened once
+    (2026-11-15) and upgraded that catalog's format. For a scratch run, set `libraryPath` in the
+    scratch `ui.json` first, or pass `--library`.
+  - Tests never start LightCraft: `Config.launch` off records the calls, and
+    `src/companions.rs` tests talk to a pretend LightCraft on a local port.
   - Pitfall: Windows PowerShell 5.1 strips the quotes from JSON arguments (`bad JSON params`).
     Write JSON lines `{"command": id, "params": {…}}` to a file and pass `--script FILE` instead.
 - **PhotoCraft 0.23.1** (an open-source Photoshop, pure Rust/egui):
@@ -165,7 +174,7 @@ committed):
   prints nothing to a console otherwise.
 - More dev flags:
   - `--open add-folder[=<folder>]`, `--open sources`, `--open details`, `--open strip`,
-    `--open filters[=<year>]` or `--open search=<text>` starts with that dialog open, the first
+    `--open filters[=<year>]`, `--open settings` or `--open search=<text>` starts with that dialog open, the first
     photo selected, the first strip open, the filter panel open (or only that year shown), or
     the text searched (for comparing with the mockups);
   - `--perf` logs the frame time every 3 s;
@@ -207,6 +216,10 @@ committed):
   filter's condition adds its own, so positional `?1` would collide.
 - Pitfall: a backslash in SQL inside a Rust string needs `\\` (`ESCAPE '\\'`); `'\'` is just
   a quote. Edit it with the Edit tool: shell and Python quoting layers eat it.
+- Pitfall: a process that starts a GUI app (a probe starting LightCraft) never "finishes"
+  in PowerShell while the app runs. Its output pipe is inherited by the child, and
+  `Start-Process -Wait` also waits for children. Redirect to files and use
+  `$p.WaitForExit()`.
 - Pitfall: the borrow checker forbids two closures holding `&mut self` at once, for example a
   dialog's body and button row. Let the button row set local flags, and act on them after the
   dialog has drawn.

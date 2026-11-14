@@ -414,7 +414,25 @@ date, camera, lens, coordinates, and actions **(user, 2026-11-14)**:
     would interpret `&`, `%` and `^` in a file name.
   - The source's root is resolved on a background thread, because a sleeping NAS can take
     seconds.
-- PhotoCraft and LightCraft are shown disabled until M6.
+- **As built in M6 (2026-11-15)**, per the canvas `MapCraft — Companion apps`:
+  - **PhotoCraft:** `photocraft.exe -- "<path>"`, from a background thread. The button is off
+    for camera RAW (DNG included) and other types PhotoCraft doesn't open, saying why on hover.
+  - **LightCraft:** the flow of §3.6(c) and (d), from a background thread, over MapCraft's own
+    client for the control port (`src/companions.rs`; no `lightcraft-cli`):
+    1. MapCraft tries the remembered port, checking with `library.info` that it's LightCraft
+       with a library open.
+    2. If nothing answers there: is a `lightcraft.exe` running? Then "LightCraft is already
+       open" (a second one can't open the library). Otherwise it is started with
+       `--control <free port>`, the port remembered in `settings.toml`, and MapCraft waits up to
+       30 s for it to answer with a library.
+    3. `library.importPreview` finds the photo; `library.select` and `ui.set {view: detail}`
+       show it; its window is brought to the front.
+    4. A photo LightCraft lacks is added only after the dialog (`mode: "add"`, always sent
+       explicitly). The dialog warns when LightCraft's `autoWrite` of XMP sidecars is on.
+  - Failures are toasts with "Try again" or "Settings…" (canvas artboard 3).
+  - Tested live (2026-11-15, LightCraft 0.21.1, a scratch library): cold start to "not in the
+    library" in 0.6 s; add and show 147 ms; show 54 ms; one started by hand is detected.
+  - Started apps get no handles of MapCraft's (null stdin/stdout/stderr).
 - Two things in the mockup are left out for now **(unconfirmed)**:
   - The source's online state: checking it needs the NAS, and the panel reads only the library.
   - The exposure row: the import doesn't read exposure values yet.
@@ -424,9 +442,13 @@ date, camera, lens, coordinates, and actions **(user, 2026-11-14)**:
 
 - **Data folder** (§3.3), with a "move data folder" action that copies and then switches
   **(user, 2026-11-14)**.
-- **Companion apps:** the paths to `photocraft-cli.exe` and `lightcraft-cli.exe` (and their GUI
-  exes, found next to the CLIs). Defaults: `C:\Program Files\PhotoCraft\` and
+- **Companion apps:** the paths to the two apps. Defaults: `C:\Program Files\PhotoCraft\` and
   `C:\Program Files\LightCraft\` (user, 2026-11-14). A "Test" button runs `--version`.
+  - As built in M6 (2026-11-15): a Settings dialog (the gear in the top bar) with only this
+    section. It stores the GUI exes (`photocraft.exe`, `lightcraft.exe`), and the version comes
+    from the `-cli.exe` beside each, read when the dialog opens and on Test **(unconfirmed)**.
+    Whether a typed path leads to a file is checked as it's typed.
+  - The other sections below aren't built.
 - **Map:** the provider, its API key if one is needed, and the tile cache's size limit.
 - **Sources:** add, remove, re-point a root (§2.1(a)), rescan.
 
@@ -979,6 +1001,13 @@ Unconfirmed defaults awaiting review:
   photos; compared case-insensitively and through UNC paths).
 - §3.4: the data model.
 - §3.5(d): trimming the tile cache at startup (no milestone since M6 was cut down).
+- §2.6, §2.7 companion apps (M6):
+  - the settings store the GUI exes; versions come from the `-cli.exe` beside them;
+  - PhotoCraft only for JPEG, PNG, TIFF, WebP, PSD and EXR (DNG counts as RAW);
+  - one LightCraft request at a time (the button is off meanwhile), and 30 s for a start;
+  - LightCraft's album or filter isn't changed: the Detail view shows the photo regardless;
+  - the "Shown in LightCraft" toast only when Windows keeps LightCraft behind;
+  - the port remembered in `settings.toml`, forgotten when the LightCraft path changes.
 - §3.6(a): `photo.allMetadata` as the fallback EXIF reader.
 
 ## 5. Roadmap
@@ -1037,9 +1066,12 @@ Milestones are rough and get refined as we go.
   - Done 2026-11-14: filters (date, sources, cameras; §2.3) per the canvas `MapCraft — Filters`.
     Checked by unit tests (the SQL condition, months, camera merging), headless UI tests, and
     window captures on generated photos.
-- **M6 — Companion apps** (scoped 2026-11-14): Open in PhotoCraft, Open in LightCraft
-  (§3.6(c), (d)), and a Settings dialog for where the two apps are. Mockup: the canvas
-  `MapCraft — Companion apps`, awaiting review.
+- **M6 — Companion apps** (built 2026-11-15): Open in PhotoCraft, Open in LightCraft
+  (§2.6, §3.6(c), (d)), and a Settings dialog for where the two apps are (§2.7), per the canvas
+  `MapCraft — Companion apps` (approved 2026-11-15).
+  - Checked by unit tests (the LightCraft client against a pretend LightCraft: the requests, the
+    `add` mode, no library, refusals), headless UI tests (buttons, the add dialog, toasts,
+    settings), a live run against LightCraft 0.21.1 on a scratch library, and window captures.
   - Out of M6 (user, 2026-11-14): "the map actually looks fine, i think we don't need the keyed
     provider at all". The keyed provider, offline PMTiles and the LightCraft thumbnail fallback
     move to Later.
