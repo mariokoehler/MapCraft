@@ -133,6 +133,9 @@ committed):
 - The first build takes about 1.5 minutes; incremental ones take seconds.
 - On disk: `%APPDATA%\MapCraft\settings.toml` (created on first start) and
   `%LOCALAPPDATA%\MapCraft\tiles\` (the tile cache).
+- `%LOCALAPPDATA%\MapCraft\library.sqlite` is created by the first normal start. From then on
+  the migrations in `src/library/migrations/` are frozen: change the schema with a new numbered
+  file, never by editing an existing one.
 - The crate is a library (`src/lib.rs`, all modules) plus a thin binary (`src/main.rs`), so tests
   and the dev probes in `examples/` can use everything.
 - `mapcraft --data <folder>` runs the GUI on another data folder (trials never touch the real

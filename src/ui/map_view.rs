@@ -37,6 +37,8 @@ pub struct MapView {
     points: Vec<PhotoPoint>,
     /// The map's size last frame, for fitting a zoom to an area.
     last_rect: Rect,
+    /// Keyboard shortcuts are live this frame.
+    keys: bool,
 }
 
 impl MapView {
@@ -52,6 +54,7 @@ impl MapView {
             home: lat_lon(HOME.0, HOME.1),
             points: Vec::new(),
             last_rect: Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 760.0)),
+            keys: true,
         }
     }
 
@@ -76,7 +79,15 @@ impl MapView {
     }
 
     /// Draws the map. `empty`: the library has no photos, so the empty-library card shows.
-    pub fn show(&mut self, ui: &mut Ui, p: &Palette, empty: bool) -> (Rect, Option<MapAction>) {
+    /// `keys`: the map's keyboard shortcuts are live (not while a dialog is open).
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        empty: bool,
+        keys: bool,
+    ) -> (Rect, Option<MapAction>) {
+        self.keys = keys;
         let dots = Dots {
             points: &self.points,
             fill: p.map_pin,
@@ -106,7 +117,7 @@ impl MapView {
     /// `+`/`-` zoom (design.md §2.3; walkers has no keyboard handling). `=` counts as `+`, since
     /// that's the unshifted key on many layouts. Ignored while a text field has the keyboard.
     fn zoom_keys(&mut self, ui: &Ui) {
-        if ui.ctx().egui_wants_keyboard_input() {
+        if !self.keys || ui.ctx().egui_wants_keyboard_input() {
             return;
         }
         let (zoom_in, zoom_out) = ui.input(|i| {
@@ -154,6 +165,7 @@ impl MapView {
                     };
                     let fit = control(ui, p, Icon::Scan, hint, all.is_some()).clicked()
                         || (all.is_some()
+                            && self.keys
                             && !ui.ctx().egui_wants_keyboard_input()
                             && ui.input(|i| i.key_pressed(egui::Key::F)));
                     if fit && let Some(b) = all {
@@ -384,6 +396,32 @@ fn nice_scale(px_per_m: f64, max_px: f64) -> Option<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::nice_scale;
+
+    #[test]
+    fn fitting_a_zoom_to_an_area() {
+        use crate::import::Bounds;
+        let size = egui::vec2(1280.0, 760.0);
+        let europe = Bounds {
+            min_lat: 36.0,
+            max_lat: 60.0,
+            min_lon: -10.0,
+            max_lon: 30.0,
+        };
+        let city = Bounds {
+            min_lat: 53.50,
+            max_lat: 53.60,
+            min_lon: 9.90,
+            max_lon: 10.10,
+        };
+        let (ze, zc) = (super::fit_zoom(europe, size), super::fit_zoom(city, size));
+        assert!((3.0..6.0).contains(&ze), "a continent: {ze}");
+        assert!((10.0..14.0).contains(&zc), "a city: {zc}");
+        assert_eq!(
+            super::fit_zoom(Bounds::around(53.55, 9.99), size),
+            16.0,
+            "one photo: street level"
+        );
+    }
 
     #[test]
     fn scale_picks_a_round_length_that_fits() {

@@ -173,10 +173,9 @@ impl SourcesDialog {
                         .on_hover_text(path.as_ref());
                     });
                     let row = egui::Id::unique(("source-row", s.id));
-                    if ui
-                        .interact(cell.response.rect, row, Sense::click())
-                        .clicked()
-                    {
+                    let row = ui.interact(cell.response.rect, row, Sense::click());
+                    widgets::named(&row, &format!("Select {}", s.label), true);
+                    if row.clicked() {
                         self.selected = Some(s.id);
                     }
                     for n in [c.photos, c.with_position, c.missing] {

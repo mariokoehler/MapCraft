@@ -432,7 +432,9 @@ thumbnail textures cheaply. The risk is that walkers' feature set falls short an
 - `quick-xml` 0.42 (XMP sidecars);
 - `xxhash-rust` (the quick hash and the files' signature);
 - `windows-sys` (`WNetGetConnectionW`, the UNC target of a mapped drive);
-- `kamadak-exif` 0.6, only for PNG, HEIF and WebP, and as the reference in tests.
+- `kamadak-exif` 0.6, only for PNG, HEIF and WebP, and as the reference in tests;
+- `rfd` 0.18 (the native folder picker);
+- `egui_kittest` 0.37 (tests only: drives the UI headless, with an accessibility check).
 
 **EXIF is read by MapCraft's own small TIFF reader** (`src/metadata/tiff.rs`). Measured
 2026-11-14 on 240 random files of the library (60 each of CR2, DNG, JPEG, RAF):
@@ -737,7 +739,9 @@ Product:
 Unconfirmed defaults awaiting review:
 - §2.3: filters in M5 rather than v1.
 - §3.2: the planned crates.
-- §2.8(f): the tree starts all ticked; leaving a folder out later removes its records.
+- §2.8(f): the tree starts all ticked; leaving a folder out later removes its records; a folder
+  that is, lies inside, or contains an existing source can't be added (it would duplicate
+  photos; compared case-insensitively and through UNC paths).
 - §3.4: the data model.
 - §3.5(d): trimming the tile cache at startup, in M6.
 - §3.6(a): `photo.allMetadata` as the fallback EXIF reader.

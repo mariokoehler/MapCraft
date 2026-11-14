@@ -172,7 +172,8 @@ impl MapCraftApp {
             match e {
                 JobEvent::Progress(_) => {}
                 JobEvent::Done(summary) => {
-                    info!("import finished: {summary:?}");
+                    // Counts only: `bounds` holds coordinates (design.md §3.8).
+                    info!("import finished: {}", summary.counts_only());
                     self.toasts
                         .replace(toasts::for_summary(&summary, first, took));
                     finished = true;
@@ -390,12 +391,14 @@ impl MapCraftApp {
         }
 
         let empty = self.counts.photos == 0 && self.job.is_none();
+        let dialog_open =
+            self.folder_dialog.is_some() || self.sources_dialog.is_some() || self.narrow.is_some();
         let mut map_rect = egui::Rect::NOTHING;
         let mut map_action = None;
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(p.map_ref_land))
             .show(ui, |ui| {
-                let (rect, action) = self.map.show(ui, &p, empty);
+                let (rect, action) = self.map.show(ui, &p, empty, !dialog_open);
                 map_rect = rect;
                 map_action = action;
             });
@@ -441,6 +444,13 @@ mod tests {
 
     /// The whole app, headless: no tiles, no network, a temp data folder.
     fn harness(data: &Path) -> Harness<'static, Option<MapCraftApp>> {
+        harness_with(data, None)
+    }
+
+    fn harness_with(
+        data: &Path,
+        open: Option<StartDialog>,
+    ) -> Harness<'static, Option<MapCraftApp>> {
         let data = data.to_path_buf();
         Harness::builder()
             .with_size(egui::vec2(1280.0, 800.0))
@@ -453,7 +463,7 @@ mod tests {
                             Config {
                                 data_folder: data.clone(),
                                 tiles: false,
-                                open: None,
+                                open: open.clone(),
                                 perf: false,
                             },
                         )
@@ -462,6 +472,111 @@ mod tests {
                 },
                 None,
             )
+    }
+
+    /// Steps frames (with short pauses for the background threads) until `done` holds.
+    fn step_until(
+        h: &mut Harness<'static, Option<MapCraftApp>>,
+        what: &str,
+        done: impl Fn(&Harness<'static, Option<MapCraftApp>>) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        h.run_steps(2);
+        while !done(h) {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(20));
+            h.step();
+        }
+        h.run_steps(2);
+    }
+
+    fn job_running(h: &Harness<'static, Option<MapCraftApp>>) -> bool {
+        h.state().as_ref().is_some_and(|a| a.job.is_some())
+    }
+
+    /// A data folder with `n` generated photos already imported as source "Demo trips".
+    fn imported(dir: &Path, n: usize) -> std::path::PathBuf {
+        let photos = dir.join("photos");
+        crate::demo::make_demo(&photos, n).unwrap();
+        let mut lib = Library::open(&dir.join("library.sqlite")).unwrap();
+        let src = lib
+            .add_source(&photos, None, "Demo trips", &Scope::all())
+            .unwrap();
+        crate::import::run(&mut lib, src, &Default::default(), 2, |_| {}).unwrap();
+        photos
+    }
+
+    #[test]
+    fn importing_a_folder_from_the_dialog() {
+        let dir = tempfile::tempdir().unwrap();
+        let photos = dir.path().join("photos");
+        crate::demo::make_demo(&photos, 16).unwrap();
+        let mut h = harness_with(
+            &dir.path().join("data"),
+            Some(StartDialog::AddFolder(Some(photos))),
+        );
+        step_until(&mut h, "the count", |h| {
+            h.query_by_label("Import 16 photos").is_some()
+        });
+        h.get_by_label("Import 16 photos").click();
+        step_until(&mut h, "the import", |h| {
+            !job_running(h) && h.query_by_label("Import finished").is_some()
+        });
+        h.get_by_label_contains("16 photos · 14 on the map");
+        h.get_by_label("16 photos · 2 without a position");
+        h.get_by_label("2 photos have no position");
+        assert!(
+            h.query_by_label("Add photo folder").is_none(),
+            "the dialog closed"
+        );
+    }
+
+    #[test]
+    fn removing_a_source_empties_the_map() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 8);
+        let mut h = harness_with(dir.path(), Some(StartDialog::Sources));
+        step_until(&mut h, "the online check", |h| {
+            h.query_by_label("Online").is_some()
+        });
+        h.get_by_label("Remove…").click();
+        h.run_steps(4); // a new window is laid out invisibly on its first frame
+        h.get_by_label("Remove “Demo trips”?");
+        h.get_by_label("Remove source").click();
+        h.run_steps(3);
+        assert_eq!(h.state().as_ref().unwrap().counts.photos, 0);
+        h.get_by_label("Close (Esc)").click();
+        h.run_steps(3);
+        h.get_by_label("No photos on the map yet");
+    }
+
+    #[test]
+    fn leaving_a_folder_out_asks_and_removes_its_photos() {
+        let dir = tempfile::tempdir().unwrap();
+        let photos = imported(dir.path(), 16);
+        let mut h = harness(dir.path());
+        h.run_steps(2);
+        {
+            let ctx = h.ctx.clone();
+            let app = h.state_mut().as_mut().unwrap();
+            let source = app.sources[0].clone();
+            app.folder_dialog = Some(FolderDialog::change(&source, photos, &ctx));
+        }
+        step_until(&mut h, "the folder walk", |h| {
+            h.query_by_label("Include 2019-05-04_Lisbon").is_some()
+        });
+        h.get_by_label("Include 2019-05-04_Lisbon").click();
+        h.run_steps(2);
+        h.get_by_label("Apply").click();
+        h.run_steps(2);
+        h.get_by_label("Leave folders of “Demo trips” out?");
+        h.get_by_label("Remove 2 photos").click();
+        step_until(&mut h, "the rescan", |h| {
+            !job_running(h) && h.query_by_label("Rescan finished").is_some()
+        });
+        let app = h.state().as_ref().unwrap();
+        assert_eq!(app.counts.photos, 14);
+        assert!(!app.sources[0].scope.includes("2019-05-04_lisbon"));
     }
 
     #[test]

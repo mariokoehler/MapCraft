@@ -10,9 +10,10 @@ in Lightroom Classic.
   [LightCraft](https://github.com/storytold/lightcraft) and
   [PhotoCraft](https://github.com/storytold/photocraft).
 
-**Status:** early development. Milestone 1 is done: a window with the OpenStreetMap map. Photos
-aren't imported yet. See [`design.md`](design.md) for the concept, features, architecture and
-roadmap.
+**Status:** early development. Milestone 2 is done: add folders of photos (from local drives or
+network shares), and their positions appear on the map as dots; rescans pick up new, moved and
+missing photos. Thumbnails on the map come next. See [`design.md`](design.md) for the concept,
+features, architecture and roadmap.
 
 ## Building
 

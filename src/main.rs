@@ -240,7 +240,7 @@ fn dev_import(args: &[String]) -> i32 {
     });
     match result {
         Ok(s) => {
-            println!("{s:?}");
+            println!("{}", s.counts_only());
             println!(
                 "took {:.1} s with {readers} readers",
                 started.elapsed().as_secs_f64()

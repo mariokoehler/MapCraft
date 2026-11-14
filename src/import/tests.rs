@@ -112,10 +112,10 @@ fn rescan_skips_unchanged_and_finds_moves_and_missing() {
 
     let again = import(&mut lib, src);
     // D's metadata is unreadable, so it is read again on every rescan (it might be a bug fixed
-    // in a later version); the other three are skipped.
+    // in a later version), but still counts as unchanged; the toast notes it as unreadable.
     assert_eq!(
         (again.unchanged, again.new, again.changed, again.failed),
-        (3, 0, 1, 1),
+        (4, 0, 0, 1),
         "{again:?}"
     );
 
@@ -243,7 +243,7 @@ fn a_rescan_hiccup_keeps_the_position() {
     );
     drop(guard);
     let s = import(&mut lib, src);
-    assert_eq!(s.changed, 2, "A, and D (always re-read): {s:?}");
+    assert_eq!(s.changed, 1, "A; D is re-read but unchanged: {s:?}");
 }
 
 #[test]

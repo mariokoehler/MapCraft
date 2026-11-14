@@ -44,6 +44,8 @@ pub struct FolderDialog {
     walk: Option<Walk>,
     tree: Tree,
     picker: Option<Receiver<Option<PathBuf>>>,
+    /// The chosen folder is on a mapped network drive (worked out once per folder).
+    on_network: bool,
 }
 
 impl FolderDialog {
@@ -55,6 +57,7 @@ impl FolderDialog {
             walk: None,
             tree: Tree::new(Scope::all()),
             picker: None,
+            on_network: false,
         }
     }
 
@@ -70,6 +73,7 @@ impl FolderDialog {
             walk: None,
             tree: Tree::new(source.scope.clone()),
             picker: None,
+            on_network: false,
         };
         d.browse(root, ctx);
         d
@@ -82,8 +86,14 @@ impl FolderDialog {
     }
 
     fn browse(&mut self, root: PathBuf, ctx: &egui::Context) {
-        let scope = self.tree.scope.clone();
+        // A newly chosen folder starts with everything ticked; "Change folders…" keeps the
+        // source's decisions.
+        let scope = match self.mode {
+            Mode::Add => Scope::all(),
+            Mode::Change { .. } => self.tree.scope.clone(),
+        };
         self.tree = Tree::new(scope);
+        self.on_network = crate::paths::unc_target(&root).is_some();
         let c = ctx.clone();
         self.walk = Some(Walk::start(root.clone(), move || c.request_repaint()));
         self.root = Some(root);
@@ -212,11 +222,7 @@ impl FolderDialog {
                     .into(),
                 p.status_error,
             ))
-        } else if self
-            .root
-            .as_deref()
-            .is_some_and(|r| crate::paths::unc_target(r).is_some())
-        {
+        } else if self.on_network {
             Some(("On a network drive; MapCraft also remembers its network path, in case the drive letter changes.".into(), p.text_weak))
         } else {
             None
@@ -271,8 +277,15 @@ impl FolderDialog {
                 ui.add_space(depth as f32 * p.indent);
                 let has_children = !f.children.is_empty() && !f.never;
                 let open = self.tree.expanded.contains(&k);
+                let label = if k.is_empty() {
+                    "all folders".to_owned()
+                } else {
+                    f.name.clone()
+                };
                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), Sense::click());
                 if has_children {
+                    let verb = if open { "Collapse" } else { "Expand" };
+                    widgets::named(&resp, &format!("{verb} {label}"), true);
                     let icon = if open {
                         Icon::ChevronDown
                     } else {
@@ -289,7 +302,8 @@ impl FolderDialog {
                 } else {
                     Check::Off
                 };
-                if widgets::tri_check(ui, p, state, enabled).clicked() && enabled {
+                let check_name = format!("Include {label}");
+                if widgets::tri_check(ui, p, state, enabled, &check_name).clicked() && enabled {
                     toggle = Some(k.clone());
                 }
                 ui.add(Icon::Folder.image(

@@ -40,8 +40,12 @@ impl Tone {
 }
 
 /// The design system's 14 px checkbox with on, off and mixed states. Returns the click.
-pub fn tri_check(ui: &mut Ui, p: &Palette, state: Check, enabled: bool) -> Response {
+/// `name` is its accessible name (what a screen reader, and the UI tests, call it).
+pub fn tri_check(ui: &mut Ui, p: &Palette, state: Check, enabled: bool, name: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::Role::CheckBox, enabled, state == Check::On, name)
+    });
     let response = if enabled {
         response
     } else {
@@ -197,7 +201,8 @@ pub fn chip(ui: &mut Ui, p: &Palette, tone: Tone, text: &str) {
 
 /// A modal dialog in the design system's frame: title bar, body, right-aligned button row.
 /// The map behind isn't dimmed (flat, no scrim) but takes no input. Returns `true` when the
-/// user asked to close it (Esc, the close button or a click outside).
+/// user asked to close it: Esc or the close button. A click outside does nothing, so stray
+/// clicks on the map can't discard what's been picked in a dialog.
 #[allow(clippy::too_many_arguments)] // a layout helper: each part is one argument
 pub fn dialog(
     ctx: &egui::Context,
@@ -246,7 +251,9 @@ pub fn dialog(
                     ui.with_layout(Layout::right_to_left(Align::Center), footer);
                 });
         });
-    close_clicked || (closable && response.should_close())
+    let _ = response;
+    let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    close_clicked || (closable && esc)
 }
 
 fn separator(ui: &mut Ui, p: &Palette) {

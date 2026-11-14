@@ -64,6 +64,34 @@ pub struct Summary {
     pub bounds: Option<Bounds>,
 }
 
+impl Summary {
+    /// The summary without its coordinates, for logs and console output (design.md §3.8: no
+    /// coordinates in logs).
+    pub fn counts_only(&self) -> String {
+        let Self {
+            photos,
+            new,
+            changed,
+            unchanged,
+            moved,
+            restored,
+            missing,
+            failed,
+            skipped,
+            without_position,
+            unreadable_folders,
+            cancelled,
+            bounds: _,
+        } = self;
+        format!(
+            "{photos} photos: {new} new, {changed} changed, {unchanged} unchanged, {moved} moved, \
+             {restored} back, {missing} missing, {failed} failed, {skipped} skipped, \
+             {without_position} without position, {unreadable_folders} unreadable folders{}",
+            if *cancelled { ", cancelled" } else { "" }
+        )
+    }
+}
+
 /// A latitude/longitude box.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bounds {
@@ -124,6 +152,9 @@ struct Job {
     group: Group,
     id: Option<i64>,
     restored: bool,
+    /// The files are unchanged; the photo is read again only because its metadata was
+    /// unreadable last time.
+    retry: bool,
 }
 
 struct Done {
@@ -168,15 +199,20 @@ pub fn run(
             Some(e) if e.files_sig == group.signature() && !e.missing && !e.has_error => {
                 summary.unchanged += 1
             }
-            Some(e) => jobs.push(Job {
-                group,
-                id: Some(e.id),
-                restored: e.missing,
-            }),
+            Some(e) => {
+                let retry = !e.missing && e.files_sig == group.signature();
+                jobs.push(Job {
+                    group,
+                    id: Some(e.id),
+                    restored: e.missing,
+                    retry,
+                })
+            }
             None => jobs.push(Job {
                 group,
                 id: None,
                 restored: false,
+                retry: false,
             }),
         }
     }
@@ -280,6 +316,8 @@ fn write_batch(
             }
         } else if job.restored {
             summary.restored += 1;
+        } else if job.retry && record.read_error.is_some() {
+            summary.unchanged += 1; // still unreadable: nothing changed
         } else {
             summary.changed += 1;
         }

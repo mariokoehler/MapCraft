@@ -200,6 +200,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn exif_after_a_jfif_segment_is_found() {
+        // Most cameras and phones write APP0 (JFIF) before APP1 (EXIF); the generated demo
+        // JPEGs put EXIF first, so this layout needs its own test.
+        let with_exif = crate::demo::jpeg_with_gps(-12.5, 130.8, "2024:01:02 03:04:05");
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+        jpeg.extend(b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0");
+        jpeg.extend(&with_exif[2..]); // APP1 onwards, without its own SOI
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jfif.jpg");
+        std::fs::write(&path, &jpeg).unwrap();
+        let m = read_image(&path).unwrap();
+        let g = m.gps.expect("position after APP0");
+        assert!((g.lat - -12.5).abs() < 1e-6 && (g.lon - 130.8).abs() < 1e-6);
+        // A JPEG with only start and end markers is fine and has nothing to tell.
+        std::fs::write(&path, [0xFF, 0xD8, 0xFF, 0xD9]).unwrap();
+        assert_eq!(read_image(&path).unwrap(), Metadata::default());
+    }
+
+    #[test]
     fn empty_and_impossible_positions_are_none() {
         assert!(Gps::new(0.0, 0.0, None).is_none());
         assert!(Gps::new(91.0, 10.0, None).is_none());
