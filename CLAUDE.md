@@ -37,7 +37,8 @@ but the app isn't sold or advertised (user, 2026-11-14).
 - Decided (2026-11-14): egui + walkers (§3.2); a tile-provider abstraction starting with OSM,
   online for v1 (§3.5(b)); licence MIT OR Apache-2.0 (§1.3). The user's library is surveyed
   (§2.8).
-- Next: the remaining questions and the M0 spikes in `design.md` §4 and §5.
+- The M0 spikes are done (2026-11-14; results in `design.md` §2.2(b), §2.6, §3.6(c)). Next: the
+  Lightroom-GPS question in §4, then M1 (needs the main window's Claude Design pass, §3.9).
 - **The user's real photo library is read-only to us.** Never write, rename or create sidecars
   there. Its path stays out of the repo (it's in Claude's local memory).
 
@@ -91,7 +92,10 @@ but the app isn't sold or advertised (user, 2026-11-14).
   - Facts and open questions are in `design.md` §3.6.
   - The user's LightCraft is a fresh install with no collections yet (2026-11-14). We may create
     some while exploring, but ask before changing the user's real library: use a scratch
-    `--library` folder for experiments.
+    `--library` folder for experiments. For the GUI, also set `LIGHTCRAFT_CONFIG_DIR` to a scratch
+    folder, or it remembers the scratch library as "last opened".
+  - Pitfall: Windows PowerShell 5.1 strips the quotes from JSON arguments (`bad JSON params`).
+    Write JSON lines `{"command": id, "params": {…}}` to a file and pass `--script FILE` instead.
 - **PhotoCraft 0.22.0** (an open-source Photoshop, pure Rust/egui):
   - CLI: `C:\Program Files\PhotoCraft\photocraft-cli.exe`; GUI: `photocraft.exe` beside it.
   - `convert <in> <out>`, `info`, `run`, `batch`, `serve`, `mcp`; `commands` lists about 1,000

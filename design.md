@@ -126,18 +126,45 @@ for the detail panel, made on demand and cached **(user, 2026-11-14)**. The form
 when the thumbnail is made, so it is always stored upright.
 
 **(b) How a thumbnail is made, fastest first** **(user, 2026-11-14)**:
-1. **The embedded preview.** RAW files usually carry a full-size or large JPEG preview. A JPEG's
-   EXIF thumbnail is often only about 160 px, so it is too small (unverified: measure on the
-   user's real files, §5 M0). Reading a preview is milliseconds and needs no decoder. It is used
-   when it is at least 256 px.
+1. **The embedded preview.** It is used when it is at least 256 px. In the user's library
+   **every sampled RAW file has an embedded JPEG preview of at least 1024 px**, so it serves the
+   256 px thumbnail *and* the 1024 px detail preview (verified 2026-11-14: 300 random files each of
+   DNG, CR2 and RAF, read-only over SMB):
+
+   | Type | Long edge of the largest preview |
+   |---|---|
+   | DNG | always 1024 px (the Adobe converter's standard preview) |
+   | CR2 | 2360 to 5760 px, the median 2622 |
+   | RAF | 1920 or 4416 px |
+
+   - Finding the preview means reading the TIFF directory (DNG, CR2) or RAF's header pointer, then
+     the JPEG's own size. It took about 80 ms per file over SMB, which is mostly the open and a few
+     seeks. It shares one open with the EXIF read (§2.8).
+   - The preview is the camera's or converter's rendering, not a later edit. That's fine for a map.
+   - CRW (27 files, a pre-TIFF Canon format) isn't covered by this reader and goes to LightCraft.
+   - A JPEG's own EXIF thumbnail (often about 160 px) is too small; JPEGs are decoded instead (2.).
 2. **Decoding in-process** (Rust `image` crate) for JPEG, PNG, TIFF and WebP.
 3. **LightCraft** (`lightcraft-cli render <in> -o <out> --size 256`) for RAW and DNG without a
    usable preview, and for anything else the app can't decode. PhotoCraft reads many formats but
    not camera RAW (verified 2026-11-14, its README), so it is the fallback for HEIC and the
    layered formats (PSD, TIFF with layers) **(user, 2026-11-14)**.
 
-Whether launching the CLI once per photo is fast enough, or the app should keep one long-lived
-session (`lightcraft-cli mcp` or `run --script -`, `photocraft-cli serve`), is a spike (§5, M0).
+**LightCraft is a fallback, so it runs in one long-lived session** **(unconfirmed)**. Timings
+on 8 copies each of DNG, CR2, RAF and JPEG from the library, 256 px JPEG output (verified
+2026-11-14):
+
+| | One `render` process per file | One `run --script` session |
+|---|---|---|
+| RAW (DNG, CR2, RAF) | about 1.9 to 2.0 s | about 0.3 to 0.45 s, after a one-off 2 s warm-up |
+| JPEG | about 1.6 s | about 60 ms |
+
+- Most of a per-file process is start-up. A session imports the files into a **scratch LightCraft
+  library of MapCraft's own** in the data folder (`mode: "add"`, so it only references them) and
+  calls `app.export {ids, dir, longEdge: 256}` per photo. It never touches the user's own
+  LightCraft library.
+- Neither way wrote anything next to the originals: no sidecar and no temp file. That keeps the
+  read-only rule (§1.1).
+- Copying a file over SMB takes about 10 ms per MB (a 20 to 30 MB RAW in 0.2 to 0.35 s).
 
 **(c) Without the companion apps** (paths not set, or the exe missing), JPEG, PNG, TIFF and WebP
 still import fully. RAW files import with whatever embedded preview they have, and a photo with no
@@ -194,9 +221,11 @@ The detail panel shows the 1024 px preview, the file path, the source (and wheth
 date, camera, lens, coordinates, and actions **(user, 2026-11-14)**:
 - **Show in Explorer** (`explorer /select,<path>`): always available.
 - **Open with the default app**: always available.
-- **Open in PhotoCraft:** launch `photocraft.exe <path>`. The README documents this form for a
-  source build, but the Windows install isn't checked yet (unverified).
-- **Open in LightCraft:** the hardest of these. See §3.6(c); it is a spike, not a promise.
+- **Open in PhotoCraft:** launch `photocraft.exe <path>`. It opens the file in a window titled
+  after it. If PhotoCraft is already running, the file opens as a new tab there, and the second
+  process exits within about 200 ms (verified 2026-11-14, PhotoCraft 0.22.0 and its `--help`).
+  `--new-instance` forces a separate window.
+- **Open in LightCraft:** selects the photo in a running LightCraft (§3.6(c)).
 
 ### 2.7 Settings
 
@@ -457,8 +486,9 @@ alpha (verified 2026-11-14, `--version` and their READMEs). Repos:
 https://github.com/storytold/photocraft, https://github.com/storytold/lightcraft.
 
 **(a) LightCraft CLI** (`lightcraft-cli --help`, `commands`: 778 lines of commands):
-- `render <in> -o <out> --size N`: develops any supported file, RAW included, and exports it. This
-  is the thumbnail path for RAW (§2.2(b)).
+- `render <in> -o <out> --size N`: develops any supported file, RAW included, and exports it.
+  About 2 s per file, mostly start-up, so MapCraft's fallback renders use a `run --script`
+  session and `app.export` instead (§2.2(b)).
 - `run --library DIR --import PATH <commands…>`: headless, against a real library; `--connect`
   drives a running app instead.
 - `mcp`: an MCP server, headless or attached to a running app.
@@ -480,36 +510,31 @@ https://github.com/storytold/photocraft, https://github.com/storytold/lightcraft
 - No camera RAW (verified, README).
 - `photocraft --control` gives an authenticated loopback control channel for the GUI.
 
-**(c) Opening a photo in LightCraft: open questions (spike, §5 M0).** What we know:
-- The control channel exists only when the GUI was started with `lightcraft --control <port>`
-  (or `LIGHTCRAFT_CONTROL_PORT`). It is loopback-only with **no authentication** (verified
-  2026-11-14, `docs/control-protocol.md`), so it shouldn't stay on by default.
-- Selecting a photo is `library.select {ids}`, by LightCraft's *photo id*. The protocol doc on
-  `main` has **no lookup from file path to id** and no listing of all photos with paths. The
-  installed 0.20.0's own `commands` list is the authority, though, and it has two leads:
-  - `library.import {paths, mode: "add"}` on a file the library already has returns it under
-    `duplicates: [{path, existing, reason}]`. `existing` is very probably the photo id, which
-    gives a path → id lookup that changes nothing.
-  - `folder.scanChanges {path}` returns `{id, path}` pairs, but only for missing and moved
-    photos.
-- `ui.dropFiles {paths}` simulates a drag-and-drop, which opens the import review. That's a way to
-  *hand over* a file, not to find one already in the library.
-- `lightcraft <folder>` on the command line imports a folder. Whether a second launch passes a
-  file to a running instance isn't documented.
-
-Paths to investigate, in order:
-1. Does the `library.import` duplicate trick work, against a scratch `--library`, and is
-   `existing` the id? Then, with the GUI running under `--control`: `--connect run library.import …
-   library.select ids=[…]`. Also try `library.filter {text}` and `library.state`.
-2. Does `photo.inspect {id}` return the path, so ids can be mapped once and stored in
-   `photo.lightcraft_id`?
-3. Does LightCraft's library file (`library.info` gives its path) have a readable format, so we
-   could read path→id directly (read-only)?
-4. Can we open an issue or PR upstream for a `library.reveal {path}` command (the projects are
-   open source)?
-
-Until one works, v1 offers **Show in Explorer** and **Open in PhotoCraft**, and "Open in
-LightCraft" waits.
+**(c) Opening a photo in LightCraft: it works** (verified 2026-11-14, LightCraft 0.20.0, against a
+scratch library and a scratch settings folder):
+- **Lookup without changes.** `library.importPreview {paths}` reports each file the library
+  already has as `{duplicate: "path" | "content", existing: <photo id>}` and adds nothing. A
+  `content` match also finds a copy at another path, which helps when MapCraft and LightCraft know
+  the same NAS under different drive letters or UNC paths. Avoid `library.import` here: it does
+  report `duplicates[].existing` the same way, but it *adds* a file the library doesn't have.
+- **Select.** `library.select {ids: [id], active: id}` over `lightcraft-cli run --connect
+  127.0.0.1:<port>` selects it in the GUI. Lookup plus select took about 235 ms in all.
+- **Back from id to path.** `photo.inspect {id}` returns `source.path`, so `photo.lightcraft_id`
+  can be cached and checked.
+- **The control channel** exists only when the GUI was started with `lightcraft --control <port>`
+  (or `LIGHTCRAFT_CONTROL_PORT`). It is loopback-only with **no authentication**
+  (`docs/control-protocol.md`), so it shouldn't stay on by default.
+- **The flow** **(unconfirmed)**:
+  - If LightCraft isn't running, MapCraft starts it with `--control` on a random free port. The
+    GUI opens the user's last library.
+  - If it is running without `--control`, MapCraft can't drive it and says so.
+  - If the photo isn't in LightCraft's library, MapCraft offers to import it (`mode: "add"`) and
+    doesn't do it silently.
+- **Not found:** a command that switches the GUI to its Develop or Loupe view. The photo is
+  selected, but the view stays where it was. An upstream issue for a `library.reveal {path}` that
+  also switches the view would make this one call.
+- `lightcraft --library DIR` and `LIGHTCRAFT_CONFIG_DIR` keep experiments away from the user's
+  real library and its "last opened" setting.
 
 ### 3.7 Background work
 
@@ -569,7 +594,10 @@ Unconfirmed defaults awaiting review:
 - §2.3: filters in M5 rather than v1.
 - §3.2: the crate list.
 - §3.4: the data model.
+- §2.2(b): LightCraft as the fallback renderer in one long-lived session, on a scratch library of
+  MapCraft's own.
 - §3.6(a): `photo.allMetadata` as the fallback EXIF reader.
+- §3.6(c): the Open-in-LightCraft flow (start it with `--control`, ask before importing).
 
 ## 5. Roadmap
 
@@ -577,13 +605,10 @@ Milestones are rough and get refined as we go.
 
 - **M0 — Decisions & spikes** (now). Done: the tile provider, the UI stack, offline as later
   (user, 2026-11-14), the library survey (§2.8), the licence (§1.3) and the public GitHub repo
-  (https://github.com/mariokoehler/MapCraft), and the Rust toolchain (§3.2). Still to do:
-  - answer the remaining questions in §4;
-  - spike: how long `lightcraft-cli render --size 256` takes per RAW file, as one process per file
-    versus a long-lived `mcp`/`run --script` session;
-  - spike: how many of the user's files have an embedded preview of at least 256 px (§2.2(b));
-  - spike: LightCraft path → id (§3.6(c));
-  - spike: does `photocraft.exe <path>` open a file.
+  (https://github.com/mariokoehler/MapCraft), the Rust toolchain (§3.2), and the four spikes
+  (2026-11-14): embedded previews and LightCraft render timing (§2.2(b)), `photocraft.exe <path>`
+  (§2.6), and LightCraft path → id (§3.6(c)). Still to do:
+  - answer the remaining questions in §4.
 - **M1 — Window with a map:**
   - the Cargo project;
   - a first Claude Design pass for the main window's layout and the design system (§3.9);
