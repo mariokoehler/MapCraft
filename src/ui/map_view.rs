@@ -216,6 +216,16 @@ impl MapView {
         self.names.extend(names);
     }
 
+    /// Centres the map on a position at `zoom` (clamped to the map's range).
+    pub fn go_to(&mut self, lat: f64, lon: f64, zoom: f64) {
+        self.memory.center_at(lat_lon(lat, lon));
+        let _ = self.memory.set_zoom(zoom.clamp(0.0, 19.0));
+    }
+
+    pub fn zoom(&self) -> f64 {
+        self.memory.zoom()
+    }
+
     /// Centres and zooms the map so `b` fills most of it.
     pub fn zoom_to(&mut self, b: Bounds) {
         let center = lat_lon((b.min_lat + b.max_lat) / 2.0, (b.min_lon + b.max_lon) / 2.0);

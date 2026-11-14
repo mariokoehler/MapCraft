@@ -1,12 +1,13 @@
 //! The top bar (36 px): app mark, search, counts, import progress, actions (canvas
 //! `MapCraft — Import`). Search and settings have no behaviour yet, so they are drawn disabled
-//! (search arrives in M5).
+//! (search: `ui::search`).
 
-use egui::{Align, Image, ImageSource, Layout, RichText, Sense, Stroke, StrokeKind, Ui};
+use egui::{Align, Image, ImageSource, Layout, RichText, Sense, Stroke, Ui};
 
 use crate::library::Counts;
 use crate::theme::Palette;
 use crate::ui::icons::Icon;
+use crate::ui::search::SearchBox;
 use crate::ui::widgets::{self, thousands};
 
 const MARK: &[u8] = include_bytes!("../../assets/brand/mapcraft-mark-32.svg");
@@ -39,6 +40,7 @@ pub fn show(
     p: &Palette,
     counts: Counts,
     running: Option<Running>,
+    search: &mut SearchBox,
 ) -> Option<TopBarAction> {
     let mut action = None;
     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -52,7 +54,7 @@ pub fn show(
         )
         .on_hover_text("MapCraft");
         ui.add_space(p.space_1);
-        search_field(ui, p);
+        search.field(ui, p);
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add_space(p.space_1);
@@ -149,38 +151,6 @@ fn progress_chip(ui: &mut Ui, p: &Palette, r: Running) -> bool {
             ui.add(egui::Spinner::new().size(12.0).color(p.text_weak));
         });
     cancel
-}
-
-/// The search field, disabled until M5 (design system: "Disabled (no photos yet)").
-fn search_field(ui: &mut Ui, p: &Palette) {
-    let size = egui::vec2(320.0, ui.spacing().interact_size.y);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
-    let painter = ui.painter();
-    painter.rect(
-        rect,
-        p.radius_sm,
-        p.bg_extreme,
-        Stroke::new(p.stroke_hairline, p.border_subtle),
-        StrokeKind::Inside,
-    );
-    let icon_rect = egui::Rect::from_center_size(
-        egui::pos2(
-            rect.left() + p.space_2 + p.size_icon_sm / 2.0,
-            rect.center().y,
-        ),
-        egui::vec2(p.size_icon_sm, p.size_icon_sm),
-    );
-    Icon::Search
-        .image(p.size_icon_sm, p.text_disabled)
-        .paint_at(ui, icon_rect);
-    painter.text(
-        egui::pos2(icon_rect.right() + p.space_1, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        "Search places, files, cameras",
-        egui::FontId::proportional(13.0),
-        p.text_disabled,
-    );
-    response.on_hover_text("Search: not available yet");
 }
 
 #[cfg(test)]

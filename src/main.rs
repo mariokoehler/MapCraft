@@ -27,12 +27,14 @@ fn main() -> eframe::Result {
             .position(|a| a == name)
             .and_then(|i| args.get(i + 1))
     };
-    // `--open add-folder[=<folder>]`, `--open sources`, `--open details` or `--open strip`:
-    // start with that dialog, the first photo selected, or the first strip open (screenshots).
+    // `--open add-folder[=<folder>]`, `--open sources`, `--open details`, `--open strip` or
+    // `--open search=<text>`: start with that dialog, the first photo selected, the first strip
+    // open, or the text searched (screenshots).
     let open = match flag("--open").map(String::as_str) {
         Some("sources") => Some(app::StartDialog::Sources),
         Some("details") => Some(app::StartDialog::Details),
         Some("strip") => Some(app::StartDialog::Strip),
+        Some(s) if s.starts_with("search=") => Some(app::StartDialog::Search(s[7..].to_owned())),
         Some(o) if o.starts_with("add-folder") => Some(app::StartDialog::AddFolder(
             o.strip_prefix("add-folder=").map(std::path::PathBuf::from),
         )),
@@ -81,6 +83,7 @@ fn main() -> eframe::Result {
                 open,
                 perf,
                 launch: true,
+                network: true,
             };
             Ok(Box::new(app::MapCraftApp::new(&cc.egui_ctx, config)))
         }),

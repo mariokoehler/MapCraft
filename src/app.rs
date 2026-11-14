@@ -21,6 +21,7 @@ use crate::theme::{self, Palette, ThemeKind, Tokens};
 use crate::ui::details::{self, DetailPanel, PanelAction, PreviewFace, Previews};
 use crate::ui::folder_dialog::{FolderAction, FolderDialog};
 use crate::ui::map_view::{MapAction, MapView};
+use crate::ui::search::{SearchAction, SearchBox};
 use crate::ui::sources_dialog::{SourcesAction, SourcesDialog};
 use crate::ui::toasts::{self, ToastAction, Toasts};
 use crate::ui::top_bar::{self, Running, Task, TopBarAction};
@@ -43,6 +44,8 @@ pub enum StartDialog {
     Details,
     /// The strip of the first group in view that can't split, once the groups are built.
     Strip,
+    /// This text typed into the search field.
+    Search(String),
 }
 
 pub struct Config {
@@ -54,6 +57,8 @@ pub struct Config {
     pub perf: bool,
     /// Really start Explorer for Show in Explorer and Open (off in tests, which record them).
     pub launch: bool,
+    /// Downloads other than tiles may run when the user asks (the place names; off in tests).
+    pub network: bool,
 }
 
 /// A change to the library that waits until the thumbnail job has stopped. The job writes
@@ -105,6 +110,7 @@ pub struct MapCraftApp {
     /// What Show in Explorer and Open asked for, when `launch` is off (for the tests).
     launched: Vec<(Launch, i64)>,
     launch_errors: (Sender<String>, Receiver<String>),
+    search: SearchBox,
 }
 
 impl MapCraftApp {
@@ -157,6 +163,12 @@ impl MapCraftApp {
             launch: config.launch,
             launched: Vec::new(),
             launch_errors: mpsc::channel(),
+            search: SearchBox::new(
+                config.data_folder.join("library.sqlite"),
+                &config.data_folder,
+                config.network,
+                ctx.clone(),
+            ),
         };
         app.refresh();
         // Thumbnails left over from the last session (or never made) are made now.
@@ -185,6 +197,7 @@ impl MapCraftApp {
                 app.select(first);
             }
             Some(StartDialog::Strip) => app.map.open_first_strip(),
+            Some(StartDialog::Search(text)) => app.search.type_in(&text),
             None => {}
         }
         app
@@ -570,7 +583,9 @@ impl MapCraftApp {
         let bar = Panel::top("top-bar")
             .exact_size(p.size_topbar)
             .frame(Frame::NONE.fill(p.bg_panel))
-            .show(ui, |ui| bar_action = top_bar::show(ui, &p, counts, running));
+            .show(ui, |ui| {
+                bar_action = top_bar::show(ui, &p, counts, running, &mut self.search)
+            });
         let r = bar.response.rect;
         ui.painter().hline(
             r.x_range(),
@@ -691,6 +706,16 @@ impl MapCraftApp {
             }
             _ => self.hover = None,
         }
+        match self.search.dropdown(&ctx, &p) {
+            Some(SearchAction::GoTo { lat, lon, zoom }) => self.map.go_to(lat, lon, zoom),
+            Some(SearchAction::ZoomTo(b)) => self.map.zoom_to(b),
+            Some(SearchAction::Photo { id, lat, lon }) => {
+                // Close enough to see it; it may still sit in a group (marked as selected).
+                self.map.go_to(lat, lon, self.map.zoom().max(15.0));
+                self.select(Some(id));
+            }
+            None => {}
+        }
         if let Some(ToastAction::ZoomTo(b)) = self.toasts.show(&ctx, &p, map_rect) {
             self.map.zoom_to(b);
         }
@@ -753,6 +778,7 @@ mod tests {
                                 open: open.clone(),
                                 perf: false,
                                 launch: false,
+                                network: false,
                             },
                         )
                     });
@@ -1029,6 +1055,60 @@ mod tests {
     }
 
     #[test]
+    fn searching_finds_places_and_photos() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 40);
+        let mut h = harness(dir.path());
+        settled(&mut h);
+        // Without the place index, the dropdown offers the download (only when clicked).
+        h.get_by_label("Search").click();
+        h.run_steps(2);
+        h.get_by_label("Search").type_text("hamb");
+        step_until(&mut h, "the results", |h| {
+            h.query_by_label("Download place names (14 MB, from geonames.org)")
+                .is_some()
+        });
+        h.get_by_label_contains("2023-05-19_Hamburg"); // the demo trip's folder
+        h.get_by_label("Download place names (14 MB, from geonames.org)")
+            .click();
+        h.run_steps(3);
+        assert_eq!(h.state().as_ref().unwrap().search.download_asked, 1);
+
+        // With an index (a few rows of our own), places show, ranked by photos nearby.
+        let index = crate::places::index_path(dir.path());
+        std::fs::create_dir_all(index.parent().unwrap()).unwrap();
+        crate::places::build(
+            crate::places::tests::CITIES.as_bytes(),
+            crate::places::tests::ADMIN1.as_bytes(),
+            crate::places::tests::COUNTRIES.as_bytes(),
+            &index,
+        )
+        .unwrap();
+        let search = &mut h.state_mut().as_mut().unwrap().search;
+        search.reopen_for_tests();
+        search.type_in("hamb");
+        step_until(&mut h, "the place results", |h| {
+            h.query_by_label("Hamburg, Germany").is_some()
+        });
+        h.get_by_label("Hamburg, Germany").click();
+        h.run_steps(3);
+        let app = h.state().as_ref().unwrap();
+        assert_eq!(app.map.zoom(), 11.0, "a city's zoom");
+        assert!(!app.search.is_open());
+
+        // A file: ↓ to it and Enter selects it.
+        h.state_mut().as_mut().unwrap().search.type_in("IMG_00012");
+        step_until(&mut h, "the file", |h| {
+            h.query_by_label("IMG_00012.jpg").is_some()
+        });
+        h.key_press(egui::Key::Enter);
+        step_until(&mut h, "the panel", |h| {
+            h.query_by_label("Photo details").is_some()
+        });
+        assert!(!h.state().as_ref().unwrap().search.is_open());
+    }
+
+    #[test]
     fn removing_a_source_empties_the_map() {
         let dir = tempfile::tempdir().unwrap();
         imported(dir.path(), 8);
@@ -1098,6 +1178,7 @@ mod tests {
                                 open: Some(StartDialog::AddFolder(Some(photos.clone()))),
                                 perf: false,
                                 launch: false,
+                                network: false,
                             },
                         )
                     });

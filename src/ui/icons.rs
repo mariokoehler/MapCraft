@@ -56,6 +56,8 @@ icons! {
     ExternalLink => "external-link",
     Brush => "brush",
     Sliders => "sliders-horizontal",
+    MapPin => "map-pin",
+    Download => "download",
 }
 
 impl Icon {

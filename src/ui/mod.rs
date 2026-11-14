@@ -6,6 +6,7 @@ pub mod folder_dialog;
 pub mod icons;
 pub mod map_view;
 pub mod markers;
+pub mod search;
 pub mod sources_dialog;
 pub mod strip;
 pub mod toasts;
