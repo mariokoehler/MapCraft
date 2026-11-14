@@ -1,0 +1,17 @@
+# Rust build output
+/target/
+
+# Local settings and data never belong in the repo (design.md §3.3)
+settings.toml
+*.sqlite
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*.bak
+Thumbs.db
+desktop.ini
+
+# Claude Code's local, per-user settings
+.claude/settings.local.json
