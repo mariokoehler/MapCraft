@@ -11,19 +11,27 @@ use crate::ui::widgets::{self, thousands};
 
 const MARK: &[u8] = include_bytes!("../../assets/brand/mapcraft-mark-32.svg");
 
-/// A running import as the top bar shows it.
+/// A running background task as the top bar shows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Running {
+    pub task: Task,
     /// `None` while the folders are still being listed.
     pub progress: Option<(usize, usize)>,
     pub cancelling: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Task {
+    Import,
+    Thumbnails,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TopBarAction {
     AddFolder,
     Sources,
-    CancelImport,
+    /// Cancel the running task.
+    Cancel,
 }
 
 pub fn show(
@@ -49,7 +57,8 @@ pub fn show(
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add_space(p.space_1);
             widgets::ghost(ui, p, Icon::Settings, "Settings: not available yet", false);
-            let busy = running.is_some();
+            // Folders can be added while thumbnails are made: the import waits for them to stop.
+            let busy = running.is_some_and(|r| r.task == Task::Import);
             if widgets::ghost(ui, p, Icon::Folders, "Sources", true).clicked() {
                 action = Some(TopBarAction::Sources);
             }
@@ -64,7 +73,7 @@ pub fn show(
             if let Some(r) = running
                 && progress_chip(ui, p, r)
             {
-                action = Some(TopBarAction::CancelImport);
+                action = Some(TopBarAction::Cancel);
             }
             if counts.photos > 0 {
                 ui.label(
@@ -92,7 +101,8 @@ pub fn counts_text(c: Counts) -> String {
     s
 }
 
-/// The progress chip ("Importing 1,204 / 2,053") with its cancel button; true when cancelled.
+/// The progress chip ("Importing 1,204 / 2,053", "Making thumbnails 80 / 3,800") with its
+/// cancel button; true when cancelled.
 fn progress_chip(ui: &mut Ui, p: &Palette, r: Running) -> bool {
     let mut cancel = false;
     egui::Frame::NONE
@@ -103,19 +113,24 @@ fn progress_chip(ui: &mut Ui, p: &Palette, r: Running) -> bool {
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             // Right to left: cancel, bar, text, spinner.
-            cancel = widgets::ghost(
-                ui,
-                p,
-                Icon::X,
-                "Cancel import (it resumes next time)",
-                !r.cancelling,
-            )
-            .clicked();
+            let (hint, listing, doing) = match r.task {
+                Task::Import => (
+                    "Cancel import (it resumes next time)",
+                    "Listing folders…",
+                    "Importing",
+                ),
+                Task::Thumbnails => (
+                    "Stop making thumbnails (they continue next time)",
+                    "Preparing thumbnails…",
+                    "Making thumbnails",
+                ),
+            };
+            cancel = widgets::ghost(ui, p, Icon::X, hint, !r.cancelling).clicked();
             let (text, fraction) = match (r.cancelling, r.progress) {
                 (true, _) => ("Stopping…".to_owned(), None),
-                (false, None) => ("Listing folders…".to_owned(), None),
+                (false, None) => (listing.to_owned(), None),
                 (false, Some((done, total))) => (
-                    format!("Importing {} / {}", thousands(done), thousands(total)),
+                    format!("{doing} {} / {}", thousands(done), thousands(total)),
                     Some(if total == 0 {
                         1.0
                     } else {

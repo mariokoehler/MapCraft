@@ -4,7 +4,7 @@
 //! The UI thread only reads the library (its own connection, WAL mode) and never touches the
 //! photo folders: imports, folder walks and online checks run on background threads.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -12,7 +12,7 @@ use egui::{Frame, Panel, RichText, Stroke};
 use tracing::{error, info};
 
 use crate::import::scope::Scope;
-use crate::jobs::{ImportJob, JobEvent};
+use crate::jobs::{ImportJob, JobEvent, ThumbEvent, ThumbJob};
 use crate::library::{Counts, Library, Source};
 use crate::provider::Provider;
 use crate::theme::{self, Palette, ThemeKind, Tokens};
@@ -20,11 +20,13 @@ use crate::ui::folder_dialog::{FolderAction, FolderDialog};
 use crate::ui::map_view::{MapAction, MapView};
 use crate::ui::sources_dialog::{SourcesAction, SourcesDialog};
 use crate::ui::toasts::{self, ToastAction, Toasts};
-use crate::ui::top_bar::{self, Running, TopBarAction};
+use crate::ui::top_bar::{self, Running, Task, TopBarAction};
 use crate::ui::widgets::{self, thousands};
 
 /// Parallel metadata readers per import (design.md §3.4, user-confirmed).
 const READERS: usize = 4;
+/// Parallel thumbnail renderers (design.md §2.2(b): 4 workers on the NAS).
+const THUMB_WORKERS: usize = 4;
 /// How often the map's dots refresh while an import writes.
 const RELOAD_EVERY: Duration = Duration::from_secs(1);
 
@@ -45,6 +47,16 @@ pub struct Config {
     pub perf: bool,
 }
 
+/// A change to the library that waits until the thumbnail job has stopped. The job writes
+/// thumbnail states and files by photo id, so it must not run while photos are rewritten or
+/// deleted: it could mark a stale thumbnail as made, or give a removed photo's id to a new one.
+#[derive(Debug, Clone, PartialEq)]
+enum Change {
+    Import { source_id: i64, first: bool },
+    Scope { source_id: i64, scope: Scope },
+    Remove(i64),
+}
+
 /// Leaving folders out of a source removes photos, so it's confirmed first.
 struct NarrowScope {
     source_id: i64,
@@ -57,11 +69,16 @@ pub struct MapCraftApp {
     palette: Palette,
     map: MapView,
     db_path: PathBuf,
+    data_folder: PathBuf,
+    ctx: egui::Context,
     lib: Option<Library>,
     sources: Vec<Source>,
     source_counts: HashMap<i64, Counts>,
     counts: Counts,
     job: Option<ImportJob>,
+    thumbs: Option<ThumbJob>,
+    /// Changes waiting for the thumbnail job (or an import) to finish, in order.
+    waiting: VecDeque<Change>,
     last_reload: Instant,
     folder_dialog: Option<FolderDialog>,
     sources_dialog: Option<SourcesDialog>,
@@ -96,11 +113,15 @@ impl MapCraftApp {
                 ctx.clone(),
             ),
             db_path,
+            data_folder: config.data_folder.clone(),
+            ctx: ctx.clone(),
             lib,
             sources: Vec::new(),
             source_counts: HashMap::new(),
             counts: Counts::default(),
             job: None,
+            thumbs: None,
+            waiting: VecDeque::new(),
             last_reload: Instant::now(),
             folder_dialog: None,
             sources_dialog: None,
@@ -109,6 +130,12 @@ impl MapCraftApp {
             perf: config.perf.then(|| (Instant::now(), Duration::ZERO, 0)),
         };
         app.refresh();
+        // Thumbnails left over from the last session (or never made) are made now.
+        if let Some(lib) = &app.lib
+            && lib.thumb_counts().is_ok_and(|(_, pending)| pending > 0)
+        {
+            app.start_thumbs();
+        }
         match config.open {
             Some(StartDialog::AddFolder(folder)) => {
                 let mut d = FolderDialog::add();
@@ -148,10 +175,51 @@ impl MapCraftApp {
         self.last_reload = Instant::now();
     }
 
-    fn start_job(&mut self, source_id: i64, first: bool, ctx: &egui::Context) {
-        if self.job.is_some() {
-            return; // one job at a time; the UI doesn't offer a second
+    /// Makes `change` now, or once the running jobs have stopped (the thumbnail job is asked to).
+    fn change(&mut self, change: Change) {
+        if let Some(t) = &self.thumbs {
+            t.cancel();
         }
+        self.waiting.push_back(change);
+        if self.thumbs.is_none() && self.job.is_none() {
+            self.resume();
+        }
+    }
+
+    /// Makes the waiting changes until one starts an import; with none left, makes thumbnails.
+    fn resume(&mut self) {
+        while let Some(change) = self.waiting.pop_front() {
+            match change {
+                Change::Import { source_id, first } => {
+                    self.start_import(source_id, first);
+                    return;
+                }
+                Change::Scope { source_id, scope } => {
+                    let Some(lib) = &mut self.lib else { continue };
+                    match lib.set_scope(source_id, &scope) {
+                        Ok(_) => {
+                            self.refresh();
+                            self.start_import(source_id, false);
+                            return;
+                        }
+                        Err(e) => error!("can't change the folders: {e}"),
+                    }
+                }
+                Change::Remove(id) => {
+                    if let Some(lib) = &self.lib
+                        && let Err(e) = lib.remove_source(id)
+                    {
+                        error!("can't remove the source: {e}");
+                    }
+                    self.refresh();
+                }
+            }
+        }
+        // The job first deletes the files of removed photos, then makes the missing thumbnails.
+        self.start_thumbs();
+    }
+
+    fn start_import(&mut self, source_id: i64, first: bool) {
         info!("import of source {source_id} started");
         self.toasts.replace(Vec::new());
         self.job = Some(ImportJob::start(
@@ -159,8 +227,55 @@ impl MapCraftApp {
             source_id,
             first,
             READERS,
-            ctx.clone(),
+            self.ctx.clone(),
         ));
+    }
+
+    /// Started only on events (start-up, after an import or a change), never because thumbnails
+    /// are pending: photos on an unreachable drive stay pending, and would restart it forever.
+    fn start_thumbs(&mut self) {
+        if self.thumbs.is_some() || self.job.is_some() || self.lib.is_none() {
+            return;
+        }
+        self.thumbs = Some(ThumbJob::start(
+            self.db_path.clone(),
+            self.data_folder.clone(),
+            THUMB_WORKERS,
+            self.ctx.clone(),
+        ));
+    }
+
+    fn poll_thumbs(&mut self) {
+        let Some(job) = &mut self.thumbs else { return };
+        let mut finished = false;
+        for e in job.poll() {
+            match e {
+                ThumbEvent::Progress { .. } => {}
+                ThumbEvent::Done(s) => {
+                    info!(
+                        "thumbnails: {} made, {} placeholders, {} skipped{}",
+                        s.made,
+                        s.placeholders,
+                        s.skipped,
+                        if s.cancelled { ", cancelled" } else { "" }
+                    );
+                    finished = true;
+                }
+                ThumbEvent::Failed(msg) => {
+                    error!("thumbnails failed: {msg}");
+                    finished = true;
+                }
+            }
+        }
+        if finished {
+            self.thumbs = None;
+            self.refresh();
+            if !self.waiting.is_empty() {
+                self.resume();
+            }
+        } else if self.job.is_none() && self.last_reload.elapsed() >= RELOAD_EVERY {
+            self.refresh(); // new thumbnails show as they're made
+        }
     }
 
     fn poll_job(&mut self) {
@@ -188,20 +303,29 @@ impl MapCraftApp {
         if finished {
             self.job = None;
             self.refresh();
+            self.resume(); // the next waiting change, or thumbnails for what was imported
         } else if self.last_reload.elapsed() >= RELOAD_EVERY {
             self.refresh();
         }
     }
 
     fn running(&self) -> Option<Running> {
-        let job = self.job.as_ref()?;
-        let progress = match &job.last {
-            Some(crate::import::Progress::Reading { done, total }) => Some((*done, *total)),
-            _ => None,
-        };
+        if let Some(job) = &self.job {
+            let progress = match &job.last {
+                Some(crate::import::Progress::Reading { done, total }) => Some((*done, *total)),
+                _ => None,
+            };
+            return Some(Running {
+                task: Task::Import,
+                progress,
+                cancelling: job.cancelling(),
+            });
+        }
+        let t = self.thumbs.as_ref()?;
         Some(Running {
-            progress,
-            cancelling: job.cancelling(),
+            task: Task::Thumbnails,
+            progress: (t.total > 0).then_some((t.done, t.total)),
+            cancelling: t.cancelling(),
         })
     }
 
@@ -225,7 +349,10 @@ impl MapCraftApp {
                 match lib.add_source(&root, unc.as_deref(), &label, &scope) {
                     Ok(id) => {
                         self.refresh();
-                        self.start_job(id, true, ctx);
+                        self.change(Change::Import {
+                            source_id: id,
+                            first: true,
+                        });
                     }
                     Err(e) => self.toasts.replace(vec![toasts::for_failure(&format!(
                         "Can't add the folder ({e})"
@@ -234,7 +361,7 @@ impl MapCraftApp {
             }
             FolderAction::Apply { source_id, scope } => {
                 match lib.count_out_of_scope(source_id, &scope) {
-                    Ok(0) => self.apply_scope(source_id, &scope, ctx),
+                    Ok(0) => self.change(Change::Scope { source_id, scope }),
                     Ok(removes) => {
                         let label = self
                             .sources
@@ -251,17 +378,6 @@ impl MapCraftApp {
                     Err(e) => error!("can't count the photos to leave out: {e}"),
                 }
             }
-        }
-    }
-
-    fn apply_scope(&mut self, source_id: i64, scope: &Scope, ctx: &egui::Context) {
-        let Some(lib) = &mut self.lib else { return };
-        match lib.set_scope(source_id, scope) {
-            Ok(_) => {
-                self.refresh();
-                self.start_job(source_id, false, ctx);
-            }
-            Err(e) => error!("can't change the folders: {e}"),
         }
     }
 
@@ -304,7 +420,10 @@ impl MapCraftApp {
         );
         if go {
             let n = self.narrow.take().expect("shown");
-            self.apply_scope(n.source_id, &n.scope, ctx);
+            self.change(Change::Scope {
+                source_id: n.source_id,
+                scope: n.scope,
+            });
         } else if keep || close {
             self.narrow = None;
         }
@@ -328,7 +447,10 @@ impl MapCraftApp {
             }
             SourcesAction::Rescan(id) => {
                 self.sources_dialog = None;
-                self.start_job(id, false, ctx);
+                self.change(Change::Import {
+                    source_id: id,
+                    first: false,
+                });
             }
             SourcesAction::ChangeFolders(id) => {
                 if let Some(s) = self.sources.iter().find(|s| s.id == id) {
@@ -337,14 +459,7 @@ impl MapCraftApp {
                     self.sources_dialog = None;
                 }
             }
-            SourcesAction::Remove(id) => {
-                if let Some(lib) = &self.lib
-                    && let Err(e) = lib.remove_source(id)
-                {
-                    error!("can't remove the source: {e}");
-                }
-                self.refresh();
-            }
+            SourcesAction::Remove(id) => self.change(Change::Remove(id)),
         }
     }
 }
@@ -362,6 +477,7 @@ impl MapCraftApp {
         let started = Instant::now();
         let ctx = ui.ctx().clone();
         self.poll_job();
+        self.poll_thumbs();
 
         let p = self.palette.clone();
         let running = self.running();
@@ -382,9 +498,11 @@ impl MapCraftApp {
             Some(TopBarAction::Sources) => {
                 self.sources_dialog = Some(SourcesDialog::open(&self.sources, &ctx))
             }
-            Some(TopBarAction::CancelImport) => {
+            Some(TopBarAction::Cancel) => {
                 if let Some(j) = &self.job {
                     j.cancel();
+                } else if let Some(t) = &self.thumbs {
+                    t.cancel();
                 }
             }
             None => {}
@@ -532,6 +650,46 @@ mod tests {
     }
 
     #[test]
+    fn thumbnails_are_made_at_start_and_their_files_go_with_the_source() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 8);
+        let thumbs_dir = dir.path().join("thumbs");
+        let files = walkdir_count;
+        let mut h = harness(dir.path());
+        step_until(&mut h, "the thumbnails", |h| {
+            h.state().as_ref().unwrap().thumbs.is_none()
+        });
+        let app = h.state().as_ref().unwrap();
+        let (made, pending) = app.lib.as_ref().unwrap().thumb_counts().unwrap();
+        assert_eq!((made, pending), (7, 0), "every photo on the map has one");
+        assert_eq!(files(&thumbs_dir), 7);
+        let source = app.sources[0].id;
+        h.state_mut()
+            .as_mut()
+            .unwrap()
+            .change(Change::Remove(source));
+        step_until(&mut h, "the sweep", |h| {
+            h.state().as_ref().unwrap().thumbs.is_none() && files(&thumbs_dir) == 0
+        });
+    }
+
+    /// The number of files below `dir`.
+    fn walkdir_count(dir: &Path) -> usize {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        rd.flatten()
+            .map(|e| {
+                if e.path().is_dir() {
+                    walkdir_count(&e.path())
+                } else {
+                    1
+                }
+            })
+            .sum()
+    }
+
+    #[test]
     fn removing_a_source_empties_the_map() {
         let dir = tempfile::tempdir().unwrap();
         imported(dir.path(), 8);
@@ -543,8 +701,10 @@ mod tests {
         h.run_steps(4); // a new window is laid out invisibly on its first frame
         h.get_by_label("Remove “Demo trips”?");
         h.get_by_label("Remove source").click();
-        h.run_steps(3);
-        assert_eq!(h.state().as_ref().unwrap().counts.photos, 0);
+        // The removal waits for the thumbnail job, which started with the app.
+        step_until(&mut h, "the removal", |h| {
+            h.state().as_ref().unwrap().counts.photos == 0
+        });
         h.get_by_label("Close (Esc)").click();
         h.run_steps(3);
         h.get_by_label("No photos on the map yet");
@@ -649,7 +809,9 @@ mod tests {
             crate::import::run(&mut lib, src, &Default::default(), 2, |_| {}).unwrap();
         }
         let mut h = harness(dir.path());
-        h.run();
+        step_until(&mut h, "the thumbnails", |h| {
+            h.state().as_ref().unwrap().thumbs.is_none()
+        });
         h.get_by_label("24 photos · 3 without a position");
         assert!(h.query_by_label("No photos on the map yet").is_none());
         // Open the sources list from the state, as the top bar's icon button would.

@@ -94,6 +94,17 @@ pub struct PhotoPoint {
     pub id: i64,
     pub lat: f64,
     pub lon: f64,
+    pub thumb: Thumb,
+}
+
+/// A photo's thumbnail, as the map draws it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Thumb {
+    /// Not made yet (or being remade): the photo shows as a dot.
+    Pending,
+    Ok,
+    /// No usable source: a placeholder marker.
+    Failed,
 }
 
 /// The matching key of a path part: Windows compares file names case-insensitively.
@@ -345,14 +356,19 @@ impl Library {
 
     /// Positions of every photo that has one and isn't missing.
     pub fn positions(&self) -> Result<Vec<PhotoPoint>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, lat, lon FROM photo WHERE lat IS NOT NULL AND state = 'ok'")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, lat, lon, thumb_state FROM photo WHERE lat IS NOT NULL AND state = 'ok'",
+        )?;
         stmt.query_map([], |r| {
             Ok(PhotoPoint {
                 id: r.get(0)?,
                 lat: r.get(1)?,
                 lon: r.get(2)?,
+                thumb: match r.get_ref(3)?.as_str()? {
+                    THUMB_OK => Thumb::Ok,
+                    THUMB_FAILED => Thumb::Failed,
+                    _ => Thumb::Pending,
+                },
             })
         })?
         .collect()

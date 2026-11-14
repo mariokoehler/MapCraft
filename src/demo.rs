@@ -1,4 +1,5 @@
-//! Generated test photos: minimal JPEGs that carry only EXIF (a position and a capture date).
+//! Generated test photos: small JPEGs with real pixels (a made-up landscape) and EXIF (a position
+//! and a capture date).
 //! Used by the tests and by `mapcraft --make-demo <folder> [count]`, so trials of the GUI never
 //! need real photos (CLAUDE.md: test images are our own or generated).
 
@@ -15,6 +16,44 @@ pub fn jpeg_with_gps(lat: f64, lon: f64, date: &str) -> Vec<u8> {
     jpeg.extend(b"Exif\0\0");
     jpeg.extend(tiff);
     jpeg.extend([0xFF, 0xD9]);
+    jpeg
+}
+
+/// A viewable 360 × 240 JPEG (a sky, a sun and a ridge, tinted by `hue` 0..1) carrying the same
+/// EXIF as `jpeg_with_gps`, so thumbnails and previews of demo photos can be made and seen.
+pub fn photo_with_gps(lat: f64, lon: f64, date: &str, hue: f64) -> Vec<u8> {
+    let (w, h) = (360u32, 240u32);
+    let tint = |base: [f64; 3]| {
+        let a = hue * std::f64::consts::TAU;
+        [
+            base[0] * (0.75 + 0.25 * a.cos()),
+            base[1] * (0.75 + 0.25 * (a + 2.1).cos()),
+            base[2] * (0.75 + 0.25 * (a + 4.2).cos()),
+        ]
+    };
+    let (sky, land) = (tint([120.0, 170.0, 230.0]), tint([70.0, 120.0, 60.0]));
+    let sun = (w as f64 * (0.2 + 0.6 * hue), 70.0);
+    let img = image::RgbImage::from_fn(w, h, |x, y| {
+        let (xf, yf) = (x as f64, y as f64);
+        let ridge = 150.0 + 25.0 * (xf / 40.0 + hue * 6.0).sin() + 10.0 * (xf / 13.0).cos();
+        let c = if yf > ridge {
+            land.map(|v| v * (1.0 - (yf - ridge) / 300.0))
+        } else if (xf - sun.0).hypot(yf - sun.1) < 22.0 {
+            [250.0, 220.0, 140.0]
+        } else {
+            sky.map(|v| v * (0.8 + 0.2 * yf / ridge))
+        };
+        image::Rgb(c.map(|v| v.clamp(0.0, 255.0) as u8))
+    });
+    let mut pixels = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut pixels, 85)
+        .encode_image(&img)
+        .expect("encoding to memory");
+    // The EXIF segment goes right after the start-of-image marker.
+    let exif = jpeg_with_gps(lat, lon, date);
+    let mut jpeg = pixels[..2].to_vec();
+    jpeg.extend(&exif[2..exif.len() - 2]);
+    jpeg.extend(&pixels[2..]);
     jpeg
 }
 
@@ -102,10 +141,11 @@ pub fn make_demo(folder: &Path, count: usize) -> io::Result<()> {
         let bytes = if i % 8 == 7 {
             vec![0xFF, 0xD8, 0xFF, 0xD9] // a JPEG without EXIF: no position
         } else {
-            jpeg_with_gps(
+            photo_with_gps(
                 lat + (next() - 0.5) * 0.2,
                 lon + (next() - 0.5) * 0.3,
                 &date,
+                next(),
             )
         };
         fs::write(dir.join(format!("IMG_{i:05}.jpg")), bytes)?;

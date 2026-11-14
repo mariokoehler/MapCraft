@@ -73,6 +73,24 @@ pub struct Palette {
     pub elevation_modal: Shadow,
     pub radius_lg: u8,
     pub indent: f32,
+    // Added for M3's thumbnail markers, hover card and detail panel.
+    pub map_marker_frame_selected: Color32,
+    pub map_marker_placeholder: Color32,
+    pub map_marker_placeholder_fg: Color32,
+    pub map_marker_missing: Color32,
+    pub map_marker_missing_fg: Color32,
+    pub map_badge_bg: Color32,
+    pub map_badge_text: Color32,
+    pub elevation_marker: Shadow,
+    pub elevation_marker_raised: Shadow,
+    pub stroke_marker: f32,
+    pub stroke_marker_selected: f32,
+    pub stroke_marker_edge: f32,
+    pub size_marker: f32,
+    pub size_badge: f32,
+    pub size_panel: f32,
+    pub panel_margin: f32,
+    pub interact_height: f32,
 }
 
 impl Palette {
@@ -125,6 +143,23 @@ impl Palette {
             elevation_modal: t.shadow("elevation-modal"),
             radius_lg: t.px("radius-lg") as u8,
             indent: t.px("indent"),
+            map_marker_frame_selected: t.color("map-marker-frame-selected"),
+            map_marker_placeholder: t.color("map-marker-placeholder"),
+            map_marker_placeholder_fg: t.color("map-marker-placeholder-fg"),
+            map_marker_missing: t.color("map-marker-missing"),
+            map_marker_missing_fg: t.color("map-marker-missing-fg"),
+            map_badge_bg: t.color("map-badge-bg"),
+            map_badge_text: t.color("map-badge-text"),
+            elevation_marker: t.shadow("elevation-marker"),
+            elevation_marker_raised: t.shadow("elevation-marker-raised"),
+            stroke_marker: t.px("stroke-marker"),
+            stroke_marker_selected: t.px("stroke-marker-selected"),
+            stroke_marker_edge: t.px("stroke-marker-edge"),
+            size_marker: t.px("size-marker"),
+            size_badge: t.px("size-badge"),
+            size_panel: t.px("size-panel"),
+            panel_margin: t.px("panel-margin"),
+            interact_height: t.px("interact-height"),
         }
     }
 }

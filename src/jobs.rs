@@ -179,6 +179,10 @@ impl ThumbJob {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
+    pub fn cancelling(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
     pub fn poll(&mut self) -> Vec<ThumbEvent> {
         let mut out = Vec::new();
         loop {
@@ -282,7 +286,16 @@ fn run_thumbs(
                     let made = match outcome {
                         Ok(Ok((jpeg, _))) => {
                             match thumbs::store(&thumbs::path(data, t.id, THUMB), &jpeg) {
-                                Ok(()) => Made::Ok,
+                                Ok(()) => {
+                                    // A preview from before the photo changed (or from a former
+                                    // photo with this id) is stale: the panel makes a new one.
+                                    let _ = std::fs::remove_file(thumbs::path(
+                                        data,
+                                        t.id,
+                                        thumbs::PREVIEW,
+                                    ));
+                                    Made::Ok
+                                }
                                 Err(_) => Made::Skipped,
                             }
                         }
