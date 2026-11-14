@@ -653,6 +653,10 @@ impl MapCraftApp {
             Some(TopBarAction::Filters) => self.search.close(),
             None => {}
         }
+        // The search dropdown and the panel would overlap: the newer one stays.
+        if self.search.is_open() && self.filters.open {
+            self.filters.open = false;
+        }
         // The filter panel takes Esc first while open, before the strip and the selection.
         if self.filters.panel(
             &ctx,
@@ -1221,8 +1225,8 @@ mod tests {
         h.get_by_label("Filters").click();
         h.run_steps(3);
         h.get_by_label("21 of 21 photos on the map");
-        h.get_by_label("From");
-        h.get_by_label("To");
+        h.get_by_label("Date from");
+        h.get_by_label("Date to");
 
         // A year: the map, the counts and the chip follow.
         h.get_by_label("2022").click();
@@ -1278,6 +1282,136 @@ mod tests {
         h.get_by_label("Remove the date filter").click();
         h.run_steps(3);
         assert_eq!(shown(&h), 21);
+    }
+
+    /// A press and release at `pos`, moving by `by` in between (zero: a click).
+    fn press_drag(h: &mut Harness<'static, Option<MapCraftApp>>, pos: egui::Pos2, by: egui::Vec2) {
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.event(egui::Event::PointerMoved(pos));
+        h.run_steps(1);
+        h.event(button(pos, true));
+        h.run_steps(1);
+        for k in 1..=4 {
+            h.event(egui::Event::PointerMoved(pos + by * k as f32 / 4.0));
+            h.run_steps(1);
+        }
+        h.event(button(pos + by, false));
+        h.run_steps(3);
+    }
+
+    #[test]
+    fn the_date_handles_drag_and_a_press_alone_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 16); // May 2019 to June 2024
+        let mut h = harness_with(dir.path(), Some(StartDialog::Filters(None)));
+        settled(&mut h);
+        let from = h.get_by_label("Date from").rect();
+        press_drag(
+            &mut h,
+            from.center() + egui::vec2(5.0, 0.0),
+            egui::Vec2::ZERO,
+        );
+        assert_eq!(h.state().as_ref().unwrap().filter.dates, None);
+        let to = h.get_by_label("Date to").rect();
+        press_drag(&mut h, to.center() - egui::vec2(5.0, 0.0), egui::Vec2::ZERO);
+        assert_eq!(h.state().as_ref().unwrap().filter.dates, None);
+        // Dragging From a third of the way in: the range starts later and ends where it did.
+        let rail = to.center().x - from.center().x;
+        press_drag(&mut h, from.center(), egui::vec2(rail / 3.0, 0.0));
+        let (a, b) = h.state().as_ref().unwrap().filter.dates.expect("a range");
+        assert!(a > 201905 && a < 202406, "{a}");
+        assert_eq!(b, 202406);
+        assert!(h.state().as_ref().unwrap().shown < 14);
+        // Typing a search closes the panel.
+        h.state_mut().as_mut().unwrap().search.type_in("img");
+        h.run_steps(3);
+        assert!(!h.state().as_ref().unwrap().filters.open);
+    }
+
+    #[test]
+    fn clicks_on_the_chips_and_the_panel_keep_the_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 16);
+        let mut h = harness_with(dir.path(), Some(StartDialog::Details));
+        step_until(&mut h, "the panel", |h| {
+            h.query_by_label("Photo details").is_some()
+        });
+        // The selected photo is from 2019: it stays shown.
+        let app = h.state_mut().as_mut().unwrap();
+        app.filter.dates = Some((201901, 201912));
+        app.filter_changed();
+        h.run_steps(3);
+        let chip = h.get_by_label("Jan 2019 – Dec 2019").rect();
+        press_drag(&mut h, chip.center(), egui::Vec2::ZERO);
+        assert!(
+            h.state().as_ref().unwrap().detail.is_some(),
+            "a chip's text"
+        );
+        h.get_by_label("Filters (1 set)").click();
+        h.run_steps(3);
+        // The histogram, above the range's handles.
+        let from = h.get_by_label("Date from").rect();
+        press_drag(
+            &mut h,
+            from.center() + egui::vec2(60.0, -40.0),
+            egui::Vec2::ZERO,
+        );
+        let app = h.state().as_ref().unwrap();
+        assert!(app.detail.is_some(), "the histogram");
+        assert!(app.filters.open, "a press inside keeps the panel");
+        assert_eq!(app.filter.dates, Some((201901, 201912)));
+    }
+
+    #[test]
+    fn sources_and_many_cameras_in_the_panel() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 8); // 7 on the map, 3 cameras
+        // A second source: 8 photos from 8 more cameras.
+        let more = dir.path().join("more");
+        std::fs::create_dir_all(&more).unwrap();
+        for i in 0..8 {
+            let model = format!("Cam {i}");
+            let jpeg = crate::demo::photo_with(
+                47.0,
+                8.0 + i as f64 * 0.01,
+                "2018:03:03 10:00:00",
+                0.3,
+                Some(("Test", &model)),
+            );
+            std::fs::write(more.join(format!("M_{i}.jpg")), jpeg).unwrap();
+        }
+        let more_id = {
+            let mut lib = Library::open(&dir.path().join("library.sqlite")).unwrap();
+            let id = lib.add_source(&more, None, "More", &Scope::all()).unwrap();
+            crate::import::run(&mut lib, id, &Default::default(), 2, |_| {}).unwrap();
+            id
+        };
+        let mut h = harness_with(dir.path(), Some(StartDialog::Filters(None)));
+        settled(&mut h);
+        h.get_by_label("15 of 15 photos on the map");
+        h.query_all_by_label("More").next().unwrap().click();
+        h.run_steps(3);
+        assert_eq!(h.state().as_ref().unwrap().shown, 7);
+        // The chip names the source left: the row's box and text, and the chip.
+        assert_eq!(h.query_all_by_label("Demo trips").count(), 3);
+        // Six cameras, then the rest on request.
+        assert!(h.query_by_label("Test Cam 7").is_none());
+        h.get_by_label("Show all 11 cameras").click();
+        h.run_steps(3);
+        assert!(h.query_all_by_label("Test Cam 7").count() >= 1);
+        // The hidden source is removed: its filter goes with it.
+        let app = h.state_mut().as_mut().unwrap();
+        app.lib.as_ref().unwrap().remove_source(more_id).unwrap();
+        app.refresh();
+        h.run_steps(3);
+        let app = h.state().as_ref().unwrap();
+        assert!(!app.filter.is_active());
+        assert_eq!(app.shown, 7);
     }
 
     #[test]

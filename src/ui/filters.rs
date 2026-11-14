@@ -36,6 +36,8 @@ pub struct FilterPanel {
     /// The range while a knob is dragged; applied on release (a re-query per frame is too much
     /// for a big library).
     dragging: Option<(Knob, Month, Month)>,
+    /// The pointer's offset from the dragged handle's centre when grabbed.
+    grab: f32,
 }
 
 impl Default for FilterPanel {
@@ -46,6 +48,7 @@ impl Default for FilterPanel {
             all_cameras: false,
             earlier: false,
             dragging: None,
+            grab: 0.0,
         }
     }
 }
@@ -271,13 +274,19 @@ impl FilterPanel {
         painter.rect_filled(rail, 2, p.border_subtle);
         painter.rect_filled(Rect::from_x_y_ranges(xa..=xb, rail.y_range()), 2, p.accent);
         let mut out = None;
+        // Close handles split the space between them, so both can still be grabbed.
+        let mid = (xa + xb) / 2.0;
         for (knob, x) in [(Knob::From, xa), (Knob::To, xb)] {
             let r = Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(16.0));
+            let hit = match knob {
+                Knob::From => Rect::from_x_y_ranges(r.left()..=r.right().min(mid), r.y_range()),
+                Knob::To => Rect::from_x_y_ranges(r.left().max(mid)..=r.right(), r.y_range()),
+            };
             let id = ui.scope_id().with(("knob", knob == Knob::From));
-            let resp = ui.interact(r, id, Sense::drag());
+            let resp = ui.interact(hit, id, Sense::drag());
             let (label, month) = match knob {
-                Knob::From => ("From", filter::month_at(first, a)),
-                Knob::To => ("To", filter::month_at(first, b)),
+                Knob::From => ("Date from", filter::month_at(first, a)),
+                Knob::To => ("Date to", filter::month_at(first, b)),
             };
             resp.widget_info(|| egui::WidgetInfo::slider(true, month as f64, label));
             let hot = resp.hovered() || resp.dragged();
@@ -287,14 +296,17 @@ impl FilterPanel {
                 p.bg_window,
                 Stroke::new(if hot { 2.0 } else { 1.5 }, p.accent),
             );
+            if resp.drag_started()
+                && let Some(pos) = resp.interact_pointer_pos()
+            {
+                // Where on the handle it was grabbed: a press without moving changes nothing.
+                self.grab = pos.x - x;
+            }
             if resp.dragged()
                 && let Some(pos) = resp.interact_pointer_pos()
             {
-                let t = ((pos.x - rail.left()) / rail.width()).clamp(0.0, 1.0) * n as f32;
-                let (na, nb) = match knob {
-                    Knob::From => ((t.floor() as i64).clamp(0, b), b),
-                    Knob::To => (a, (t.ceil() as i64 - 1).clamp(a, n - 1)),
-                };
+                let t = (pos.x - self.grab - rail.left()) / rail.width() * n as f32;
+                let (na, nb) = filter::drag_range(knob == Knob::From, t, a, b, n);
                 self.dragging = Some((
                     knob,
                     filter::month_at(first, na),

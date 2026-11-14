@@ -1,4 +1,6 @@
 //! Lucide icons (ISC licence, `assets/icons/`, from lucide-static 1.65.0), embedded in the exe.
+//! `list-filter.svg` was written by hand from Lucide's three paths (`M3 6h18`, `M7 12h10`,
+//! `M10 18h4`), as the design system's mockups draw it.
 //!
 //! The files draw with `currentColor`, which an SVG renderer paints black, and black can't be
 //! tinted to another colour. So each icon is turned white once, then tinted per widget state

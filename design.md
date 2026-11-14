@@ -942,7 +942,9 @@ Unconfirmed defaults awaiting review:
   - no online search yet.
 - §2.3 filters (M5): session only; undated photos hidden by a date range; hidden sources and
   cameras stored as exclusions; static checklist counts; 6 cameras then Show all; 4 year buttons
-  then Earlier…; a hidden selection is let go; search follows the filters.
+  then Earlier…; a hidden selection is let go; search follows the filters; the Sources list
+  shows only with 2 or more sources; the date range applies when a handle is released; the top
+  bar's "of M" counts the photos on the map.
 - §3.2: the planned crates.
 - §2.8(f): the tree starts all ticked; leaving a folder out later removes its records; a folder
   that is, lies inside, or contains an existing source can't be added (it would duplicate

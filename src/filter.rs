@@ -211,6 +211,18 @@ pub fn month_at(first: Month, i: i64) -> Month {
     ((n / 12) * 100 + n % 12 + 1) as Month
 }
 
+/// The range `a..=b` (month indexes of `n`) after a handle is dragged to `t`, in months from
+/// the span's start. The handles sit on month edges: From before month `a`, To after month `b`;
+/// each snaps to the nearest edge and never passes the other.
+pub fn drag_range(from: bool, t: f32, a: i64, b: i64, n: i64) -> (i64, i64) {
+    let edge = t.round() as i64;
+    if from {
+        (edge.clamp(0, b), b)
+    } else {
+        (a, (edge - 1).clamp(a, n - 1))
+    }
+}
+
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
@@ -263,6 +275,28 @@ mod tests {
         assert_eq!(parse_month("19"), None);
         assert_eq!(range_text(201905, 202308), "May 2019 – Aug 2023");
         assert_eq!(range_text(201701, 201701), "Jan 2017");
+    }
+
+    #[test]
+    fn handles_snap_to_month_edges_and_never_cross() {
+        // 12 months, showing 3..=8: From sits at edge 3, To at edge 9.
+        assert_eq!(
+            drag_range(true, 3.0, 3, 8, 12),
+            (3, 8),
+            "a press without moving"
+        );
+        assert_eq!(drag_range(false, 9.0, 3, 8, 12), (3, 8));
+        assert_eq!(drag_range(true, 3.4, 3, 8, 12), (3, 8));
+        assert_eq!(drag_range(true, 1.6, 3, 8, 12), (2, 8));
+        assert_eq!(drag_range(true, -5.0, 3, 8, 12), (0, 8), "the start");
+        assert_eq!(drag_range(false, 30.0, 3, 8, 12), (3, 11), "the end");
+        assert_eq!(drag_range(true, 11.0, 3, 8, 12), (8, 8), "never past To");
+        assert_eq!(
+            drag_range(false, 0.0, 3, 8, 12),
+            (3, 3),
+            "never before From"
+        );
+        assert_eq!(drag_range(false, 6.0, 3, 8, 12), (3, 5), "mid-rail");
     }
 
     #[test]
