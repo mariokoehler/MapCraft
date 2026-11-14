@@ -27,11 +27,12 @@ fn main() -> eframe::Result {
             .position(|a| a == name)
             .and_then(|i| args.get(i + 1))
     };
-    // `--open add-folder[=<folder>]`, `--open sources` or `--open details`: start with that
-    // dialog, or with the first photo on the map selected (screenshots).
+    // `--open add-folder[=<folder>]`, `--open sources`, `--open details` or `--open strip`:
+    // start with that dialog, the first photo selected, or the first strip open (screenshots).
     let open = match flag("--open").map(String::as_str) {
         Some("sources") => Some(app::StartDialog::Sources),
         Some("details") => Some(app::StartDialog::Details),
+        Some("strip") => Some(app::StartDialog::Strip),
         Some(o) if o.starts_with("add-folder") => Some(app::StartDialog::AddFolder(
             o.strip_prefix("add-folder=").map(std::path::PathBuf::from),
         )),

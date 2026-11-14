@@ -28,7 +28,7 @@ but the app isn't sold or advertised (user, 2026-11-14).
 
 ## Current status (2026-11-14)
 
-**M4 in progress: grouping (clustering per zoom, count badges, the strip).**
+**M4 built: grouping (clustering per zoom, count badges, the strip); awaiting the user's try.**
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
   copies.
@@ -42,6 +42,7 @@ but the app isn't sold or advertised (user, 2026-11-14).
   window's mockup exist and are approved (§3.9).
 - M1 and M2 are done (2026-11-14), tested by the user (M2 on about 4,700 Iceland photos).
 - M3 is done (2026-11-14), tested by the user on the Iceland set (`design.md` §5, §2.2(d)).
+- M4 is built (`design.md` §2.4, §5), checked on generated photos; the user's try is next.
 - **The user's real photo library is read-only to us.** Never write, rename or create sidecars
   there. Its path stays out of the repo (it's in Claude's local memory).
 
@@ -59,6 +60,8 @@ but the app isn't sold or advertised (user, 2026-11-14).
 - Thumbnails (`src/thumbs.rs`) made by `ThumbJob` (`src/jobs.rs`), the thumbnail markers
   (`src/ui/markers.rs`), the hover card and the detail panel (`src/ui/details.rs`), and Show in
   Explorer / Open (`src/launch.rs`).
+- Grouping per zoom level (`src/cluster.rs`, built off the UI thread in `src/ui/map_view.rs`),
+  group markers and the strip (`src/ui/strip.rs`).
 
 ## How we work
 
@@ -149,8 +152,9 @@ committed):
   build and pipe its output (`cmd /c "… 2>&1"`): the release exe is a GUI-subsystem app and
   prints nothing to a console otherwise.
 - More dev flags:
-  - `--open add-folder[=<folder>]`, `--open sources` or `--open details` starts with that
-    dialog open, or the first photo selected (for comparing with the mockups);
+  - `--open add-folder[=<folder>]`, `--open sources`, `--open details` or `--open strip`
+    starts with that dialog open, the first photo selected, or the first strip open (for
+    comparing with the mockups);
   - `--perf` logs the frame time every 3 s;
   - `--make-demo <folder> [n]` writes generated photos;
   - `--fill-library <scratch data> <n>` writes synthetic rows.
@@ -162,6 +166,7 @@ committed):
     an extra widget shifts the layout and the ids below it, and clicks get lost.
   - Wait for the thumbnail job (`thumbs.is_none()`) before `h.run()`: its chip's spinner keeps
     the frame repainting.
+- `cargo run --release --example cluster_probe -- [n]` times the grouping on synthetic photos.
 - Probes (read-only, aggregates only): `cargo run --release --example exif_probe -- <list>`
   (our reader against `kamadak-exif`), `xmp_probe -- <folder>`, `unc_check -- <path>`.
 - Pitfall: `kamadak-exif` reads a whole TIFF-based file (a 25 MB RAW) before parsing, and fails

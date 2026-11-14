@@ -41,6 +41,8 @@ pub enum StartDialog {
     Sources,
     /// The first photo on the map selected, its detail panel open.
     Details,
+    /// The strip of the first group in view that can't split, once the groups are built.
+    Strip,
 }
 
 pub struct Config {
@@ -182,6 +184,7 @@ impl MapCraftApp {
                     .and_then(|p| p.iter().map(|p| p.id).min());
                 app.select(first);
             }
+            Some(StartDialog::Strip) => app.map.open_first_strip(),
             None => {}
         }
         app

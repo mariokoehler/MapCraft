@@ -87,6 +87,10 @@ impl Strip {
                     .shadow(p.elevation_panel)
                     .inner_margin(Margin::same(p.space_2 as i8))
                     .show(ui, |ui| {
+                        // As wide as the row: the header's right-aligned part would stretch it.
+                        let k = self.photos.len().min(PAGE) as f32;
+                        let row = 2.0 * 20.0 + k * p.size_strip_thumb + (k + 1.0) * 4.0;
+                        ui.set_max_width(row.max(240.0));
                         ui.spacing_mut().item_spacing = egui::vec2(p.space_2, 6.0);
                         // Header: count, date, close.
                         ui.horizontal(|ui| {

@@ -239,17 +239,13 @@ with a position; read-only over SMB):
   at continent zoom (the worst case), the release build draws about 30 frames per second, with
   8 ms of UI work per frame (measured 2026-11-14, `--fill-library` and `--perf`). M4's grouping
   replaces this.
-- **Until M4's grouping (built in M3, unconfirmed):**
-  - One photo per cell of a grid shows as a marker; the rest show as dots.
-    - The grid has 80 px cells at the whole-number zoom. It is anchored to the world, not the
-      screen, so panning never swaps which photo shows.
-    - A cell's marker is the photo with the lowest id among those with a thumbnail, else a
-      placeholder.
-  - Dots right at a marker's pin are left out, so the pin stays readable.
-  - Photos still waiting for their thumbnail stay dots.
 - **Selection (built in M3, unconfirmed):**
   - Clicking the map's background or pressing Esc clears the selection.
   - The panel's × hides the panel and keeps the selection; Ctrl+I shows or hides it again.
+  - Esc closes an open strip first, then clears the selection (M4).
+- **Pending photos (M4, unconfirmed):** a single photo whose thumbnail isn't made yet stays a
+  dot. A group is always a marker with its count, showing a placeholder until its
+  representative's thumbnail exists.
 - **Groups** (§2.4): drawn as the thumbnail of one representative photo, with a count badge.
   Clicking zooms to the group's extent. If a group can't split any further (photos taken at the
   same spot), clicking opens a strip of its photos instead **(user, 2026-11-14)**.
@@ -264,6 +260,36 @@ current zoom, about 64 px apart **(user, 2026-11-14)**. Groups depend only on th
 the pan, so a group doesn't change while the user drags. Zooming in by one level halves the
 distance on the ground, and groups split. The representative of a group is its newest photo
 (user, 2026-11-14).
+
+**As built in M4 (2026-11-14; `src/cluster.rs`):**
+- **Levels:** zoom levels 0 to 19, because OpenStreetMap's tiles end at 19. The map can zoom
+  further (walkers interpolates tiles), but it shows level 19's groups there.
+- **Radius:** 64 px. Each level is built from the one below, so levels nest.
+- **Stability:**
+  - Groups depend on positions only. The input is sorted by id first, so the same photos always
+    give the same groups.
+  - A change of thumbnail state or date only picks new representatives.
+  - The groups are built on a background thread whenever the photos change.
+- **Speed:** 100,000 synthetic photos group in about 0.26 s, and picking new representatives
+  takes about 12 ms (release build, `examples/cluster_probe.rs`, 2026-11-14).
+- **The representative (unconfirmed):** the newest photo *with a made thumbnail*, else the newest
+  photo. Undated photos count as oldest. This departs from the confirmed "newest photo": a group
+  shouldn't show a placeholder when it has thumbnails.
+- **A click on a group** zooms to the higher of two zooms: the one that fits its extent, and the
+  first level where it falls apart. If it never falls apart, the click opens the strip instead:
+  photos at one spot are within 64 px at zoom 19, about 20 m.
+- **The strip (unconfirmed):**
+  - It shows 8 thumbnails per page, oldest first, with "N photos at this spot" and the date or
+    range of days. The place name waits for M5's geocoding.
+  - A thumbnail selects its photo. The strip closes with ×, Esc, a click on the map, or a change
+    of zoom level.
+- **Hover:** a halo (`map-cluster-halo`) shows the area a hovered group covers.
+- **No crate (checked 2026-11-14,
+  https://crates.io/api/v1/crates?q=supercluster):**
+  - `supercluster` is at 4.0.0-alpha.6 and works on GeoJSON features.
+  - `supercluster-rs` 0.1.0 hasn't changed since 2024.
+  - MapCraft needs its own representative rule, group extents and the "can it split?" test, so
+    the algorithm is about 300 lines of our own.
 
 **Algorithm (user, 2026-11-14):** hierarchical greedy clustering per integer zoom level (0 to about
 20), the approach used by Mapbox's Supercluster. It is precomputed once over a spatial index (a
@@ -801,7 +827,6 @@ Not blocking v1:
 Product:
 - **Where the photos live:** what NAS and share layout, mapped drive letters or UNC (§2.1(a),
   (e)), and is the library also in Lightroom Classic today (§3.6(a))?
-- **Groups** (§2.4): the badge style.
 
 Unconfirmed defaults awaiting review:
 - §2.2(d) (M3):
@@ -810,8 +835,13 @@ Unconfirmed defaults awaiting review:
   - no decoding of originals over 400 MB or 120 MP;
   - the LightCraft fallback deferred to M6 or later;
   - placeholders without the "needs LightCraft" label of §2.2(c) until that fallback exists.
+- §2.4 (M4):
+  - the representative prefers a photo with a made thumbnail; undated photos count as oldest;
+  - a pending single photo stays a dot; a group is always a marker;
+  - groups for zoom levels 0 to 19, and a group still together at 19 opens the strip;
+  - the strip: 8 per page, oldest first, the date without a place until M5;
+  - the badge style is the design system's (`map-badge-*`, "1.2k" rounded down).
 - §2.3 (M3):
-  - one marker per 80 px world-grid cell until M4, the lowest id first;
   - deselecting by a background click or Esc;
   - × hides the panel, Ctrl+I toggles it.
 - §2.6 (M3): no online state and no exposure row in the panel yet.
@@ -869,8 +899,10 @@ Milestones are rough and get refined as we go.
   Checked on the real Iceland set for the thumbnails (probes, aggregates only). The UI is checked
   by headless tests and window captures on generated photos. The LightCraft fallback is deferred
   (§2.2(d)).
-- **M4 — Grouping:** clustering per zoom (§2.4), count badges, click to zoom, the strip for photos
-  at one spot.
+- **M4 — Grouping** (built 2026-11-14; awaiting the user's try): clustering per zoom (§2.4), count
+  badges, click to zoom, the strip for photos at one spot.
+  - Checked by unit tests (counts kept at every level, nesting, order independence, same-spot
+    groups, the representative), headless UI tests, and window captures on generated photos.
 - **M5 — Search & filters:** GeoNames place search, photo search, date and source filters.
 - **M6 — Companion links & providers:** Open in PhotoCraft, Show in Explorer, Open in LightCraft
   if M0's spike found a way; the keyed provider and PMTiles offline.

@@ -52,6 +52,8 @@ pub struct MapView {
     builder: Builder,
     /// The photos of a group at one spot, while its strip is open.
     strip: Option<Strip>,
+    /// Dev flag `--open strip`: open the first one once the groups are built.
+    open_strip: bool,
     textures: Textures,
     /// File names of photos with a marker, for their accessible names; filled by the app.
     names: HashMap<i64, String>,
@@ -86,6 +88,7 @@ impl MapView {
             clusters: None,
             builder: Builder::new(ctx.clone()),
             strip: None,
+            open_strip: false,
             textures: Textures::new(data.to_path_buf(), ctx),
             names: HashMap::new(),
             wanted_names: Vec::new(),
@@ -120,6 +123,11 @@ impl MapView {
         }
         self.builder.request(points.clone());
         self.points = points;
+    }
+
+    /// Opens the strip of the first group at one spot at the current zoom, once grouped.
+    pub fn open_first_strip(&mut self) {
+        self.open_strip = true;
     }
 
     /// Closes the strip; true if one was open (Esc closes it before clearing the selection).
@@ -192,6 +200,17 @@ impl MapView {
         self.keys = keys;
         if let Some(c) = self.builder.latest() {
             self.clusters = Some(c);
+        }
+        if self.open_strip
+            && let Some(c) = self.clusters.clone()
+        {
+            self.open_strip = false;
+            let (z, nodes) = c.level(self.memory.zoom());
+            if let Some(i) =
+                (0..nodes.len()).find(|&i| nodes[i].count > 1 && c.split_level(z, i).is_none())
+            {
+                self.open_group(z, i);
+            }
         }
         self.textures.begin_frame(ui.ctx());
         let mut out = PhotosOut::default();
