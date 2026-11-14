@@ -125,6 +125,38 @@ pub struct PhotoDetail {
     pub thumb_made: bool,
 }
 
+/// A set of photos search found (a folder, a period, a camera).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FoundSet {
+    /// What identifies it (source id and folder, the period, make and model).
+    pub key: String,
+    pub label: String,
+    pub photos: usize,
+    pub bounds: Option<crate::import::Bounds>,
+}
+
+/// One photo search found by its file name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FoundPhoto {
+    pub id: i64,
+    pub name: String,
+    pub taken_at: Option<String>,
+    pub lat: f64,
+    pub lon: f64,
+}
+
+/// A `LIKE` pattern for "contains `text`", lower-cased (the `*_key` columns are), with the
+/// wildcards `%` and `_` in the text escaped.
+pub fn like(text: &str) -> String {
+    let t = text
+        .trim()
+        .to_lowercase()
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{t}%")
+}
+
 /// A photo's thumbnail, as the map draws it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Thumb {
@@ -628,6 +660,109 @@ impl Library {
                 },
             )
             .optional()
+    }
+
+    /// Folders whose path contains `text` (lower case), with how many photos on the map they
+    /// hold and where; the fullest first.
+    pub fn search_folders(&self, text: &str, limit: usize) -> Result<Vec<FoundSet>> {
+        self.found_sets(
+            "SELECT s.id || char(31) || p.rel_dir, p.rel_dir, count(*),
+                    min(p.lat), min(p.lon), max(p.lat), max(p.lon)
+             FROM photo p JOIN source s ON s.id = p.source_id
+             WHERE p.lat IS NOT NULL AND p.state = 'ok' AND p.rel_dir <> ''
+               AND p.rel_dir_key LIKE ?1 ESCAPE '\\'
+             GROUP BY p.source_id, p.rel_dir_key ORDER BY count(*) DESC LIMIT ?2",
+            &like(text),
+            limit,
+        )
+    }
+
+    /// Photos on the map taken in a period: `2019`, `2019-08` or `2019-08-14`.
+    pub fn search_period(&self, period: &str) -> Result<Vec<FoundSet>> {
+        let sets = self.found_sets(
+            "SELECT ?1, ?1, count(*), min(lat), min(lon), max(lat), max(lon)
+             FROM photo WHERE lat IS NOT NULL AND state = 'ok' AND taken_at LIKE ?1 || '%'",
+            period,
+            1,
+        )?;
+        Ok(sets.into_iter().filter(|s| s.photos > 0).collect())
+    }
+
+    /// Cameras whose make or model contains `text`, with their photos on the map.
+    pub fn search_cameras(&self, text: &str, limit: usize) -> Result<Vec<FoundSet>> {
+        self.found_sets(
+            "SELECT coalesce(camera_make, '') || char(31) || coalesce(camera_model, ''),
+                    trim(coalesce(camera_make, '') || ' ' || coalesce(camera_model, '')),
+                    count(*), min(lat), min(lon), max(lat), max(lon)
+             FROM photo
+             WHERE lat IS NOT NULL AND state = 'ok'
+               AND lower(coalesce(camera_make, '') || ' ' || coalesce(camera_model, ''))
+                   LIKE ?1 ESCAPE '\\'
+             GROUP BY camera_make, camera_model ORDER BY count(*) DESC LIMIT ?2",
+            &like(text),
+            limit,
+        )
+    }
+
+    fn found_sets(&self, sql: &str, arg: &str, limit: usize) -> Result<Vec<FoundSet>> {
+        let mut stmt = self.conn.prepare_cached(sql)?;
+        let limit = limit as i64;
+        let bind: &[&dyn rusqlite::ToSql] = if sql.contains("?2") {
+            &[&arg, &limit]
+        } else {
+            &[&arg]
+        };
+        stmt.query_map(bind, |r| {
+            Ok(FoundSet {
+                key: r.get(0)?,
+                label: r.get(1)?,
+                photos: r.get::<_, i64>(2)? as usize,
+                bounds: match (r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?) {
+                    (Some(min_lat), Some(min_lon), Some(max_lat), Some(max_lon)) => {
+                        Some(crate::import::Bounds {
+                            min_lat,
+                            min_lon,
+                            max_lat,
+                            max_lon,
+                        })
+                    }
+                    _ => None,
+                },
+            })
+        })?
+        .collect()
+    }
+
+    /// Photos on the map whose file name contains `text`, newest first.
+    pub fn search_files(&self, text: &str, limit: usize) -> Result<Vec<FoundPhoto>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, original_name, taken_at, lat, lon FROM photo
+             WHERE lat IS NOT NULL AND state = 'ok' AND stem_key LIKE ?1 ESCAPE '\\'
+             ORDER BY taken_at DESC, id LIMIT ?2",
+        )?;
+        stmt.query_map(params![like(text), limit as i64], |r| {
+            Ok(FoundPhoto {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                taken_at: r.get(2)?,
+                lat: r.get(3)?,
+                lon: r.get(4)?,
+            })
+        })?
+        .collect()
+    }
+
+    /// How many photos on the map lie within `b`.
+    pub fn count_in(&self, b: crate::import::Bounds) -> Result<usize> {
+        self.conn
+            .prepare_cached(
+                "SELECT count(*) FROM photo WHERE lat BETWEEN ?1 AND ?2 AND lon BETWEEN ?3 AND ?4
+                 AND state = 'ok'",
+            )?
+            .query_row(params![b.min_lat, b.max_lat, b.min_lon, b.max_lon], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|n| n as usize)
     }
 
     /// Every photo id, for removing the thumbnail files of deleted records.

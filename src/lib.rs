@@ -12,6 +12,7 @@ pub mod metadata;
 pub mod paths;
 pub mod places;
 pub mod provider;
+pub mod search;
 pub mod settings;
 pub mod theme;
 pub mod thumbs;
