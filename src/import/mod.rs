@@ -60,6 +60,8 @@ pub struct Summary {
     pub without_position: usize,
     pub unreadable_folders: usize,
     pub cancelled: bool,
+    /// Records deleted because their files are now ignored (`._` files).
+    pub removed: usize,
     /// The area covered by the positions written in this run ("Zoom to new photos").
     pub bounds: Option<Bounds>,
 }
@@ -81,12 +83,13 @@ impl Summary {
             without_position,
             unreadable_folders,
             cancelled,
+            removed,
             bounds: _,
         } = self;
         format!(
             "{photos} photos: {new} new, {changed} changed, {unchanged} unchanged, {moved} moved, \
              {restored} back, {missing} missing, {failed} failed, {skipped} skipped, \
-             {without_position} without position, {unreadable_folders} unreadable folders{}",
+             {without_position} without position, {unreadable_folders} unreadable folders,              {removed} removed{}",
             if *cancelled { ", cancelled" } else { "" }
         )
     }
@@ -192,6 +195,20 @@ pub fn run(
     let groups = scan::group(std::mem::take(&mut listing.files));
     summary.photos = groups.len();
     let mut existing = lib.existing(source_id)?;
+    // Records of files MapCraft now ignores (`._` AppleDouble files, imported before they were
+    // ignored) are deleted rather than left behind as "missing".
+    let ignored: Vec<i64> = existing
+        .iter()
+        .filter(|((_, stem), _)| scan::is_ignored_file(stem))
+        .map(|(_, e)| e.id)
+        .collect();
+    if !ignored.is_empty() {
+        existing.retain(|(_, stem), _| !scan::is_ignored_file(stem));
+        let tx = lib.transaction()?;
+        library::delete_photos(&tx, &ignored)?;
+        tx.commit()?;
+        summary.removed = ignored.len();
+    }
     let mut jobs = Vec::new();
     for group in groups {
         match existing.remove(&group.key()) {

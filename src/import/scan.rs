@@ -13,6 +13,13 @@ use xxhash_rust::xxh3::Xxh3;
 use super::scope::Scope;
 use crate::library::key;
 
+/// Files never imported, whatever their extension: macOS "AppleDouble" files (`._IMG_1.CR2`, a
+/// Mac's metadata beside every file it touched on a share; magic `00 05 16 07`), found by the
+/// hundred in the user's library (2026-11-14).
+pub fn is_ignored_file(name: &str) -> bool {
+    name.starts_with("._")
+}
+
 /// Folders never imported: other tools' trash and Lightroom's own data (design.md §2.8(e)).
 pub fn is_excluded_dir(name: &str) -> bool {
     let n = name.to_lowercase();
@@ -233,6 +240,9 @@ pub fn group(files: Vec<(String, FileEntry)>) -> Vec<Group> {
     let mut images: HashMap<(String, String), Members> = HashMap::new();
     let mut sidecars: Vec<(String, FileEntry)> = Vec::new();
     for (dir, f) in files {
+        if is_ignored_file(&f.name) {
+            continue;
+        }
         let (stem, ext) = split(&f.name);
         if ext == "xmp" {
             sidecars.push((dir, f));

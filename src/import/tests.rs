@@ -377,6 +377,87 @@ fn cancel_and_offline_change_nothing() {
 }
 
 #[test]
+fn a_changed_photo_loses_its_thumbnail_and_a_moved_one_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    setup(root);
+    let mut lib = Library::open_in_memory().unwrap();
+    let src = lib
+        .add_source(root, None, "test", &scope::Scope::all())
+        .unwrap();
+    import(&mut lib, src);
+    // Pretend every photo has its thumbnail.
+    let ids: Vec<i64> = ["A", "B", "C", "D"]
+        .map(|s| photo(&lib, s).unwrap().id)
+        .to_vec();
+    let tx = lib.transaction().unwrap();
+    for id in &ids {
+        library::set_thumb_state(&tx, *id, library::THUMB_OK).unwrap();
+    }
+    tx.commit().unwrap();
+    // A changes; B moves to another folder.
+    fs::write(
+        root.join("trip").join("A.jpg"),
+        jpeg_with_gps(-33.8688, -70.6, "2023:05:19 21:06:59"),
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("moved")).unwrap();
+    for f in ["B.dng", "B.jpg", "B.xmp"] {
+        fs::rename(root.join("trip").join(f), root.join("moved").join(f)).unwrap();
+    }
+    let s = import(&mut lib, src);
+    assert_eq!((s.changed, s.moved), (1, 1), "{s:?}");
+    let thumbed = lib.thumbed().unwrap();
+    assert!(
+        !thumbed.contains(&ids[0]),
+        "A changed: its thumbnail is made again"
+    );
+    assert!(
+        thumbed.contains(&ids[1]),
+        "B moved: same content, same thumbnail"
+    );
+}
+
+#[test]
+fn appledouble_files_are_ignored_and_their_old_records_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    setup(root);
+    // A Mac's metadata file next to a photo: magic 00 05 16 07, named like an image.
+    fs::write(
+        root.join("trip").join("._A.jpg"),
+        [0x00, 0x05, 0x16, 0x07, 0, 2],
+    )
+    .unwrap();
+    fs::write(root.join("trip").join("E.psd"), b"8BPS\x00\x01").unwrap();
+    let mut lib = Library::open_in_memory().unwrap();
+    let src = lib
+        .add_source(root, None, "test", &scope::Scope::all())
+        .unwrap();
+    let s = import(&mut lib, src);
+    assert_eq!(
+        (s.photos, s.failed),
+        (5, 1),
+        "A-D plus the PSD; only D fails: {s:?}"
+    );
+    assert!(photo(&lib, "._A").is_none());
+    // A record from before `._` files were ignored is deleted on the next rescan.
+    let tx = lib.transaction().unwrap();
+    let mut old = library::PhotoRecord {
+        rel_dir: "trip".into(),
+        stem: "._A".into(),
+        original_name: "._A.jpg".into(),
+        ..Default::default()
+    };
+    old.files_sig = 1;
+    library::write_photo(&tx, src, None, &old).unwrap();
+    tx.commit().unwrap();
+    let s = import(&mut lib, src);
+    assert_eq!((s.removed, s.missing), (1, 0), "{s:?}");
+    assert!(photo(&lib, "._A").is_none());
+}
+
+#[test]
 fn quick_hash_ignores_name_and_sees_content() {
     let dir = tempfile::tempdir().unwrap();
     let big: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();

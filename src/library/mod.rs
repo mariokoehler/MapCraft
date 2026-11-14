@@ -316,13 +316,31 @@ impl Library {
     /// Per original file type: photos, photos with a position, positions from sidecars.
     /// For the `--import` dev command's check against the library survey (design.md §2.8).
     pub fn gps_by_type(&self) -> Result<Vec<(String, i64, i64, i64)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT lower(substr(original_name, instr(original_name, '.') + 1)) AS ext,
-                    count(*), count(lat), count(*) FILTER (WHERE gps_source = 'xmp')
-             FROM photo GROUP BY ext ORDER BY count(*) DESC",
-        )?;
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
-            .collect()
+        // The extension after the *last* dot (`._X.CR2` is `cr2`), grouped in Rust: SQLite has
+        // no "last index of".
+        let mut stmt = self
+            .conn
+            .prepare("SELECT original_name, lat IS NOT NULL, gps_source = 'xmp' FROM photo")?;
+        let mut by: HashMap<String, (i64, i64, i64)> = HashMap::new();
+        for row in stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, bool>(1)?,
+                r.get::<_, Option<bool>>(2)?,
+            ))
+        })? {
+            let (name, gps, xmp) = row?;
+            let ext = name
+                .rsplit_once('.')
+                .map_or(String::new(), |(_, e)| e.to_lowercase());
+            let e = by.entry(ext).or_default();
+            e.0 += 1;
+            e.1 += gps as i64;
+            e.2 += xmp.unwrap_or(false) as i64;
+        }
+        let mut out: Vec<_> = by.into_iter().map(|(k, (a, b, c))| (k, a, b, c)).collect();
+        out.sort_by_key(|r| std::cmp::Reverse(r.1));
+        Ok(out)
     }
 
     /// Positions of every photo that has one and isn't missing.
@@ -380,6 +398,12 @@ pub fn write_photo(
         preview_name, sidecar_name, files_sig, file_size, file_mtime, quick_hash, lat, lon, alt,
         gps_source, taken_at, taken_at_offset, camera_make, camera_model, lens, width, height,
         orientation, read_error";
+    // A thumbnail stays valid while what it's made from stays the same: the image (its quick
+    // hash), the paired JPEG and the orientation. A moved photo keeps it; a changed one, or one
+    // whose sidecar changed only, is judged by these alone. In an UPDATE, a bare column is the
+    // old value; `?N` are the new ones.
+    const SAME_THUMB_INPUTS: &str =
+        "quick_hash IS ?12 AND preview_name IS ?7 AND orientation IS ?24";
     match id {
         Some(id) => {
             // A moved photo: rewrite its row in place, which keeps its id.
@@ -387,7 +411,8 @@ pub fn write_photo(
                 &format!(
                     "UPDATE photo SET ({COLS}, state) = (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                      ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-                     'ok') WHERE id = ?26"
+                     'ok'), thumb_state = CASE WHEN {SAME_THUMB_INPUTS} THEN thumb_state
+                     ELSE 'none' END WHERE id = ?26"
                 ),
                 rusqlite::params_from_iter(
                     values.iter().copied().chain([&id as &dyn rusqlite::ToSql]),
@@ -410,7 +435,9 @@ pub fn write_photo(
                      camera_make = excluded.camera_make, camera_model = excluded.camera_model,
                      lens = excluded.lens, width = excluded.width, height = excluded.height,
                      orientation = excluded.orientation, read_error = excluded.read_error,
-                     state = 'ok'"
+                     state = 'ok',
+                     thumb_state = CASE WHEN {SAME_THUMB_INPUTS} THEN photo.thumb_state
+                                        ELSE 'none' END"
                 ),
                 values,
             )?;
@@ -429,6 +456,91 @@ fn write_scope(tx: &Transaction<'_>, source_id: i64, scope: &Scope) -> Result<()
     for (dir, included) in scope.rules() {
         ins.execute(params![source_id, dir, included])?;
     }
+    Ok(())
+}
+
+/// Deletes photo records (their thumbnail files go with `thumbs::sweep`). Never touches files.
+pub fn delete_photos(tx: &Transaction<'_>, ids: &[i64]) -> Result<()> {
+    let mut stmt = tx.prepare("DELETE FROM photo WHERE id = ?1")?;
+    for id in ids {
+        stmt.execute([id])?;
+    }
+    Ok(())
+}
+
+/// A photo whose thumbnail is still to be made.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThumbTask {
+    pub id: i64,
+    pub root: PathBuf,
+    pub unc: Option<String>,
+    pub rel_dir: String,
+    pub original: String,
+    pub preview: Option<String>,
+    pub orientation: Option<u16>,
+}
+
+/// Thumbnail states: still to make, made, or no usable source (a placeholder).
+pub const THUMB_NONE: &str = "none";
+pub const THUMB_OK: &str = "ok";
+pub const THUMB_FAILED: &str = "failed";
+
+impl Library {
+    /// Photos on the map (a position, not missing) without a thumbnail yet, oldest first.
+    /// Photos without a position get none in v1 (design.md §2.1(d)).
+    pub fn thumb_tasks(&self) -> Result<Vec<ThumbTask>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id, s.root_path, s.unc_path, p.rel_dir, p.original_name, p.preview_name,
+                    p.orientation
+             FROM photo p JOIN source s ON s.id = p.source_id
+             WHERE p.lat IS NOT NULL AND p.state = 'ok' AND p.thumb_state = 'none'
+             ORDER BY p.id",
+        )?;
+        stmt.query_map([], |r| {
+            Ok(ThumbTask {
+                id: r.get(0)?,
+                root: PathBuf::from(r.get::<_, String>(1)?),
+                unc: r.get(2)?,
+                rel_dir: r.get(3)?,
+                original: r.get(4)?,
+                preview: r.get(5)?,
+                orientation: r.get(6)?,
+            })
+        })?
+        .collect()
+    }
+
+    /// (made, still to make) among the photos on the map.
+    pub fn thumb_counts(&self) -> Result<(i64, i64)> {
+        self.conn.query_row(
+            "SELECT count(*) FILTER (WHERE thumb_state <> 'none'),
+                    count(*) FILTER (WHERE thumb_state = 'none')
+             FROM photo WHERE lat IS NOT NULL AND state = 'ok'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+    }
+
+    /// The ids of photos whose thumbnail is made, for the map's markers.
+    pub fn thumbed(&self) -> Result<std::collections::HashSet<i64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM photo WHERE thumb_state = 'ok'")?;
+        stmt.query_map([], |r| r.get(0))?.collect()
+    }
+
+    /// Every photo id, for removing the thumbnail files of deleted records.
+    pub fn all_ids(&self) -> Result<std::collections::HashSet<i64>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM photo")?;
+        stmt.query_map([], |r| r.get(0))?.collect()
+    }
+}
+
+pub fn set_thumb_state(tx: &Transaction<'_>, id: i64, state: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE photo SET thumb_state = ?2 WHERE id = ?1",
+        params![id, state],
+    )?;
     Ok(())
 }
 

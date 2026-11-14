@@ -94,6 +94,11 @@ pub fn read_image_from(mut file: File) -> Result<Metadata, ReadError> {
     if magic.starts_with(&[0xFF, 0xD8]) {
         return read_jpeg(file, 0);
     }
+    if magic.starts_with(b"8BPS") {
+        // Photoshop: no EXIF block MapCraft reads (it sits in an image resource). Nothing to tell,
+        // which is not an error (§2.1(b)).
+        return Ok(Metadata::default());
+    }
     if magic.starts_with(b"FUJIFILMCCD-RAW") {
         // RAF: a big-endian pointer at byte 84 to the embedded JPEG, which carries the EXIF.
         let mut ptr = [0u8; 4];

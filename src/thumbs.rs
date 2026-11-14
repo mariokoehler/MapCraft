@@ -188,14 +188,18 @@ pub fn decode_jpeg(bytes: &[u8], long_edge: u32) -> Result<RgbImage, ThumbError>
         jpeg_decoder::PixelFormat::RGB24 => data,
         jpeg_decoder::PixelFormat::L8 => data.iter().flat_map(|&v| [v, v, v]).collect(),
         jpeg_decoder::PixelFormat::L16 => data
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .flat_map(|c| {
                 let v = c[0]; // big-endian: the high byte
                 [v, v, v]
             })
             .collect(),
         jpeg_decoder::PixelFormat::CMYK32 => data
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|c| {
                 // Adobe CMYK JPEGs are stored inverted; a plain conversion is enough for a
                 // thumbnail.
@@ -335,7 +339,9 @@ fn icc_description(icc: &[u8]) -> Option<String> {
                 );
                 let units: Vec<u16> = tag
                     .get(start..start + len)?
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| u16::from_be_bytes([c[0], c[1]]))
                     .collect();
                 Some(String::from_utf16_lossy(&units))
@@ -433,6 +439,54 @@ pub fn path(data: &Path, photo_id: i64, long_edge: u32) -> PathBuf {
         .join(format!("{:02x}", (h >> 56) as u8))
         .join(format!("{:02x}", (h >> 48) as u8))
         .join(format!("{photo_id}_{long_edge}.jpg"))
+}
+
+/// Deletes the thumbnail and preview files of photos that no longer exist: they are the user's
+/// images and must go with their records. Returns how many files were removed.
+pub fn sweep(data: &Path, live: &std::collections::HashSet<i64>) -> usize {
+    let mut removed = 0;
+    for kind in ["thumbs", "previews"] {
+        let Ok(level1) = std::fs::read_dir(data.join(kind)) else {
+            continue;
+        };
+        for a in level1.flatten() {
+            let Ok(level2) = std::fs::read_dir(a.path()) else {
+                continue;
+            };
+            for b in level2.flatten() {
+                let Ok(files) = std::fs::read_dir(b.path()) else {
+                    continue;
+                };
+                for f in files.flatten() {
+                    let name = f.file_name().to_string_lossy().into_owned();
+                    let id = name.split('_').next().and_then(|i| i.parse::<i64>().ok());
+                    let stale = name.ends_with(".tmp") || id.is_some_and(|i| !live.contains(&i));
+                    if stale && std::fs::remove_file(f.path()).is_ok() {
+                        removed += 1;
+                    }
+                }
+            }
+        }
+    }
+    removed
+}
+
+/// Writes a rendered image to its place, via a temporary file and a rename, so a cancelled job
+/// never leaves half a file behind.
+pub fn store(target: &Path, jpeg: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = target.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = target.with_extension("jpg.tmp");
+    std::fs::write(&tmp, jpeg)?;
+    std::fs::rename(&tmp, target)
+}
+
+/// Needs a full decode (TIFF, PNG, WebP originals without a JPEG beside them): such decodes run
+/// one at a time, since one can take a gigabyte of memory.
+pub fn is_heavy(original: &str, preview: Option<&str>) -> bool {
+    let ext = extension(original);
+    preview.is_none() && matches!(ext.as_str(), "tif" | "tiff" | "png" | "webp")
 }
 
 #[cfg(test)]
@@ -557,6 +611,27 @@ mod tests {
                 "{space:?}: {r} {g} {b}"
             );
         }
+    }
+
+    #[test]
+    fn sweeping_removes_only_the_files_of_deleted_photos() {
+        let dir = tempfile::tempdir().unwrap();
+        for (id, size) in [(1, THUMB), (2, THUMB), (2, PREVIEW)] {
+            store(&path(dir.path(), id, size), b"x").unwrap();
+        }
+        std::fs::write(
+            path(dir.path(), 1, THUMB).with_extension("jpg.tmp"),
+            b"half",
+        )
+        .unwrap();
+        let live = std::collections::HashSet::from([1]);
+        assert_eq!(
+            sweep(dir.path(), &live),
+            3,
+            "photo 2's two files and the leftover .tmp"
+        );
+        assert!(path(dir.path(), 1, THUMB).exists());
+        assert!(!path(dir.path(), 2, PREVIEW).exists());
     }
 
     #[test]
