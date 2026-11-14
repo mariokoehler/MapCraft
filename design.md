@@ -808,7 +808,8 @@ Unconfirmed defaults awaiting review:
   - the embedded preview before the paired JPEG;
   - 4 thumbnail workers;
   - no decoding of originals over 400 MB or 120 MP;
-  - the LightCraft fallback deferred to M6 or later.
+  - the LightCraft fallback deferred to M6 or later;
+  - placeholders without the "needs LightCraft" label of §2.2(c) until that fallback exists.
 - §2.3 (M3):
   - one marker per 80 px world-grid cell until M4, the lowest id first;
   - deselecting by a background click or Esc;
