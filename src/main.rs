@@ -1,19 +1,15 @@
 //! MapCraft: shows your photos on a world map. See design.md for the concept and architecture.
 //!
-//! `mod x;` declares a module (roughly a Java package) whose code is in `x.rs` or `x/mod.rs`.
+//! The code lives in the library crate (`lib.rs`, which declares the modules; a module is
+//! roughly a Java package). This file only starts the app.
 
 // No console window behind the app in release builds; debug builds keep it for the log.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod app;
-mod provider;
-mod settings;
-mod theme;
-mod ui;
-
 use std::fs;
 
-use settings::{Locations, Settings};
+use mapcraft::app;
+use mapcraft::settings::{Locations, Settings};
 use tracing::{error, info, warn};
 
 fn main() -> eframe::Result {
