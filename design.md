@@ -188,6 +188,11 @@ preview at all gets a placeholder tile marked "needs LightCraft" **(user, 2026-1
 - **Photos:** a single photo is drawn as its thumbnail in a small frame (about 64 px **(user, 2026-11-14)**)
   with a pin pointing at its exact position. Hovering shows file name, date and camera. Clicking
   selects it and opens the detail panel (§2.6).
+- **Position dots** (user, 2026-11-14): a photo appears as a small pin dot as soon as the import
+  has read its position, and becomes its thumbnail marker once the thumbnail exists. Reading
+  metadata costs one small read per file, but a thumbnail needs a decode, so thumbnails are made
+  by a background job after the import (M3), and the map is useful from the first minute. In M2
+  every photo is a dot.
 - **Groups** (§2.4): drawn as the thumbnail of one representative photo, with a count badge.
   Clicking zooms to the group's extent. If a group can't split any further (photos taken at the
   same spot), clicking opens a strip of its photos instead **(user, 2026-11-14)**.
@@ -305,7 +310,7 @@ What follows for the design (all **(user, 2026-11-14)**):
   a position, the sidecar wins, as in LightCraft and Lightroom. In the library the sidecars hold
   it as an attribute or as an element, always as degrees and decimal minutes (`53,32.6N`); all
   1,112 sidecars that mention a position are read (verified 2026-11-14). The paired JPEG's EXIF is
-  read only when the original can't be read or has no capture date **(unconfirmed)**: every
+  read only when the original can't be read or has no capture date **(user, 2026-11-14)**: every
   extra file costs a disk seek on the NAS, and a camera that leaves GPS out of the RAW leaves it
   out of its JPEG too.
 - **(b) Rescan picks up new GPS.** A photo whose file *or* sidecar changed is re-read, so GPS
@@ -318,7 +323,7 @@ What follows for the design (all **(user, 2026-11-14)**):
   Found in the library (surveyed 2026-11-14, read-only): 5,170 names have more than one image
   file. Mostly DNG+JPEG (4,547) and CR2+JPEG (293), but also DNG+RAF (113), DNG+JPEG+RAF (66) and
   CR2+DNG (24): DNGs converted from a camera RAW, sitting beside it. Rules for these
-  **(unconfirmed)**:
+  **(user, 2026-11-14)**:
   - The original is the **DNG** if there is one, else the camera RAW, else TIFF/PSD, else
     PNG/HEIC, else the JPEG. Here a DNG is mostly the converted, edited working copy.
   - The **preview** is a JPEG of the same name.
@@ -327,7 +332,7 @@ What follows for the design (all **(user, 2026-11-14)**):
 
   Sidecars come in both naming styles: `name.xmp` (1,525) and `name.ext.xmp` (282); 63 have no
   image. `name.<original ext>.xmp` wins over another `name.ext.xmp`, which wins over `name.xmp`
-  **(unconfirmed)**.
+  **(user, 2026-11-14)**.
 - **(d) Videos are left out of v1.**
 - **(e) Excluded folders.** Each source has exclude patterns, by default `.dtrash`,
   `Lightroom Catalog Backup` and `*.lrdata`.
@@ -500,7 +505,7 @@ photo(id, source_id, rel_dir, stem,        -- one photo = the files of one name 
   - Unreadable metadata is recorded with the error, and the photo is read again on every
     rescan.
   - Reader panics are caught.
-- **Speed:** 4 parallel readers **(unconfirmed)**. On the NAS an import runs at about 25–30
+- **Speed:** 4 parallel readers **(user, 2026-11-14)**. On the NAS an import runs at about 25–30
   photos per second, whether with 1, 4 or 16 readers, and with or without the tail of the quick
   hash. The limit is the NAS's per-file latency (measured 2026-11-14), so a first import of the
   whole library would take about an hour.
@@ -687,7 +692,7 @@ The look and the structure of the screens are designed in **Claude Design** (use
 - Canvases so far, each artboard with a dark/light switch:
   - `MapCraft — Main window` (approved 2026-11-14), with six states: browsing, a photo selected
     from a group strip, search, an import running, a source offline, and an empty library.
-  - `MapCraft — Import` (M2, awaiting review), with five states: "Add photo folder" with the
+  - `MapCraft — Import` (M2, approved 2026-11-14), with five states: "Add photo folder" with the
     folder tree, the import running (with the proposed position dots), the finished summary, the
     sources list, and removing a source.
 
@@ -717,10 +722,8 @@ Product:
 
 Unconfirmed defaults awaiting review:
 - §2.3: filters in M5 rather than v1.
-- §2.8(a): the paired JPEG read only when the RAW can't be read or has no date.
-- §2.8(c): which file is the original (DNG first), the preview, and the sidecar order.
 - §3.2: the planned crates.
-- §3.4: the data model, 4 readers.
+- §3.4: the data model.
 - §3.5(d): trimming the tile cache at startup, in M6.
 - §3.6(a): `photo.allMetadata` as the fallback EXIF reader.
 
