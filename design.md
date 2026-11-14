@@ -61,7 +61,7 @@ integration with PhotoCraft and LightCraft.
   - the nearest namesake is *Mapcrafter*, a Minecraft map renderer;
   - the other GitHub "MapCraft" repos are small and unrelated.
 - **Names in code:**
-  - the Cargo package and exe are `mapcraft` **(unconfirmed)**;
+  - the Cargo package and exe are `mapcraft` **(user, 2026-11-14)**;
   - the user-visible name is "MapCraft";
   - the Windows folders are `MapCraft` (§3.3).
 
@@ -263,7 +263,7 @@ read-only survey (a full directory walk plus EXIF reads of a random sample of 80
 - **The catalogue** exists, but not on this PC. The user can make it reachable if needed (user,
   2026-11-14).
 
-What follows for the design (all **(unconfirmed)**):
+What follows for the design (all **(user, 2026-11-14)**):
 - **(a) GPS from sidecars.** GPS is read from the XMP sidecar as well as from EXIF. When both have
   a position, the sidecar wins, as in LightCraft and Lightroom.
 - **(b) Rescan picks up new GPS.** A photo whose file *or* sidecar changed is re-read, so GPS
@@ -438,7 +438,7 @@ https://operations.osmfoundation.org/policies/nominatim/):
 
 Hence the offline GeoNames default in §2.5, with an online provider (Nominatim, or the keyed tile
 provider's geocoder) as an explicit "search online" action, not search-as-you-type
-**(unconfirmed)**.
+**(user, 2026-11-14)**.
 
 **(d) Tile cache.** Tiles are cached on disk in the data folder as long as the provider's headers
 allow, with a size limit (default 500 MB **(user, 2026-11-14)**, least recently used evicted first).
@@ -546,7 +546,7 @@ The first canvases set a small design system:
 - the marker, group-badge and panel styles.
 
 The egui theme mirrors those tokens in one place (a `theme` module) and is kept in lockstep with
-the design system. Sensible starting points (**unconfirmed**): a dark UI around a light map, as in
+the design system. Sensible starting points (**user, 2026-11-14**): a dark UI around a light map, as in
 Lightroom's Map module, and a family resemblance to PhotoCraft and LightCraft, since they share
 egui.
 
@@ -564,21 +564,10 @@ Product:
 - **Groups** (§2.4): the badge style.
 
 Unconfirmed defaults awaiting review:
-- §1.2: `mapcraft` as the package and exe name.
 - §2.3: filters in M5 rather than v1.
-- §2.8:
-  - sidecar GPS wins over EXIF;
-  - rescans also look at sidecars;
-  - RAW and JPEG pairs count as one photo, and edited copies stay separate;
-  - no videos in v1;
-  - default exclude patterns;
-  - picking folders from a checkbox tree;
-  - catalogue GPS only fills gaps, with `gps_source` recorded per photo.
 - §3.2: the crate list.
 - §3.4: the data model.
-- §3.5(c): online place search only as an explicit action, not search-as-you-type.
 - §3.6(a): `photo.allMetadata` as the fallback EXIF reader.
-- §3.9: a dark UI around a light map, and a family resemblance to the companion apps.
 
 ## 5. Roadmap
 
