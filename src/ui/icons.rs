@@ -47,6 +47,14 @@ icons! {
     TriangleAlert => "triangle-alert",
     Wifi => "wifi",
     WifiOff => "wifi-off",
+    Image => "image",
+    ImageOff => "image-off",
+    Calendar => "calendar",
+    Camera => "camera",
+    FolderOpen => "folder-open",
+    ExternalLink => "external-link",
+    Brush => "brush",
+    Sliders => "sliders-horizontal",
 }
 
 impl Icon {

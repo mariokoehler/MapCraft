@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use egui::{Frame, Panel, RichText, Stroke};
@@ -13,9 +14,11 @@ use tracing::{error, info};
 
 use crate::import::scope::Scope;
 use crate::jobs::{ImportJob, JobEvent, ThumbEvent, ThumbJob};
-use crate::library::{Counts, Library, Source};
+use crate::launch::{self, Launch};
+use crate::library::{Counts, Library, PhotoDetail, Source};
 use crate::provider::Provider;
 use crate::theme::{self, Palette, ThemeKind, Tokens};
+use crate::ui::details::{self, DetailPanel, PanelAction, PreviewFace, Previews};
 use crate::ui::folder_dialog::{FolderAction, FolderDialog};
 use crate::ui::map_view::{MapAction, MapView};
 use crate::ui::sources_dialog::{SourcesAction, SourcesDialog};
@@ -36,6 +39,8 @@ pub enum StartDialog {
     /// Optionally with a folder already chosen, so its tree shows.
     AddFolder(Option<PathBuf>),
     Sources,
+    /// The first photo on the map selected, its detail panel open.
+    Details,
 }
 
 pub struct Config {
@@ -45,6 +50,8 @@ pub struct Config {
     pub open: Option<StartDialog>,
     /// Log the average frame time every few seconds (dev flag `--perf`).
     pub perf: bool,
+    /// Really start Explorer for Show in Explorer and Open (off in tests, which record them).
+    pub launch: bool,
 }
 
 /// A change to the library that waits until the thumbnail job has stopped. The job writes
@@ -85,6 +92,17 @@ pub struct MapCraftApp {
     narrow: Option<NarrowScope>,
     toasts: Toasts,
     perf: Option<(Instant, Duration, u32)>,
+    /// The selected photo's record, while one is selected.
+    detail: Option<PhotoDetail>,
+    panel_open: bool,
+    panel: DetailPanel,
+    previews: Previews,
+    /// The hovered marker's record, kept while the pointer stays on it.
+    hover: Option<PhotoDetail>,
+    launch: bool,
+    /// What Show in Explorer and Open asked for, when `launch` is off (for the tests).
+    launched: Vec<(Launch, i64)>,
+    launch_errors: (Sender<String>, Receiver<String>),
 }
 
 impl MapCraftApp {
@@ -110,6 +128,7 @@ impl MapCraftApp {
             map: MapView::new(
                 Provider::default(),
                 config.tiles.then_some(tile_cache.as_path()),
+                &config.data_folder,
                 ctx.clone(),
             ),
             db_path,
@@ -128,6 +147,14 @@ impl MapCraftApp {
             narrow: None,
             toasts,
             perf: config.perf.then(|| (Instant::now(), Duration::ZERO, 0)),
+            detail: None,
+            panel_open: false,
+            panel: DetailPanel::default(),
+            previews: Previews::new(config.data_folder.clone(), ctx.clone()),
+            hover: None,
+            launch: config.launch,
+            launched: Vec::new(),
+            launch_errors: mpsc::channel(),
         };
         app.refresh();
         // Thumbnails left over from the last session (or never made) are made now.
@@ -146,6 +173,14 @@ impl MapCraftApp {
             }
             Some(StartDialog::Sources) => {
                 app.sources_dialog = Some(SourcesDialog::open(&app.sources, ctx));
+            }
+            Some(StartDialog::Details) => {
+                let first = app
+                    .lib
+                    .as_ref()
+                    .and_then(|l| l.positions().ok())
+                    .and_then(|p| p.iter().map(|p| p.id).min());
+                app.select(first);
             }
             None => {}
         }
@@ -172,7 +207,53 @@ impl MapCraftApp {
             }
             Err(e) => error!("can't read the library: {e}"),
         }
+        // The selected photo may have changed (a rescan) or gone (a removal).
+        self.hover = None;
+        let id = self.map.selected();
+        let fresh = id.and_then(|id| lib.photo_detail(id).ok().flatten());
+        if fresh != self.detail {
+            if let Some(id) = id {
+                self.previews.forget(id);
+            }
+            if fresh.is_none() {
+                self.map.select(None);
+            }
+            self.detail = fresh;
+        }
         self.last_reload = Instant::now();
+    }
+
+    /// Selects a photo (`None`: nothing) and opens the panel for it.
+    fn select(&mut self, id: Option<i64>) {
+        self.map.select(id);
+        self.detail = id.and_then(|id| {
+            self.lib
+                .as_ref()
+                .and_then(|lib| lib.photo_detail(id).ok().flatten())
+        });
+        self.panel_open = self.detail.is_some();
+    }
+
+    /// Show in Explorer or Open for the selected photo. The source's root is resolved on a
+    /// background thread: a sleeping NAS can take seconds to answer.
+    fn launch(&mut self, kind: Launch) {
+        let Some(d) = self.detail.clone() else { return };
+        if !self.launch {
+            self.launched.push((kind, d.id));
+            return;
+        }
+        let (errors, ctx) = (self.launch_errors.0.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let result = match crate::import::reachable_root(&d.root, d.unc.as_deref()) {
+                Some(root) => launch::spawn(kind, &details::original_path(&root, &d))
+                    .map_err(|e| format!("Can't start Explorer ({e})")),
+                None => Err(format!("Can't reach “{}” right now", d.source_label)),
+            };
+            if let Err(msg) = result {
+                let _ = errors.send(msg);
+                ctx.request_repaint();
+            }
+        });
     }
 
     /// Makes `change` now, or once the running jobs have stopped (the thumbnail job is asked to).
@@ -508,9 +589,62 @@ impl MapCraftApp {
             None => {}
         }
 
+        while let Ok(msg) = self.launch_errors.1.try_recv() {
+            self.toasts.replace(vec![toasts::for_failure(&msg)]);
+        }
+
         let empty = self.counts.photos == 0 && self.job.is_none();
         let dialog_open =
             self.folder_dialog.is_some() || self.sources_dialog.is_some() || self.narrow.is_some();
+
+        // Keys: Ctrl+I shows or hides the panel, Esc clears the selection.
+        if !dialog_open && !ctx.egui_wants_keyboard_input() {
+            let (ctrl_i, esc) = ctx.input_mut(|i| {
+                (
+                    i.consume_key(egui::Modifiers::COMMAND, egui::Key::I),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+                )
+            });
+            if ctrl_i && self.detail.is_some() {
+                self.panel_open = !self.panel_open;
+            }
+            if esc && self.detail.is_some() {
+                self.select(None);
+            }
+        }
+
+        // The detail panel, right of the map (design system "Map layout": 320 px).
+        let mut panel_action = None;
+        if self.panel_open
+            && let Some(d) = &self.detail
+        {
+            let shown = Panel::right("details")
+                .exact_size(p.size_panel)
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(Frame::NONE.fill(p.bg_panel))
+                .show(ui, |ui| {
+                    let face = match self.previews.get(&ctx, d) {
+                        Some(Ok(t)) => PreviewFace::Image(t),
+                        Some(Err(())) => PreviewFace::None,
+                        None => PreviewFace::Loading(self.map.thumbnail(d.id)),
+                    };
+                    panel_action = self.panel.show(ui, &p, d, face);
+                });
+            let r = shown.response.rect;
+            ui.painter().vline(
+                r.left() + p.stroke_hairline / 2.0,
+                r.y_range(),
+                Stroke::new(p.stroke_hairline, p.border_subtle),
+            );
+        }
+        match panel_action {
+            Some(PanelAction::Close) => self.panel_open = false,
+            Some(PanelAction::ShowInExplorer) => self.launch(Launch::ShowInExplorer),
+            Some(PanelAction::Open) => self.launch(Launch::Open),
+            None => {}
+        }
+
         let mut map_rect = egui::Rect::NOTHING;
         let mut map_action = None;
         egui::CentralPanel::default()
@@ -520,8 +654,33 @@ impl MapCraftApp {
                 map_rect = rect;
                 map_action = action;
             });
-        if map_action == Some(MapAction::AddFolder) {
-            self.folder_dialog = Some(FolderDialog::add());
+        match map_action {
+            Some(MapAction::AddFolder) => self.folder_dialog = Some(FolderDialog::add()),
+            Some(MapAction::Select(id)) => self.select(id),
+            None => {}
+        }
+        // File names for the markers' accessible names, looked up once each.
+        let wanted = self.map.wanted_names();
+        if !wanted.is_empty()
+            && let Some(lib) = &self.lib
+            && let Ok(names) = lib.names(&wanted)
+        {
+            self.map.add_names(names);
+        }
+        // The hover card.
+        match self.map.hovered() {
+            Some((id, marker)) if !dialog_open => {
+                if self.hover.as_ref().is_none_or(|h| h.id != id) {
+                    self.hover = self
+                        .lib
+                        .as_ref()
+                        .and_then(|lib| lib.photo_detail(id).ok().flatten());
+                }
+                if let Some(d) = &self.hover {
+                    details::hover_card(&ctx, &p, d, marker, map_rect);
+                }
+            }
+            _ => self.hover = None,
         }
         if let Some(ToastAction::ZoomTo(b)) = self.toasts.show(&ctx, &p, map_rect) {
             self.map.zoom_to(b);
@@ -556,9 +715,10 @@ mod tests {
     use std::path::Path;
 
     use egui_kittest::Harness;
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     use super::*;
+    use crate::thumbs;
 
     /// The whole app, headless: no tiles, no network, a temp data folder.
     fn harness(data: &Path) -> Harness<'static, Option<MapCraftApp>> {
@@ -583,6 +743,7 @@ mod tests {
                                 tiles: false,
                                 open: open.clone(),
                                 perf: false,
+                                launch: false,
                             },
                         )
                     });
@@ -690,6 +851,62 @@ mod tests {
     }
 
     #[test]
+    fn clicking_a_marker_shows_the_photo_and_its_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 8);
+        let mut h = harness(dir.path());
+        step_until(&mut h, "the markers", |h| {
+            h.state().as_ref().unwrap().thumbs.is_none()
+                && h.query_all_by_label_contains("Photo IMG_").count() > 0
+        });
+        let name = h
+            .query_all_by_label_contains("Photo IMG_")
+            .next()
+            .unwrap()
+            .accesskit_node()
+            .label()
+            .unwrap()
+            .trim_start_matches("Photo ")
+            .to_owned();
+        // Hovering shows the card: the name, and the capture date from the demo's EXIF.
+        h.get_by_label(&format!("Photo {name}")).hover();
+        step_until(&mut h, "the hover card", |h| {
+            h.query_by_label(&name).is_some()
+        });
+        assert!(
+            h.query_by_label_contains(", 12:").is_some(),
+            "the capture time"
+        );
+        h.get_by_label(&format!("Photo {name}")).click();
+        step_until(&mut h, "the panel", |h| {
+            h.query_by_label("Photo details").is_some()
+        });
+        assert!(h.query_all_by_label(&name).count() >= 1, "the name row");
+        h.get_by_label("Demo trips"); // the source row
+        // A click in the panel's first few frames is lost under kittest (the button doesn't
+        // move; the cause isn't pinned down, and no person clicks that fast), so let it settle.
+        h.run_steps(5);
+        h.get_by_label("Show in Explorer").click();
+        h.run_steps(2);
+        h.get_by_label("Open").click();
+        h.run_steps(2);
+        let app = h.state().as_ref().unwrap();
+        let id = app.detail.as_ref().unwrap().id;
+        assert_eq!(
+            app.launched,
+            vec![(Launch::ShowInExplorer, id), (Launch::Open, id)]
+        );
+        // The preview is made from the demo photo in the background.
+        step_until(&mut h, "the preview", |_| {
+            thumbs::path(dir.path(), id, thumbs::PREVIEW).exists()
+        });
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(h.query_by_label("Photo details").is_none());
+        assert_eq!(h.state().as_ref().unwrap().map.selected(), None);
+    }
+
+    #[test]
     fn removing_a_source_empties_the_map() {
         let dir = tempfile::tempdir().unwrap();
         imported(dir.path(), 8);
@@ -758,6 +975,7 @@ mod tests {
                                 tiles: false,
                                 open: Some(StartDialog::AddFolder(Some(photos.clone()))),
                                 perf: false,
+                                launch: false,
                             },
                         )
                     });

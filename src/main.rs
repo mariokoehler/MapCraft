@@ -27,9 +27,11 @@ fn main() -> eframe::Result {
             .position(|a| a == name)
             .and_then(|i| args.get(i + 1))
     };
-    // `--open add-folder[=<folder>]` or `--open sources`: start with that dialog (screenshots).
+    // `--open add-folder[=<folder>]`, `--open sources` or `--open details`: start with that
+    // dialog, or with the first photo on the map selected (screenshots).
     let open = match flag("--open").map(String::as_str) {
         Some("sources") => Some(app::StartDialog::Sources),
+        Some("details") => Some(app::StartDialog::Details),
         Some(o) if o.starts_with("add-folder") => Some(app::StartDialog::AddFolder(
             o.strip_prefix("add-folder=").map(std::path::PathBuf::from),
         )),
@@ -77,6 +79,7 @@ fn main() -> eframe::Result {
                 tiles: true,
                 open,
                 perf,
+                launch: true,
             };
             Ok(Box::new(app::MapCraftApp::new(&cc.egui_ctx, config)))
         }),

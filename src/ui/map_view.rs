@@ -1,23 +1,25 @@
-//! The map and everything drawn over it (design system "Map layout"): the photos as position
-//! dots (design.md §2.3), controls top-right, scale bar bottom-left, the provider's attribution
+//! The map and everything drawn over it (design system "Map layout"): the photos as thumbnail
+//! markers and position dots (design.md §2.3, `markers`), controls top-right, scale bar bottom-left, the provider's attribution
 //! flush bottom-right of the *visible* map, and the empty-library card while there are no photos.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use egui::{
-    Align2, Area, Button, Color32, CornerRadius, Frame, Id, Margin, Order, Rect, RichText, Sense,
-    Stroke, Ui, text::LayoutJob,
+    Align2, Area, Button, CornerRadius, Frame, Id, Margin, Order, Rect, RichText, Sense, Stroke,
+    Ui, text::LayoutJob,
 };
 use walkers::{
     HttpTiles, Map, MapMemory, MercatorProjection, Plugin, Position, Projection, Projector, lat_lon,
 };
 
 use crate::import::Bounds;
-use crate::library::PhotoPoint;
+use crate::library::{PhotoPoint, Thumb};
 use crate::provider::Provider;
 use crate::theme::Palette;
 use crate::ui::icons::Icon;
+use crate::ui::markers::{self, Face, Look, Textures};
+use crate::ui::widgets;
 
 /// Where the map opens while the library is empty: central Europe.
 const HOME: (f64, f64, f64) = (50.0, 10.0, 4.0); // lat, lon, zoom
@@ -26,6 +28,8 @@ const HOME: (f64, f64, f64) = (50.0, 10.0, 4.0); // lat, lon, zoom
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapAction {
     AddFolder,
+    /// A marker was clicked (`Some`), or the map's background (`None`).
+    Select(Option<i64>),
 }
 
 pub struct MapView {
@@ -35,6 +39,16 @@ pub struct MapView {
     memory: MapMemory,
     home: Position,
     points: Vec<PhotoPoint>,
+    /// The photos shown as markers at a whole-number zoom, and per point whether it's one of
+    /// them (`markers::pick`); recomputed when the zoom level or the points change.
+    picked: Option<(i32, Vec<usize>, Vec<bool>)>,
+    textures: Textures,
+    /// File names of photos with a marker, for their accessible names; filled by the app.
+    names: HashMap<i64, String>,
+    wanted_names: Vec<i64>,
+    selected: Option<i64>,
+    /// The marker under the pointer this frame, with its frame rect (for the hover card).
+    hovered: Option<(i64, Rect)>,
     /// The map's size last frame, for fitting a zoom to an area.
     last_rect: Rect,
     /// Keyboard shortcuts are live this frame.
@@ -43,23 +57,80 @@ pub struct MapView {
 
 impl MapView {
     /// `tile_cache: None` draws no tiles (tests and headless runs).
-    pub fn new(provider: Provider, tile_cache: Option<&Path>, ctx: egui::Context) -> Self {
+    /// `data`: the data folder, where the thumbnails are.
+    pub fn new(
+        provider: Provider,
+        tile_cache: Option<&Path>,
+        data: &Path,
+        ctx: egui::Context,
+    ) -> Self {
         let mut memory = MapMemory::default();
         // A zoom within the tile range never fails; ignore the error rather than unwrap.
         let _ = memory.set_zoom(HOME.2);
         Self {
             provider,
-            tiles: tile_cache.map(|c| provider.tiles(c, ctx)),
+            tiles: tile_cache.map(|c| provider.tiles(c, ctx.clone())),
             memory,
             home: lat_lon(HOME.0, HOME.1),
             points: Vec::new(),
+            picked: None,
+            textures: Textures::new(data.to_path_buf(), ctx),
+            names: HashMap::new(),
+            wanted_names: Vec::new(),
+            selected: None,
+            hovered: None,
             last_rect: Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 760.0)),
             keys: true,
         }
     }
 
     pub fn set_points(&mut self, points: Vec<PhotoPoint>) {
+        // Textures of photos whose thumbnail isn't made any more (changed, removed) are dropped,
+        // so a re-made one loads afresh.
+        let made: HashSet<i64> = points
+            .iter()
+            .filter(|p| p.thumb == Thumb::Ok)
+            .map(|p| p.id)
+            .collect();
+        self.textures.retain(|id| made.contains(&id));
+        if self
+            .selected
+            .is_some_and(|s| !points.iter().any(|p| p.id == s))
+        {
+            self.selected = None;
+        }
         self.points = points;
+        self.picked = None;
+    }
+
+    pub fn select(&mut self, id: Option<i64>) {
+        self.selected = id;
+    }
+
+    pub fn selected(&self) -> Option<i64> {
+        self.selected
+    }
+
+    /// The thumbnail texture of photo `id`, if it's loaded (requesting it otherwise).
+    pub fn thumbnail(&mut self, id: i64) -> Option<&egui::TextureHandle> {
+        match self.textures.get(id) {
+            Look::Ready(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// The marker under the pointer, with its frame rect.
+    pub fn hovered(&self) -> Option<(i64, Rect)> {
+        self.hovered
+    }
+
+    /// Photos with a marker whose file name isn't known yet (the app looks them up).
+    pub fn wanted_names(&mut self) -> Vec<i64> {
+        std::mem::take(&mut self.wanted_names)
+    }
+
+    pub fn add_names(&mut self, names: impl IntoIterator<Item = (i64, String)>) {
+        self.names.extend(names);
     }
 
     /// Centres and zooms the map so `b` fills most of it.
@@ -88,29 +159,50 @@ impl MapView {
         keys: bool,
     ) -> (Rect, Option<MapAction>) {
         self.keys = keys;
-        let dots = Dots {
+        let zoom = self.memory.zoom().floor() as i32;
+        if self.picked.as_ref().is_none_or(|(z, _, _)| *z != zoom) {
+            let picked = markers::pick(&self.points, zoom);
+            let mut is_picked = vec![false; self.points.len()];
+            for &i in &picked {
+                is_picked[i] = true;
+            }
+            self.picked = Some((zoom, picked, is_picked));
+        }
+        let (_, picked, is_picked) = self.picked.as_ref().expect("just set");
+        self.textures.begin_frame(ui.ctx());
+        let mut out = PhotosOut::default();
+        let photos = Photos {
             points: &self.points,
-            fill: p.map_pin,
-            ring: p.map_marker_frame,
-            edge: p.map_marker_edge,
+            picked,
+            is_picked,
+            textures: &mut self.textures,
+            names: &self.names,
+            wanted: &mut self.wanted_names,
+            palette: p,
+            selected: self.selected,
+            out: &mut out,
         };
         let tiles = self.tiles.as_mut().map(|t| t as &mut dyn walkers::Tiles);
         let map = Map::new(tiles, &mut self.memory, self.home)
             .zoom_with_ctrl(false) // the wheel zooms (design.md §2.3)
             .double_click_to_zoom(true)
-            .with_plugin(dots);
+            .with_plugin(photos);
         let rect = ui.add(map).rect;
+        self.hovered = out.hovered;
+        let mut action = match (out.clicked, out.background_clicked) {
+            (Some(id), _) => Some(MapAction::Select(Some(id))),
+            (None, true) if self.selected.is_some() => Some(MapAction::Select(None)),
+            _ => None,
+        };
         self.last_rect = rect;
         self.zoom_keys(ui);
 
         self.controls(ui, p, rect);
         self.scale_bar(ui, p, rect);
         self.attribution(ui, p, rect);
-        let action = if empty {
-            empty_state(ui, p, rect)
-        } else {
-            None
-        };
+        if empty && let Some(a) = empty_state(ui, p, rect) {
+            action = Some(a);
+        }
         (rect, action)
     }
 
@@ -323,13 +415,26 @@ fn empty_state(ui: &Ui, p: &Palette, map: Rect) -> Option<MapAction> {
     action
 }
 
-/// The photos as position dots (design.md §2.3): a pin-coloured dot in a white ring with a dark
-/// edge, so it reads on pale land and on saturated tiles alike (design system, map rules).
-struct Dots<'a> {
+/// The photos on the map (design.md §2.3): markers for the picked ones, dots for the rest.
+/// A dot is a pin-coloured dot in a white ring with a dark edge, so it reads on pale land and on
+/// saturated tiles alike (design system, map rules).
+struct Photos<'a> {
     points: &'a [PhotoPoint],
-    fill: Color32,
-    ring: Color32,
-    edge: Color32,
+    picked: &'a [usize],
+    is_picked: &'a [bool],
+    textures: &'a mut Textures,
+    names: &'a HashMap<i64, String>,
+    wanted: &'a mut Vec<i64>,
+    palette: &'a Palette,
+    selected: Option<i64>,
+    out: &'a mut PhotosOut,
+}
+
+#[derive(Default)]
+struct PhotosOut {
+    hovered: Option<(i64, Rect)>,
+    clicked: Option<i64>,
+    background_clicked: bool,
 }
 
 /// Dots closer than this many pixels are drawn once: a dot is 12 px wide, so closer neighbours
@@ -337,25 +442,125 @@ struct Dots<'a> {
 /// Measured with 100,000 photos over Europe (2026-11-14): see design.md §2.3.
 const DOT_CELL: f32 = 5.0;
 
-impl Plugin for Dots<'_> {
-    fn run(self: Box<Self>, ui: &mut Ui, _: &egui::Response, projector: &Projector, _: &MapMemory) {
-        let clip = ui.clip_rect().expand(8.0);
-        let painter = ui.painter();
-        let mut seen = HashSet::new();
-        for pt in self.points {
+impl Plugin for Photos<'_> {
+    fn run(
+        self: Box<Self>,
+        ui: &mut Ui,
+        response: &egui::Response,
+        projector: &Projector,
+        _: &MapMemory,
+    ) {
+        let p = self.palette;
+        let clip = ui.clip_rect();
+        let screen = |pt: &PhotoPoint| {
             let v = projector.project(lat_lon(pt.lat, pt.lon));
-            let pos = egui::pos2(v.x, v.y);
-            if !clip.contains(pos) {
-                continue;
+            egui::pos2(v.x, v.y)
+        };
+
+        // The markers in view, southern ones in front (they're nearer the viewer's eye line).
+        let mut shown: Vec<(&PhotoPoint, egui::Pos2)> = self
+            .picked
+            .iter()
+            .map(|&i| (&self.points[i], screen(&self.points[i])))
+            .filter(|(_, pos)| clip.intersects(markers::frame_rect(p, *pos, true).expand(4.0)))
+            .collect();
+        shown.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
+
+        // The dots, under the markers. A dot right at a marker's pin is left out: the marker
+        // stands for that spot (M4's count badge will say how many), and the pile of dots
+        // would only blot out the pin.
+        {
+            const NEAR: f32 = 10.0;
+            let mut pins: HashMap<(i32, i32), Vec<egui::Pos2>> = HashMap::new();
+            for (_, pos) in &shown {
+                let bin = ((pos.x / NEAR).floor() as i32, (pos.y / NEAR).floor() as i32);
+                pins.entry(bin).or_default().push(*pos);
             }
-            let cell = ((pos.x / DOT_CELL) as i32, (pos.y / DOT_CELL) as i32);
-            if !seen.insert(cell) {
-                continue;
+            let under_a_pin = |pos: egui::Pos2| {
+                let (bx, by) = ((pos.x / NEAR).floor() as i32, (pos.y / NEAR).floor() as i32);
+                (-1..=1).any(|dx| {
+                    (-1..=1).any(|dy| {
+                        pins.get(&(bx + dx, by + dy))
+                            .is_some_and(|v| v.iter().any(|q| q.distance(pos) < NEAR))
+                    })
+                })
+            };
+            let painter = ui.painter();
+            let dot_clip = clip.expand(8.0);
+            let mut seen = HashSet::new();
+            for (i, pt) in self.points.iter().enumerate() {
+                if self.is_picked[i] {
+                    continue;
+                }
+                let pos = screen(pt);
+                if !dot_clip.contains(pos) {
+                    continue;
+                }
+                let cell = ((pos.x / DOT_CELL) as i32, (pos.y / DOT_CELL) as i32);
+                if !seen.insert(cell) || under_a_pin(pos) {
+                    continue;
+                }
+                // Two shapes per dot: the dark edge, then the pin colour with its white ring.
+                painter.circle_filled(pos, 6.0, p.map_marker_edge);
+                painter.circle(pos, 4.0, p.map_pin, Stroke::new(2.0, p.map_marker_frame));
             }
-            // Two shapes per dot: the dark edge, then the pin colour with its white ring.
-            painter.circle_filled(pos, 6.0, self.edge);
-            painter.circle(pos, 4.0, self.fill, Stroke::new(2.0, self.ring));
         }
+
+        // Interaction first (egui hit-tests against last frame's rects, so the order of
+        // registration is the stacking order), then painting with the hover known.
+        let mut hovered = None;
+        for (pt, pos) in &shown {
+            let rect = markers::frame_rect(p, *pos, false);
+            let hit = rect.union(Rect::from_center_size(*pos, egui::vec2(10.0, 12.0)));
+            let r = ui.interact(hit, Id::unique(("photo-marker", pt.id)), Sense::click());
+            let name = match self.names.get(&pt.id) {
+                Some(n) => format!("Photo {n}"),
+                None => {
+                    self.wanted.push(pt.id);
+                    "Photo".to_owned()
+                }
+            };
+            widgets::named(&r, &name, true);
+            if r.hovered() {
+                hovered = Some(pt.id);
+            }
+            if r.clicked() {
+                self.out.clicked = Some(pt.id);
+            }
+        }
+        if response.clicked() {
+            self.out.background_clicked = true;
+        }
+
+        let mut last = Vec::new();
+        for (pt, pos) in shown {
+            let (hover, sel) = (hovered == Some(pt.id), self.selected == Some(pt.id));
+            if hover || sel {
+                last.push((pt, pos, hover, sel)); // drawn on top
+                continue;
+            }
+            let face = face(self.textures, pt);
+            markers::paint(ui, p, pos, face, false, false);
+        }
+        last.sort_by_key(|(_, _, hover, _)| *hover); // the hovered one topmost
+        for (pt, pos, hover, sel) in last {
+            if hover {
+                self.out.hovered = Some((pt.id, markers::frame_rect(p, pos, true)));
+            }
+            let face = face(self.textures, pt);
+            markers::paint(ui, p, pos, face, hover, sel);
+        }
+    }
+}
+
+/// A marker's face: its thumbnail once loaded, else the placeholder.
+fn face<'t>(textures: &'t mut Textures, pt: &PhotoPoint) -> Face<'t> {
+    if pt.thumb != Thumb::Ok {
+        return Face::Placeholder;
+    }
+    match textures.get(pt.id) {
+        Look::Ready(t) => Face::Image(t),
+        Look::Loading | Look::Failed => Face::Placeholder,
     }
 }
 

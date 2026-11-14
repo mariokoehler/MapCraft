@@ -5,6 +5,7 @@ pub mod app;
 pub mod demo;
 pub mod import;
 pub mod jobs;
+pub mod launch;
 pub mod library;
 pub mod metadata;
 pub mod paths;

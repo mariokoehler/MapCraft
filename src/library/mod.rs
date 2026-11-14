@@ -97,6 +97,32 @@ pub struct PhotoPoint {
     pub thumb: Thumb,
 }
 
+/// One photo as the hover card and the detail panel show it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PhotoDetail {
+    pub id: i64,
+    pub source_label: String,
+    pub root: PathBuf,
+    pub unc: Option<String>,
+    pub rel_dir: String,
+    pub original_name: String,
+    pub preview_name: Option<String>,
+    pub file_size: i64,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub taken_at: Option<String>,
+    pub taken_at_offset: Option<String>,
+    pub camera_make: Option<String>,
+    pub camera_model: Option<String>,
+    pub lens: Option<String>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub alt: Option<f64>,
+    pub gps_source: Option<String>,
+    pub orientation: Option<u16>,
+    pub thumb_made: bool,
+}
+
 /// A photo's thumbnail, as the map draws it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Thumb {
@@ -543,6 +569,59 @@ impl Library {
             .conn
             .prepare("SELECT id FROM photo WHERE thumb_state = 'ok'")?;
         stmt.query_map([], |r| r.get(0))?.collect()
+    }
+
+    /// The original's file name per photo, for the markers' accessible names.
+    pub fn names(&self, ids: &[i64]) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT original_name FROM photo WHERE id = ?1")?;
+        let mut out = Vec::with_capacity(ids.len());
+        for &id in ids {
+            if let Some(name) = stmt.query_row([id], |r| r.get::<_, String>(0)).optional()? {
+                out.push((id, name));
+            }
+        }
+        Ok(out)
+    }
+
+    /// One photo with its source, for the hover card and the detail panel.
+    pub fn photo_detail(&self, id: i64) -> Result<Option<PhotoDetail>> {
+        self.conn
+            .query_row(
+                "SELECT p.id, s.label, s.root_path, s.unc_path, p.rel_dir, p.original_name,
+                        p.preview_name, p.file_size, p.width, p.height, p.taken_at,
+                        p.taken_at_offset, p.camera_make, p.camera_model, p.lens, p.lat, p.lon,
+                        p.alt, p.gps_source, p.orientation, p.thumb_state
+                 FROM photo p JOIN source s ON s.id = p.source_id WHERE p.id = ?1",
+                [id],
+                |r| {
+                    Ok(PhotoDetail {
+                        id: r.get(0)?,
+                        source_label: r.get(1)?,
+                        root: PathBuf::from(r.get::<_, String>(2)?),
+                        unc: r.get(3)?,
+                        rel_dir: r.get(4)?,
+                        original_name: r.get(5)?,
+                        preview_name: r.get(6)?,
+                        file_size: r.get(7)?,
+                        width: r.get(8)?,
+                        height: r.get(9)?,
+                        taken_at: r.get(10)?,
+                        taken_at_offset: r.get(11)?,
+                        camera_make: r.get(12)?,
+                        camera_model: r.get(13)?,
+                        lens: r.get(14)?,
+                        lat: r.get(15)?,
+                        lon: r.get(16)?,
+                        alt: r.get(17)?,
+                        gps_source: r.get(18)?,
+                        orientation: r.get(19)?,
+                        thumb_made: r.get::<_, String>(20)? == THUMB_OK,
+                    })
+                },
+            )
+            .optional()
     }
 
     /// Every photo id, for removing the thumbnail files of deleted records.
