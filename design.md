@@ -178,6 +178,49 @@ on 8 copies each of DNG, CR2, RAF and JPEG from the library, 256 px JPEG output 
 still import fully. RAW files import with whatever embedded preview they have, and a photo with no
 preview at all gets a placeholder tile marked "needs LightCraft" **(user, 2026-11-14)**.
 
+**(d) As built in M3 (2026-11-14).** Measured on the user's Iceland set (4,778 photos, 3,800
+with a position; read-only over SMB):
+- **Order:** the embedded preview (the smallest one at least as large as needed, else the largest
+  of at least 256 px), then the paired JPEG, then decoding the original (JPEG, PNG, TIFF, WebP).
+  - The embedded preview comes *before* the paired JPEG **(unconfirmed)**. That departs from
+    §2.8(c)'s "the JPEG gives the fast thumbnail". On the NAS the cost is each file's open
+    (about 40 ms), and the RAW is opened anyway. Every CR2 in the set carries a 5760 px preview.
+  - The downside: an edited JPEG export beside the RAW doesn't show; the camera's rendering does.
+- **Speed:** a CR2 takes about 150 ms cold on one thread. With 4 workers it's 93 ms per photo,
+  and with 8 it's 80 ms, so the NAS is the limit. MapCraft uses **4 workers** **(unconfirmed)**.
+  Full decodes (TIFF, large PNG) run one at a time.
+- **TIFFs** (681 in the set, median 126 MB, largest 2.5 GB) have no embedded preview and take
+  about 2 s each.
+  - Originals over **400 MB or 120 megapixels aren't decoded**: they get the placeholder
+    **(unconfirmed)**. That was 9 of the 48 TIFFs with a position.
+  - Colour: exports in ProPhoto (also linear, 32-bit float) or Adobe RGB are converted to sRGB,
+    chosen by their ICC profile's description. Without that, thumbnails came out far too dark.
+    Resizing is done in linear light.
+- **Failures:**
+  - A file with no usable source gets the placeholder marker (state `failed`).
+  - A read error (the NAS asleep, a source offline) leaves the photo pending, and it is tried
+    again on the next run.
+- **Validity:** a thumbnail stays valid while three inputs are unchanged: the original's quick
+  hash, the paired JPEG's name and the orientation.
+  - A moved photo keeps it, and so does a sidecar-only edit.
+  - Known limit: a paired JPEG re-exported under the same name doesn't remake the thumbnail. That
+    only matters when the thumbnail came from that JPEG, which embedded-first makes rare.
+- **Files:**
+  - Paths are `thumbs/xx/yy/<id>_256.jpg` and `previews/xx/yy/<id>_1024.jpg` in the data folder.
+    Each is written to a `.tmp` file and renamed.
+  - Each run first deletes the files of photos that no longer exist.
+  - A re-made thumbnail deletes the photo's preview, which is made again when it's next shown.
+- **When it runs:**
+  - At start-up when thumbnails are pending, after each import, and after a removal.
+  - It is not restarted just because photos are still pending: an offline source would loop it.
+  - Imports, rescans, folder changes and removals wait until it has stopped, because it writes by
+    photo id.
+- **Not in M3:** the LightCraft fallback (3. above) is deferred to M6 or later **(unconfirmed)**.
+  Until then, CRW and RAWs without a usable preview get the placeholder.
+- **Mac leftovers:** AppleDouble files (`._name`, magic `00 05 16 07`, 117 in the set) are
+  ignored by the scan, and records from before that are removed by the next rescan. PSDs are no
+  longer read errors: MapCraft reads no metadata from them.
+
 ### 2.3 Map view
 
 - **Navigation:** drag to pan, mouse wheel to zoom around the cursor, double-click to zoom in,
@@ -196,6 +239,17 @@ preview at all gets a placeholder tile marked "needs LightCraft" **(user, 2026-1
   at continent zoom (the worst case), the release build draws about 30 frames per second, with
   8 ms of UI work per frame (measured 2026-11-14, `--fill-library` and `--perf`). M4's grouping
   replaces this.
+- **Until M4's grouping (built in M3, unconfirmed):**
+  - One photo per cell of a grid shows as a marker; the rest show as dots.
+    - The grid has 80 px cells at the whole-number zoom. It is anchored to the world, not the
+      screen, so panning never swaps which photo shows.
+    - A cell's marker is the photo with the lowest id among those with a thumbnail, else a
+      placeholder.
+  - Dots right at a marker's pin are left out, so the pin stays readable.
+  - Photos still waiting for their thumbnail stay dots.
+- **Selection (built in M3, unconfirmed):**
+  - Clicking the map's background or pressing Esc clears the selection.
+  - The panel's × hides the panel and keeps the selection; Ctrl+I shows or hides it again.
 - **Groups** (§2.4): drawn as the thumbnail of one representative photo, with a count badge.
   Clicking zooms to the group's extent. If a group can't split any further (photos taken at the
   same spot), clicking opens a strip of its photos instead **(user, 2026-11-14)**.
@@ -242,6 +296,19 @@ date, camera, lens, coordinates, and actions **(user, 2026-11-14)**:
   process exits within about 200 ms (verified 2026-11-14, PhotoCraft 0.22.0 and its `--help`).
   `--new-instance` forces a separate window.
 - **Open in LightCraft:** selects the photo in a running LightCraft (§3.6(c)).
+
+**As built in M3 (2026-11-14):**
+- Show in Explorer runs `explorer.exe /select,"<path>"`, and Open runs `explorer.exe "<path>"`,
+  which opens the file with the app Windows associates with it.
+  - The quoted path is passed as one raw argument and never through a shell. `cmd /c start`
+    would interpret `&`, `%` and `^` in a file name.
+  - The source's root is resolved on a background thread, because a sleeping NAS can take
+    seconds.
+- PhotoCraft and LightCraft are shown disabled until M6.
+- Two things in the mockup are left out for now **(unconfirmed)**:
+  - The source's online state: checking it needs the NAS, and the panel reads only the library.
+  - The exposure row: the import doesn't read exposure values yet.
+- The preview is made when the photo is first selected, then kept.
 
 ### 2.7 Settings
 
@@ -737,6 +804,16 @@ Product:
 - **Groups** (§2.4): the badge style.
 
 Unconfirmed defaults awaiting review:
+- §2.2(d) (M3):
+  - the embedded preview before the paired JPEG;
+  - 4 thumbnail workers;
+  - no decoding of originals over 400 MB or 120 MP;
+  - the LightCraft fallback deferred to M6 or later.
+- §2.3 (M3):
+  - one marker per 80 px world-grid cell until M4, the lowest id first;
+  - deselecting by a background click or Esc;
+  - × hides the panel, Ctrl+I toggles it.
+- §2.6 (M3): no online state and no exposure row in the panel yet.
 - §2.3: filters in M5 rather than v1.
 - §3.2: the planned crates.
 - §2.8(f): the tree starts all ticked; leaving a folder out later removes its records; a folder
@@ -767,7 +844,7 @@ Milestones are rough and get refined as we go.
   all photos" and the map-style menu are drawn disabled until their milestones. Checked by
   screenshot and the tile cache; pan, zoom (buttons, `+`/`-` keys, wheel, double-click) and the
   attribution link still need a check by hand.
-- **M2 — Library & import** (in progress): SQLite schema, add a source, a background scan,
+- **M2 — Library & import** (done 2026-11-14; tried by the user on 4,700 photos): SQLite schema, add a source, a background scan,
   EXIF/GPS reading, progress, rescan.
   - Done: the metadata reader, the library database and the headless import with rescan, moves
     and missing photos, checked on real folders (§3.4); folder picks as decisions (§2.8(f)).
@@ -780,9 +857,16 @@ Milestones are rough and get refined as we go.
     - "zoom to all photos".
 
     Checked by headless UI tests (`egui_kittest`) and by captures of the untouched window, on
-    generated photos. Not yet tried by the user on the real library.
-- **M3 — Thumbnails on the map:** the thumbnail pipeline (§2.2(b)) with LightCraft for RAW,
-  markers as thumbnails, hover and select, the detail panel.
+    generated photos.
+- **M3 — Thumbnails on the map** (built 2026-11-14; awaiting the user's try):
+  - Done: the thumbnail pipeline (§2.2(d)) as a background job;
+  - thumbnail markers (§2.3) with textures loaded off the UI thread;
+  - the hover card;
+  - selection and the detail panel with its preview, Show in Explorer and Open (§2.6).
+
+  Checked on the real Iceland set for the thumbnails (probes, aggregates only). The UI is checked
+  by headless tests and window captures on generated photos. The LightCraft fallback is deferred
+  (§2.2(d)).
 - **M4 — Grouping:** clustering per zoom (§2.4), count badges, click to zoom, the strip for photos
   at one spot.
 - **M5 — Search & filters:** GeoNames place search, photo search, date and source filters.

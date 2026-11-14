@@ -28,7 +28,7 @@ but the app isn't sold or advertised (user, 2026-11-14).
 
 ## Current status (2026-11-14)
 
-**M2 built: importing folders, rescans and the sources list work; awaiting the user's try.**
+**M3 built: thumbnails, markers and the detail panel; awaiting the user's try.**
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
   copies.
@@ -40,8 +40,9 @@ but the app isn't sold or advertised (user, 2026-11-14).
 - M0 is done (2026-11-14): the spikes (results in `design.md` §2.2(b), §2.6, §3.6(c)), and GPS
   comes from EXIF and XMP only in v1 (§2.8(g)). The design system and the main
   window's mockup exist and are approved (§3.9).
-- M1 is done (2026-11-14), tested by the user. M2 is built (`design.md` §5): the import is
-  checked on real folders, the UI on generated photos; the user's own try is next, then M3.
+- M1 and M2 are done (2026-11-14), tested by the user (M2 on about 4,700 Iceland photos).
+- M3 is built (`design.md` §5, §2.2(d)): thumbnails measured on the real set, the UI checked on
+  generated photos. The user's own try is next, then M4.
 - **The user's real photo library is read-only to us.** Never write, rename or create sidecars
   there. Its path stays out of the repo (it's in Claude's local memory).
 
@@ -55,7 +56,10 @@ but the app isn't sold or advertised (user, 2026-11-14).
 - The library (SQLite, `src/library/`) and the import with rescan, moves, missing photos and
   folder decisions (`src/import/`), run in the background by `src/jobs.rs`.
 - The import UI: add folder / change folders, sources, progress, toasts, position dots
-  (`src/ui/`). Generated test photos: `src/demo.rs`.
+  (`src/ui/`). Generated test photos with real pixels: `src/demo.rs`.
+- Thumbnails (`src/thumbs.rs`) made by `ThumbJob` (`src/jobs.rs`), the thumbnail markers
+  (`src/ui/markers.rs`), the hover card and the detail panel (`src/ui/details.rs`), and Show in
+  Explorer / Open (`src/launch.rs`).
 
 ## How we work
 
@@ -133,6 +137,7 @@ committed):
 - The first build takes about 1.5 minutes; incremental ones take seconds.
 - On disk: `%APPDATA%\MapCraft\settings.toml` (created on first start) and
   `%LOCALAPPDATA%\MapCraft\tiles\` (the tile cache).
+- Thumbnails and previews: `%LOCALAPPDATA%\MapCraft\thumbs\` and `previews\` (by photo id).
 - `%LOCALAPPDATA%\MapCraft\library.sqlite` is created by the first normal start. From then on
   the migrations in `src/library/migrations/` are frozen: change the schema with a new numbered
   file, never by editing an existing one.
@@ -145,14 +150,18 @@ committed):
   build and pipe its output (`cmd /c "… 2>&1"`): the release exe is a GUI-subsystem app and
   prints nothing to a console otherwise.
 - More dev flags:
-  - `--open add-folder[=<folder>]` or `--open sources` starts with that dialog open (for
-    comparing with the mockups);
+  - `--open add-folder[=<folder>]`, `--open sources` or `--open details` starts with that
+    dialog open, or the first photo selected (for comparing with the mockups);
   - `--perf` logs the frame time every 3 s;
   - `--make-demo <folder> [n]` writes generated photos;
   - `--fill-library <scratch data> <n>` writes synthetic rows.
 - UI tests: `egui_kittest` drives the whole app headless (`src/app.rs` tests), finding widgets
   by their accessible names. Its accessibility check fails on unnamed icon buttons, so use
   `widgets::ghost` or `widgets::named`.
+  - Painted things (markers) need an `interact` rect with a name to be found.
+  - Wait for the thumbnail job (`thumbs.is_none()`) before `h.run()`: its chip's spinner keeps
+    the frame repainting.
+  - A click in a just-opened side panel's first frames can be lost. Step a few frames first.
 - Probes (read-only, aggregates only): `cargo run --release --example exif_probe -- <list>`
   (our reader against `kamadak-exif`), `xmp_probe -- <folder>`, `unc_check -- <path>`.
 - Pitfall: `kamadak-exif` reads a whole TIFF-based file (a 25 MB RAW) before parsing, and fails

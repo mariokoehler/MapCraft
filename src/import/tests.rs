@@ -416,6 +416,22 @@ fn a_changed_photo_loses_its_thumbnail_and_a_moved_one_keeps_it() {
         thumbed.contains(&ids[1]),
         "B moved: same content, same thumbnail"
     );
+    // Only B's sidecar changes (a keyword added in another app): the image is the same.
+    fs::write(
+        root.join("moved").join("B.xmp"),
+        format!(
+            "{XMP_GPS}
+<!-- edited -->
+"
+        ),
+    )
+    .unwrap();
+    let s = import(&mut lib, src);
+    assert_eq!(s.changed, 1, "{s:?}");
+    assert!(
+        lib.thumbed().unwrap().contains(&ids[1]),
+        "a sidecar edit keeps the thumbnail"
+    );
 }
 
 #[test]
