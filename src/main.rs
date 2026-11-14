@@ -16,9 +16,26 @@ fn main() -> eframe::Result {
     init_logging();
 
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("--import") {
-        std::process::exit(dev_import(&args[2..]));
+    match args.get(1).map(String::as_str) {
+        Some("--import") => std::process::exit(dev_import(&args[2..])),
+        Some("--make-demo") => std::process::exit(dev_make_demo(&args[2..])),
+        Some("--fill-library") => std::process::exit(dev_fill_library(&args[2..])),
+        _ => {}
     }
+    let flag = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+    };
+    // `--open add-folder[=<folder>]` or `--open sources`: start with that dialog (screenshots).
+    let open = match flag("--open").map(String::as_str) {
+        Some("sources") => Some(app::StartDialog::Sources),
+        Some(o) if o.starts_with("add-folder") => Some(app::StartDialog::AddFolder(
+            o.strip_prefix("add-folder=").map(std::path::PathBuf::from),
+        )),
+        _ => None,
+    };
+    let perf = args.iter().any(|a| a == "--perf");
 
     let Some(locations) = Locations::from_system() else {
         error!("Windows didn't report the AppData folders; can't start");
@@ -27,11 +44,7 @@ fn main() -> eframe::Result {
     let settings = load_settings(&locations);
     // `--data <folder>` overrides the data folder for this run only (tests and trials with
     // generated photos never touch the real library).
-    let data_override = args
-        .iter()
-        .position(|a| a == "--data")
-        .and_then(|i| args.get(i + 1))
-        .map(std::path::PathBuf::from);
+    let data_override = flag("--data").map(std::path::PathBuf::from);
     let data_folder =
         data_override.unwrap_or_else(|| settings.data_folder_or(&locations.default_data_folder));
     let tile_cache = data_folder.join("tiles");
@@ -56,9 +69,88 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(app::MapCraftApp::new(cc, &tile_cache)))
+            let config = app::Config {
+                data_folder,
+                tiles: true,
+                open,
+                perf,
+            };
+            Ok(Box::new(app::MapCraftApp::new(&cc.egui_ctx, config)))
         }),
     )
+}
+
+/// Dev command: `mapcraft --fill-library <data folder> <count>` writes `count` synthetic photo
+/// records (no files) spread over Europe into `<data folder>\library.sqlite`, to check how the
+/// map copes with a large library. Never point it at the real data folder.
+fn dev_fill_library(args: &[String]) -> i32 {
+    let (Some(data), Some(count)) = (
+        args.first(),
+        args.get(1).and_then(|n| n.parse::<usize>().ok()),
+    ) else {
+        eprintln!("usage: mapcraft --fill-library <data folder> <count>");
+        return 2;
+    };
+    let db = std::path::Path::new(data).join("library.sqlite");
+    let result = (|| {
+        let mut lib = mapcraft::library::Library::open(&db)?;
+        let src = lib.add_source(
+            std::path::Path::new(r"C:\synthetic"),
+            None,
+            "Synthetic",
+            &mapcraft::import::scope::Scope::all(),
+        )?;
+        let tx = lib.transaction()?;
+        for i in 0..count {
+            // A deterministic scatter over Europe, denser around a few cities.
+            let f = (i as f64 * 0.618_033_988_75).fract();
+            let g = (i as f64 * 0.754_877_666_25).fract();
+            let (lat, lon) = (36.0 + 24.0 * f, -10.0 + 40.0 * g);
+            let rec = mapcraft::library::PhotoRecord {
+                rel_dir: format!("{}", i / 500),
+                stem: format!("IMG_{i:06}"),
+                original_name: format!("IMG_{i:06}.jpg"),
+                files_sig: i as i64,
+                file_size: 1,
+                lat: Some(lat),
+                lon: Some(lon),
+                gps_source: Some("exif"),
+                ..Default::default()
+            };
+            mapcraft::library::write_photo(&tx, src, None, &rec)?;
+        }
+        tx.commit()
+    })();
+    match result {
+        Ok(()) => {
+            println!("wrote {count} synthetic photos to {}", db.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("can't fill the library: {e}");
+            1
+        }
+    }
+}
+
+/// Dev command: `mapcraft --make-demo <folder> [count]` writes generated photos (default 400)
+/// with positions around Europe, for trying the import without real photos.
+fn dev_make_demo(args: &[String]) -> i32 {
+    let Some(folder) = args.first() else {
+        eprintln!("usage: mapcraft --make-demo <folder> [count]");
+        return 2;
+    };
+    let count = args.get(1).and_then(|n| n.parse().ok()).unwrap_or(400);
+    match mapcraft::demo::make_demo(std::path::Path::new(folder), count) {
+        Ok(()) => {
+            println!("wrote {count} demo photos to {folder}");
+            0
+        }
+        Err(e) => {
+            eprintln!("can't write the demo photos: {e}");
+            1
+        }
+    }
 }
 
 /// Reads the settings. A missing file is created with the defaults; an unreadable one is left

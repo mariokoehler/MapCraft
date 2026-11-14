@@ -80,6 +80,14 @@ pub struct Counts {
     pub missing: i64,
 }
 
+impl Counts {
+    /// Photos present (not missing) without a position: they're in the library but not on the
+    /// map. `photos` includes missing ones, which are neither.
+    pub fn without_position(&self) -> i64 {
+        self.photos - self.missing - self.with_position
+    }
+}
+
 /// A photo's position, for drawing it on the map.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PhotoPoint {
@@ -282,6 +290,27 @@ impl Library {
                 })
             },
         )
+    }
+
+    /// Counts per source, for the sources list.
+    pub fn source_counts(&self) -> Result<HashMap<i64, Counts>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT source_id, count(*),
+                    count(lat) FILTER (WHERE state = 'ok'),
+                    count(*) FILTER (WHERE state = 'missing')
+             FROM photo GROUP BY source_id",
+        )?;
+        stmt.query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                Counts {
+                    photos: r.get(1)?,
+                    with_position: r.get(2)?,
+                    missing: r.get(3)?,
+                },
+            ))
+        })?
+        .collect()
     }
 
     /// Per original file type: photos, photos with a position, positions from sidecars.

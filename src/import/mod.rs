@@ -11,6 +11,7 @@
 //!   resumes where it stopped.
 //! - A file that can't be read is recorded with its error and counted; it never stops the run.
 
+pub mod browse;
 pub mod scan;
 pub mod scope;
 #[cfg(test)]
@@ -296,7 +297,7 @@ fn write_batch(
 }
 
 /// The root if it can be read, else the UNC target of its mapped drive (design.md §2.1(a)).
-fn reachable_root(root: &Path, unc: Option<&str>) -> Option<PathBuf> {
+pub fn reachable_root(root: &Path, unc: Option<&str>) -> Option<PathBuf> {
     if std::fs::read_dir(root).is_ok() {
         return Some(root.to_path_buf());
     }

@@ -8,43 +8,48 @@ use std::sync::{Arc, LazyLock};
 
 use egui::{Color32, Image, ImageSource, load::Bytes};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Icon {
-    Search,
-    FolderPlus,
-    Settings,
-    Plus,
-    Minus,
-    Scan,
-    Layers,
+/// Declares the `Icon` enum, its list and its files in one place. A `macro_rules!` macro
+/// generates code at compile time (a little like an annotation processor in Java).
+macro_rules! icons {
+    ($($variant:ident => $file:literal),* $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Icon { $($variant),* }
+
+        const ALL: &[Icon] = &[$(Icon::$variant),*];
+
+        impl Icon {
+            fn file(self) -> (&'static str, &'static str) {
+                match self {
+                    $(Self::$variant => ($file, include_str!(concat!("../../assets/icons/", $file, ".svg")))),*
+                }
+            }
+        }
+    };
 }
 
-const ALL: [Icon; 7] = [
-    Icon::Search,
-    Icon::FolderPlus,
-    Icon::Settings,
-    Icon::Plus,
-    Icon::Minus,
-    Icon::Scan,
-    Icon::Layers,
-];
+icons! {
+    Search => "search",
+    FolderPlus => "folder-plus",
+    Folder => "folder",
+    Folders => "folders",
+    Settings => "settings",
+    Plus => "plus",
+    Minus => "minus",
+    Scan => "scan",
+    Layers => "layers",
+    ChevronRight => "chevron-right",
+    ChevronDown => "chevron-down",
+    Check => "check",
+    X => "x",
+    Refresh => "refresh-cw",
+    CircleCheck => "circle-check",
+    CircleAlert => "circle-alert",
+    TriangleAlert => "triangle-alert",
+    Wifi => "wifi",
+    WifiOff => "wifi-off",
+}
 
 impl Icon {
-    fn file(self) -> (&'static str, &'static str) {
-        match self {
-            Self::Search => ("search", include_str!("../../assets/icons/search.svg")),
-            Self::FolderPlus => (
-                "folder-plus",
-                include_str!("../../assets/icons/folder-plus.svg"),
-            ),
-            Self::Settings => ("settings", include_str!("../../assets/icons/settings.svg")),
-            Self::Plus => ("plus", include_str!("../../assets/icons/plus.svg")),
-            Self::Minus => ("minus", include_str!("../../assets/icons/minus.svg")),
-            Self::Scan => ("scan", include_str!("../../assets/icons/scan.svg")),
-            Self::Layers => ("layers", include_str!("../../assets/icons/layers.svg")),
-        }
-    }
-
     /// The icon at `size` px, tinted `tint`.
     pub fn image(self, size: f32, tint: Color32) -> Image<'static> {
         let (name, _) = self.file();
@@ -75,7 +80,7 @@ mod tests {
 
     #[test]
     fn every_icon_is_single_ink_and_whitened() {
-        for icon in ALL {
+        for &icon in ALL {
             let (name, svg) = icon.file();
             assert!(
                 svg.contains("currentColor"),

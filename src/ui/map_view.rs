@@ -1,15 +1,20 @@
-//! The map and everything drawn over it (design system "Map layout"): controls top-right, scale
-//! bar bottom-left, the provider's attribution flush bottom-right of the *visible* map, and in
-//! M1 the empty-library card in the middle.
+//! The map and everything drawn over it (design system "Map layout"): the photos as position
+//! dots (design.md §2.3), controls top-right, scale bar bottom-left, the provider's attribution
+//! flush bottom-right of the *visible* map, and the empty-library card while there are no photos.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use egui::{
-    Align2, Area, Button, CornerRadius, Frame, Id, Margin, Order, Rect, RichText, Sense, Stroke,
-    Ui, text::LayoutJob,
+    Align2, Area, Button, Color32, CornerRadius, Frame, Id, Margin, Order, Rect, RichText, Sense,
+    Stroke, Ui, text::LayoutJob,
 };
-use walkers::{HttpTiles, Map, MapMemory, MercatorProjection, Position, Projection, lat_lon};
+use walkers::{
+    HttpTiles, Map, MapMemory, MercatorProjection, Plugin, Position, Projection, Projector, lat_lon,
+};
 
+use crate::import::Bounds;
+use crate::library::PhotoPoint;
 use crate::provider::Provider;
 use crate::theme::Palette;
 use crate::ui::icons::Icon;
@@ -17,37 +22,85 @@ use crate::ui::icons::Icon;
 /// Where the map opens while the library is empty: central Europe.
 const HOME: (f64, f64, f64) = (50.0, 10.0, 4.0); // lat, lon, zoom
 
+/// What the map asks of the app this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapAction {
+    AddFolder,
+}
+
 pub struct MapView {
     provider: Provider,
-    tiles: HttpTiles,
+    /// `None` in tests: the map then draws no tiles and makes no network requests.
+    tiles: Option<HttpTiles>,
     memory: MapMemory,
     home: Position,
+    points: Vec<PhotoPoint>,
+    /// The map's size last frame, for fitting a zoom to an area.
+    last_rect: Rect,
 }
 
 impl MapView {
-    pub fn new(provider: Provider, tile_cache: &Path, ctx: egui::Context) -> Self {
+    /// `tile_cache: None` draws no tiles (tests and headless runs).
+    pub fn new(provider: Provider, tile_cache: Option<&Path>, ctx: egui::Context) -> Self {
         let mut memory = MapMemory::default();
         // A zoom within the tile range never fails; ignore the error rather than unwrap.
         let _ = memory.set_zoom(HOME.2);
         Self {
             provider,
-            tiles: provider.tiles(tile_cache, ctx),
+            tiles: tile_cache.map(|c| provider.tiles(c, ctx)),
             memory,
             home: lat_lon(HOME.0, HOME.1),
+            points: Vec::new(),
+            last_rect: Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 760.0)),
         }
     }
 
-    pub fn show(&mut self, ui: &mut Ui, p: &Palette) {
-        let map = Map::new(Some(&mut self.tiles), &mut self.memory, self.home)
+    pub fn set_points(&mut self, points: Vec<PhotoPoint>) {
+        self.points = points;
+    }
+
+    /// Centres and zooms the map so `b` fills most of it.
+    pub fn zoom_to(&mut self, b: Bounds) {
+        let center = lat_lon((b.min_lat + b.max_lat) / 2.0, (b.min_lon + b.max_lon) / 2.0);
+        self.memory.center_at(center);
+        let _ = self.memory.set_zoom(fit_zoom(b, self.last_rect.size()));
+    }
+
+    /// The area of every photo on the map, if there are any.
+    pub fn all_bounds(&self) -> Option<Bounds> {
+        let mut it = self.points.iter();
+        let first = it.next()?;
+        Some(it.fold(Bounds::around(first.lat, first.lon), |b, p| {
+            b.include(p.lat, p.lon)
+        }))
+    }
+
+    /// Draws the map. `empty`: the library has no photos, so the empty-library card shows.
+    pub fn show(&mut self, ui: &mut Ui, p: &Palette, empty: bool) -> (Rect, Option<MapAction>) {
+        let dots = Dots {
+            points: &self.points,
+            fill: p.map_pin,
+            ring: p.map_marker_frame,
+            edge: p.map_marker_edge,
+        };
+        let tiles = self.tiles.as_mut().map(|t| t as &mut dyn walkers::Tiles);
+        let map = Map::new(tiles, &mut self.memory, self.home)
             .zoom_with_ctrl(false) // the wheel zooms (design.md §2.3)
-            .double_click_to_zoom(true);
+            .double_click_to_zoom(true)
+            .with_plugin(dots);
         let rect = ui.add(map).rect;
+        self.last_rect = rect;
         self.zoom_keys(ui);
 
         self.controls(ui, p, rect);
         self.scale_bar(ui, p, rect);
         self.attribution(ui, p, rect);
-        empty_state(ui, p, rect);
+        let action = if empty {
+            empty_state(ui, p, rect)
+        } else {
+            None
+        };
+        (rect, action)
     }
 
     /// `+`/`-` zoom (design.md §2.3; walkers has no keyboard handling). `=` counts as `+`, since
@@ -70,8 +123,10 @@ impl MapView {
         }
     }
 
-    /// Zoom in/out work; "zoom to all photos" and "map style" have nothing to act on yet.
+    /// Zoom in/out and "zoom to all photos" (once there are photos); "map style" has nothing to
+    /// choose from yet.
     fn controls(&mut self, ui: &Ui, p: &Palette, map: Rect) {
+        let all = self.all_bounds();
         let frame = Frame::NONE
             .fill(p.bg_panel)
             .stroke(Stroke::new(p.stroke_hairline, p.border_subtle))
@@ -92,13 +147,18 @@ impl MapView {
                         let _ = self.memory.zoom_out();
                     }
                     ui.separator();
-                    control(
-                        ui,
-                        p,
-                        Icon::Scan,
-                        "Zoom to all photos: no photos yet",
-                        false,
-                    );
+                    let hint = if all.is_some() {
+                        "Zoom to all photos (F)"
+                    } else {
+                        "Zoom to all photos: no photos on the map yet"
+                    };
+                    let fit = control(ui, p, Icon::Scan, hint, all.is_some()).clicked()
+                        || (all.is_some()
+                            && !ui.ctx().egui_wants_keyboard_input()
+                            && ui.input(|i| i.key_pressed(egui::Key::F)));
+                    if fit && let Some(b) = all {
+                        self.zoom_to(b);
+                    }
                     control(ui, p, Icon::Layers, "Map style: not available yet", false);
                 });
             });
@@ -187,6 +247,7 @@ fn control(ui: &mut Ui, p: &Palette, icon: Icon, hint: &str, enabled: bool) -> e
         .frame_when_inactive(false)
         .min_size(egui::vec2(p.size_map_control, p.size_map_control));
     let response = ui.add_enabled(enabled, button);
+    crate::ui::widgets::named(&response, hint, enabled);
     if enabled {
         response.on_hover_text(hint)
     } else {
@@ -194,8 +255,9 @@ fn control(ui: &mut Ui, p: &Palette, icon: Icon, hint: &str, enabled: bool) -> e
     }
 }
 
-/// The card shown while there are no photos. "Add folder…" arrives with M2.
-fn empty_state(ui: &Ui, p: &Palette, map: Rect) {
+/// The card shown while there are no photos.
+fn empty_state(ui: &Ui, p: &Palette, map: Rect) -> Option<MapAction> {
+    let mut action = None;
     Area::new(Id::unique("empty-state"))
         .order(Order::Middle)
         .pivot(Align2::CENTER_CENTER)
@@ -240,11 +302,68 @@ fn empty_state(ui: &Ui, p: &Palette, map: Rect) {
                             RichText::new("Add folder…").color(p.text_on_accent),
                         )
                         .fill(p.accent);
-                        ui.add_enabled(false, add)
-                            .on_disabled_hover_text("Importing photos isn't available yet");
+                        if ui.add(add).clicked() {
+                            action = Some(MapAction::AddFolder);
+                        }
                     });
                 });
         });
+    action
+}
+
+/// The photos as position dots (design.md §2.3): a pin-coloured dot in a white ring with a dark
+/// edge, so it reads on pale land and on saturated tiles alike (design system, map rules).
+struct Dots<'a> {
+    points: &'a [PhotoPoint],
+    fill: Color32,
+    ring: Color32,
+    edge: Color32,
+}
+
+/// Dots closer than this many pixels are drawn once: at low zoom thousands of photos share a
+/// few pixels, and drawing each would only cost time (until M4 groups them).
+const DOT_CELL: f32 = 3.0;
+
+impl Plugin for Dots<'_> {
+    fn run(self: Box<Self>, ui: &mut Ui, _: &egui::Response, projector: &Projector, _: &MapMemory) {
+        let clip = ui.clip_rect().expand(8.0);
+        let painter = ui.painter();
+        let mut seen = HashSet::new();
+        for pt in self.points {
+            let v = projector.project(lat_lon(pt.lat, pt.lon));
+            let pos = egui::pos2(v.x, v.y);
+            if !clip.contains(pos) {
+                continue;
+            }
+            let cell = ((pos.x / DOT_CELL) as i32, (pos.y / DOT_CELL) as i32);
+            if !seen.insert(cell) {
+                continue;
+            }
+            painter.circle_filled(pos, 6.0, self.edge);
+            painter.circle_filled(pos, 5.0, self.ring);
+            painter.circle_filled(pos, 3.0, self.fill);
+        }
+    }
+}
+
+/// The zoom that fits `b` into a map of `size` px, with a margin; clamped to street level at
+/// most, so a single photo doesn't zoom in to the last tile.
+pub fn fit_zoom(b: Bounds, size: egui::Vec2) -> f64 {
+    let a = MercatorProjection.project(lat_lon(b.max_lat, b.min_lon), 0.0);
+    let c = MercatorProjection.project(lat_lon(b.min_lat, b.max_lon), 0.0);
+    let (w0, h0) = ((c.x() - a.x()).abs(), (c.y() - a.y()).abs());
+    let usable = (size * 0.8).max(egui::vec2(1.0, 1.0));
+    let zx = if w0 > 0.0 {
+        (usable.x as f64 / w0).log2()
+    } else {
+        f64::INFINITY
+    };
+    let zy = if h0 > 0.0 {
+        (usable.y as f64 / h0).log2()
+    } else {
+        f64::INFINITY
+    };
+    zx.min(zy).clamp(2.0, 16.0)
 }
 
 /// The longest 1/2/5 × 10ⁿ metre length that fits in `max_px`, and its width in px.

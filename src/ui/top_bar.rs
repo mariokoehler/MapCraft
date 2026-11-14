@@ -1,14 +1,38 @@
-//! The top bar (36 px): app mark, search, actions. In M1 search and the actions have no
-//! behaviour yet, so they are drawn disabled (search arrives in M5, "Add folder…" in M2).
+//! The top bar (36 px): app mark, search, counts, import progress, actions (canvas
+//! `MapCraft — Import`). Search and settings have no behaviour yet, so they are drawn disabled
+//! (search arrives in M5).
 
-use egui::{Align, Button, Image, ImageSource, Layout, RichText, Sense, Stroke, StrokeKind, Ui};
+use egui::{Align, Image, ImageSource, Layout, RichText, Sense, Stroke, StrokeKind, Ui};
 
+use crate::library::Counts;
 use crate::theme::Palette;
 use crate::ui::icons::Icon;
+use crate::ui::widgets::{self, thousands};
 
 const MARK: &[u8] = include_bytes!("../../assets/brand/mapcraft-mark-32.svg");
 
-pub fn show(ui: &mut Ui, p: &Palette) {
+/// A running import as the top bar shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Running {
+    /// `None` while the folders are still being listed.
+    pub progress: Option<(usize, usize)>,
+    pub cancelling: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopBarAction {
+    AddFolder,
+    Sources,
+    CancelImport,
+}
+
+pub fn show(
+    ui: &mut Ui,
+    p: &Palette,
+    counts: Counts,
+    running: Option<Running>,
+) -> Option<TopBarAction> {
+    let mut action = None;
     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
         ui.add_space(p.space_2);
         ui.add(
@@ -24,14 +48,95 @@ pub fn show(ui: &mut Ui, p: &Palette) {
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add_space(p.space_1);
-            ghost_button(ui, p, Icon::Settings, "Settings: not available yet");
-            ghost_button(ui, p, Icon::FolderPlus, "Add folder…: not available yet");
+            widgets::ghost(ui, p, Icon::Settings, "Settings: not available yet", false);
+            let busy = running.is_some();
+            if widgets::ghost(ui, p, Icon::Folders, "Sources", true).clicked() {
+                action = Some(TopBarAction::Sources);
+            }
+            let add_hint = if busy {
+                "Add folder…: wait for the import to finish"
+            } else {
+                "Add folder…"
+            };
+            if widgets::ghost(ui, p, Icon::FolderPlus, add_hint, !busy).clicked() {
+                action = Some(TopBarAction::AddFolder);
+            }
+            if let Some(r) = running
+                && progress_chip(ui, p, r)
+            {
+                action = Some(TopBarAction::CancelImport);
+            }
+            if counts.photos > 0 {
+                ui.label(
+                    RichText::new(counts_text(counts))
+                        .small()
+                        .color(p.text_weak),
+                );
+            }
         });
     });
+    action
 }
 
-/// The search field, disabled until there's something to search (design system: "Disabled (no
-/// photos yet)").
+/// "4,881 photos · 1,019 without a position" (design system: say it with the number).
+pub fn counts_text(c: Counts) -> String {
+    let present = (c.photos - c.missing).max(0) as usize;
+    let mut s = format!("{} photos", thousands(present));
+    let without = c.without_position().max(0) as usize;
+    if without > 0 {
+        s.push_str(&format!(" · {} without a position", thousands(without)));
+    }
+    if c.missing > 0 {
+        s.push_str(&format!(" · {} missing", thousands(c.missing as usize)));
+    }
+    s
+}
+
+/// The progress chip ("Importing 1,204 / 2,053") with its cancel button; true when cancelled.
+fn progress_chip(ui: &mut Ui, p: &Palette, r: Running) -> bool {
+    let mut cancel = false;
+    egui::Frame::NONE
+        .fill(p.bg_extreme)
+        .stroke(Stroke::new(1.0, p.border_subtle))
+        .corner_radius(255)
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            // Right to left: cancel, bar, text, spinner.
+            cancel = widgets::ghost(
+                ui,
+                p,
+                Icon::X,
+                "Cancel import (it resumes next time)",
+                !r.cancelling,
+            )
+            .clicked();
+            let (text, fraction) = match (r.cancelling, r.progress) {
+                (true, _) => ("Stopping…".to_owned(), None),
+                (false, None) => ("Listing folders…".to_owned(), None),
+                (false, Some((done, total))) => (
+                    format!("Importing {} / {}", thousands(done), thousands(total)),
+                    Some(if total == 0 {
+                        1.0
+                    } else {
+                        done as f32 / total as f32
+                    }),
+                ),
+            };
+            if let Some(f) = fraction {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(60.0, 4.0), Sense::hover());
+                ui.painter().rect_filled(rect, 2, p.border_subtle);
+                let mut done = rect;
+                done.set_width(rect.width() * f.clamp(0.0, 1.0));
+                ui.painter().rect_filled(done, 2, p.accent);
+            }
+            ui.label(RichText::new(text).small().color(p.text_normal));
+            ui.add(egui::Spinner::new().size(12.0).color(p.text_weak));
+        });
+    cancel
+}
+
+/// The search field, disabled until M5 (design system: "Disabled (no photos yet)").
 fn search_field(ui: &mut Ui, p: &Palette) {
     let size = egui::vec2(320.0, ui.spacing().interact_size.y);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
@@ -63,12 +168,26 @@ fn search_field(ui: &mut Ui, p: &Palette) {
     response.on_hover_text("Search: not available yet");
 }
 
-fn ghost_button(ui: &mut Ui, p: &Palette, icon: Icon, hint: &str) {
-    let size = ui.spacing().interact_size.y;
-    // Disabled until they have behaviour; egui doesn't fade a tinted image, so tint it here.
-    let button = Button::image(icon.image(p.size_icon_sm, p.text_disabled))
-        .frame_when_inactive(false)
-        .min_size(egui::vec2(size, size));
-    ui.add_enabled(false, button)
-        .on_disabled_hover_text(RichText::new(hint));
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counts_leave_out_missing_photos_and_name_them() {
+        let c = Counts {
+            photos: 5000,
+            with_position: 3862,
+            missing: 119,
+        };
+        assert_eq!(
+            counts_text(c),
+            "4,881 photos · 1,019 without a position · 119 missing"
+        );
+        let all_placed = Counts {
+            photos: 10,
+            with_position: 10,
+            missing: 0,
+        };
+        assert_eq!(counts_text(all_placed), "10 photos");
+    }
 }
