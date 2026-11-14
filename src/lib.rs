@@ -10,6 +10,7 @@ pub mod launch;
 pub mod library;
 pub mod metadata;
 pub mod paths;
+pub mod places;
 pub mod provider;
 pub mod settings;
 pub mod theme;
