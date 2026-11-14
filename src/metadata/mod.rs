@@ -50,14 +50,46 @@ pub struct Metadata {
     pub orientation: Option<u16>,
 }
 
+/// Why a file's metadata couldn't be read. The difference matters for a rescan: an I/O error
+/// (the NAS dropped, the file is locked) says nothing about the photo, so its record must stay
+/// as it is and the file is tried again next time; a format error is a fact about the file.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReadError {
+    Io(String),
+    Format(String),
+}
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "can't read the file: {e}"),
+            Self::Format(e) => write!(f, "unreadable metadata: {e}"),
+        }
+    }
+}
+
+/// An I/O error, except that running out of bytes means a truncated file: a format problem.
+fn io(e: std::io::Error) -> ReadError {
+    if e.kind() == std::io::ErrorKind::UnexpectedEof {
+        ReadError::Format("the file is truncated".into())
+    } else {
+        ReadError::Io(e.to_string())
+    }
+}
+
 /// Reads the metadata embedded in an image file.
-pub fn read_image(path: &Path) -> Result<Metadata, String> {
-    let mut file = File::open(path).map_err(|e| e.to_string())?;
+pub fn read_image(path: &Path) -> Result<Metadata, ReadError> {
+    read_image_from(File::open(path).map_err(io)?)
+}
+
+/// Like `read_image`, on a file that's already open (the import opens each original once).
+pub fn read_image_from(mut file: File) -> Result<Metadata, ReadError> {
+    file.seek(SeekFrom::Start(0)).map_err(io)?;
     let mut magic = [0u8; 16];
-    let n = file.read(&mut magic).map_err(|e| e.to_string())?;
+    let n = file.read(&mut magic).map_err(io)?;
     let magic = &magic[..n];
     if magic.starts_with(b"II*\0") || magic.starts_with(b"MM\0*") {
-        return tiff::read(&mut tiff::Bytes::new(file, 0).map_err(|e| e.to_string())?);
+        return tiff::read(&mut tiff::Bytes::new(file, 0).map_err(io)?).map_err(ReadError::Format);
     }
     if magic.starts_with(&[0xFF, 0xD8]) {
         return read_jpeg(file, 0);
@@ -67,26 +99,27 @@ pub fn read_image(path: &Path) -> Result<Metadata, String> {
         let mut ptr = [0u8; 4];
         file.seek(SeekFrom::Start(84))
             .and_then(|_| file.read_exact(&mut ptr))
-            .map_err(|e| e.to_string())?;
+            .map_err(io)?;
         return read_jpeg(file, u32::from_be_bytes(ptr) as u64);
     }
-    let file = File::open(path).map_err(|e| e.to_string())?;
+    file.seek(SeekFrom::Start(0)).map_err(io)?;
     match exif::Reader::new().read_from_container(&mut BufReader::new(file)) {
         Ok(e) => Ok(from_kamadak(&e)),
         // No EXIF at all is normal for PNGs and screenshots: nothing to tell, not an error.
         Err(exif::Error::NotFound(_)) => Ok(Metadata::default()),
-        Err(e) => Err(e.to_string()),
+        Err(exif::Error::Io(e)) => Err(io(e)),
+        Err(e) => Err(ReadError::Format(e.to_string())),
     }
 }
 
 /// A JPEG starting at `start`: walk its segments to the EXIF block (APP1 `Exif\0\0`).
-fn read_jpeg(mut file: File, start: u64) -> Result<Metadata, String> {
+fn read_jpeg(mut file: File, start: u64) -> Result<Metadata, ReadError> {
     let mut pos = start + 2;
     for _ in 0..64 {
         let mut hdr = [0u8; 4];
         file.seek(SeekFrom::Start(pos))
             .and_then(|_| file.read_exact(&mut hdr))
-            .map_err(|e| e.to_string())?;
+            .map_err(io)?;
         if hdr[0] != 0xFF {
             break;
         }
@@ -97,10 +130,11 @@ fn read_jpeg(mut file: File, start: u64) -> Result<Metadata, String> {
         }
         if marker == 0xE1 {
             let mut id = [0u8; 6];
-            file.read_exact(&mut id).map_err(|e| e.to_string())?;
+            file.read_exact(&mut id).map_err(io)?;
             if &id == b"Exif\0\0" {
                 let base = pos + 4 + 6;
-                return tiff::read(&mut tiff::Bytes::new(file, base).map_err(|e| e.to_string())?);
+                return tiff::read(&mut tiff::Bytes::new(file, base).map_err(io)?)
+                    .map_err(ReadError::Format);
             }
         }
         pos += 2 + len;

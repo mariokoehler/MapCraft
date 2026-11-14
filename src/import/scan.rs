@@ -52,13 +52,44 @@ pub struct FileEntry {
 
 #[derive(Debug, Default)]
 pub struct Listing {
-    /// Every folder whose listing succeeded, by key (relative path, lower case). Only photos in
-    /// these folders can be marked missing.
-    pub listed: HashSet<String>,
+    /// Every folder listed completely, by key (relative path, lower case), with the keys of the
+    /// subfolder names it contained (excluded ones too).
+    pub listed: HashMap<String, HashSet<String>>,
     /// Folders that couldn't be read (a NAS hiccup, permissions).
     pub unreadable: usize,
     /// Files by folder (relative path as on disk).
     pub files: Vec<(String, FileEntry)>,
+}
+
+impl Listing {
+    /// Can a known photo in folder `dir_key` that wasn't found be called missing (or moved)?
+    ///
+    /// Yes if its folder was listed completely. Otherwise the nearest listed ancestor decides:
+    /// if that ancestor no longer contains the folder, the folder was renamed or deleted, so
+    /// yes. If the folder is still there but couldn't be read, or no ancestor was listed (it
+    /// isn't among the picked folders), no: the photo stays as it is.
+    pub fn can_judge(&self, dir_key: &str) -> bool {
+        if self.listed.contains_key(dir_key) {
+            return true;
+        }
+        let mut child = dir_key;
+        while let Some((parent, name)) = split_parent(child) {
+            if let Some(subdirs) = self.listed.get(parent) {
+                return !subdirs.contains(name);
+            }
+            child = parent;
+        }
+        false
+    }
+}
+
+/// `a\b\c` → (`a\b`, `c`); `a` → (``, `a`); the root `` has no parent.
+fn split_parent(dir: &str) -> Option<(&str, &str)> {
+    if dir.is_empty() {
+        None
+    } else {
+        Some(dir.rsplit_once('\\').unwrap_or(("", dir)))
+    }
 }
 
 /// Lists `root` below each of `folders` (relative; empty = the whole root), skipping excluded
@@ -70,11 +101,12 @@ pub fn list(root: &Path, folders: &[String], cancelled: &dyn Fn() -> bool) -> Li
     } else {
         folders.to_vec()
     };
+    let mut seen = HashSet::new();
     while let Some(rel) = todo.pop() {
         if cancelled() {
             break;
         }
-        if !out.listed.insert(key(&rel)) {
+        if !seen.insert(key(&rel)) {
             continue; // already listed (overlapping picks)
         }
         let dir = if rel.is_empty() {
@@ -83,11 +115,11 @@ pub fn list(root: &Path, folders: &[String], cancelled: &dyn Fn() -> bool) -> Li
             root.join(&rel)
         };
         let Ok(entries) = fs::read_dir(&dir) else {
-            out.listed.remove(&key(&rel));
             out.unreadable += 1;
             continue;
         };
         let mut complete = true;
+        let mut subdirs = HashSet::new();
         for entry in entries {
             let Ok(entry) = entry else {
                 complete = false;
@@ -99,6 +131,7 @@ pub fn list(root: &Path, folders: &[String], cancelled: &dyn Fn() -> bool) -> Li
                 continue;
             };
             if meta.is_dir() {
+                subdirs.insert(key(&name));
                 if !is_excluded_dir(&name) {
                     todo.push(if rel.is_empty() {
                         name
@@ -122,9 +155,10 @@ pub fn list(root: &Path, folders: &[String], cancelled: &dyn Fn() -> bool) -> Li
                 ));
             }
         }
-        if !complete {
+        if complete {
+            out.listed.insert(key(&rel), subdirs);
+        } else {
             // A partly read folder doesn't count as listed: nothing in it becomes "missing".
-            out.listed.remove(&key(&rel));
             out.unreadable += 1;
         }
     }
@@ -359,11 +393,55 @@ mod tests {
         let l = list(root, &[], &|| false);
         assert_eq!(l.files.len(), 1);
         assert_eq!(l.files[0].0, "2023");
-        assert!(l.listed.contains("") && l.listed.contains("2023"));
+        assert!(l.listed.contains_key("") && l.listed.contains_key("2023"));
+        assert!(
+            l.listed["2023"].contains("lightroom catalog backup"),
+            "excluded, but seen"
+        );
         assert_eq!(l.unreadable, 0);
         let picked = list(root, &["2023".into(), "nope".into()], &|| false);
         assert_eq!(picked.files.len(), 1);
         assert_eq!(picked.unreadable, 1);
-        assert!(!picked.listed.contains("")); // the root wasn't picked
+        assert!(!picked.listed.contains_key("")); // the root wasn't picked
+    }
+
+    fn listing(dirs: &[(&str, &[&str])]) -> Listing {
+        Listing {
+            listed: dirs
+                .iter()
+                .map(|(d, subs)| (d.to_string(), subs.iter().map(|s| s.to_string()).collect()))
+                .collect(),
+            ..Listing::default()
+        }
+    }
+
+    #[test]
+    fn which_vanished_photos_can_be_judged() {
+        // The root was listed and contains `kept` and `locked`; `locked` couldn't be read.
+        let l = listing(&[("", &["kept", "locked"]), ("kept", &[])]);
+        assert!(l.can_judge("kept"), "listed itself");
+        assert!(
+            l.can_judge("renamed"),
+            "gone from a listed parent: renamed or deleted"
+        );
+        assert!(
+            l.can_judge(r"renamed\deeper"),
+            "a whole subtree that's gone"
+        );
+        assert!(
+            !l.can_judge("locked"),
+            "still there but unreadable: untouched"
+        );
+        assert!(
+            !l.can_judge(r"locked\sub"),
+            "below an unreadable folder: untouched"
+        );
+        // Only `2023` was picked: the root and its other folders are out of scope.
+        let picked = listing(&[("2023", &["may"]), (r"2023\may", &[])]);
+        assert!(!picked.can_judge("2022"), "not picked: out of scope");
+        assert!(
+            picked.can_judge(r"2023\june"),
+            "gone inside a picked folder"
+        );
     }
 }

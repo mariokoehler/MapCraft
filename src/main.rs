@@ -25,7 +25,15 @@ fn main() -> eframe::Result {
         std::process::exit(1);
     };
     let settings = load_settings(&locations);
-    let data_folder = settings.data_folder_or(&locations.default_data_folder);
+    // `--data <folder>` overrides the data folder for this run only (tests and trials with
+    // generated photos never touch the real library).
+    let data_override = args
+        .iter()
+        .position(|a| a == "--data")
+        .and_then(|i| args.get(i + 1))
+        .map(std::path::PathBuf::from);
+    let data_folder =
+        data_override.unwrap_or_else(|| settings.data_folder_or(&locations.default_data_folder));
     let tile_cache = data_folder.join("tiles");
     if let Err(e) = fs::create_dir_all(&tile_cache) {
         warn!(

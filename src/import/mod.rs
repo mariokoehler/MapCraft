@@ -16,7 +16,7 @@ pub mod scan;
 mod tests;
 
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -25,7 +25,7 @@ use std::sync::{Mutex, mpsc};
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::library::{self, Library, PhotoRecord};
-use crate::metadata::{self, Metadata, xmp};
+use crate::metadata::{self, Metadata, ReadError, xmp};
 use scan::Group;
 
 /// Photos written per database transaction.
@@ -49,8 +49,11 @@ pub struct Summary {
     pub moved: usize,
     pub restored: usize,
     pub missing: usize,
-    /// Photos whose metadata couldn't be read (recorded, not fatal).
+    /// Photos whose metadata is unreadable (recorded with the error, not fatal).
     pub failed: usize,
+    /// Photos skipped because a file couldn't be read at all (NAS hiccup, locked file). Their
+    /// records are left as they were and they are tried again on the next rescan.
+    pub skipped: usize,
     /// Of the photos written in this run, those without a position.
     pub without_position: usize,
     pub unreadable_folders: usize,
@@ -92,7 +95,8 @@ struct Job {
 
 struct Done {
     job: Job,
-    record: PhotoRecord,
+    /// The record, or the I/O error that kept the photo from being read.
+    outcome: Result<PhotoRecord, String>,
 }
 
 /// Imports (or rescans) source `source_id` with `readers` parallel metadata readers.
@@ -108,7 +112,7 @@ pub fn run(
         .ok_or_else(|| ImportError::SourceOffline(source.root_path.clone()))?;
     let cancelled = || cancel.load(Ordering::Relaxed);
 
-    let listing = scan::list(&root, &source.folders, &cancelled);
+    let mut listing = scan::list(&root, &source.folders, &cancelled);
     progress(Progress::Listing {
         files: listing.files.len(),
     });
@@ -121,13 +125,16 @@ pub fn run(
         return Ok(summary);
     }
 
-    let groups = scan::group(listing.files);
+    let groups = scan::group(std::mem::take(&mut listing.files));
     summary.photos = groups.len();
     let mut existing = lib.existing(source_id)?;
     let mut jobs = Vec::new();
     for group in groups {
         match existing.remove(&group.key()) {
-            Some(e) if e.files_sig == group.signature() && !e.missing => summary.unchanged += 1,
+            // Unchanged files are skipped, unless the last read failed: try those again.
+            Some(e) if e.files_sig == group.signature() && !e.missing && !e.has_error => {
+                summary.unchanged += 1
+            }
             Some(e) => jobs.push(Job {
                 group,
                 id: Some(e.id),
@@ -140,10 +147,11 @@ pub fn run(
             }),
         }
     }
-    // What's left in `existing` wasn't found. It may be missing, or it may have moved.
+    // What's left in `existing` wasn't found. It may be missing, or it may have moved; the
+    // listing decides whether its folder was seen well enough to judge (`can_judge`).
     let mut vanished: Vec<library::Existing> = existing
         .into_values()
-        .filter(|e| !e.missing && listing.listed.contains(&e.rel_dir_key))
+        .filter(|e| !e.missing && listing.can_judge(&e.rel_dir_key))
         .collect();
 
     let total = jobs.len();
@@ -166,9 +174,9 @@ pub fn run(
                     let next = queue.lock().map(|mut q| q.next());
                     let Ok(Some(job)) = next else { break };
                     // A malformed file must not take the import down (design.md §3.8).
-                    let record = catch_unwind(AssertUnwindSafe(|| read_photo(root, &job.group)))
-                        .unwrap_or_else(|_| failed_record(&job.group, "the reader crashed"));
-                    if tx.send(Done { job, record }).is_err() {
+                    let outcome = catch_unwind(AssertUnwindSafe(|| read_photo(root, &job.group)))
+                        .unwrap_or_else(|_| Ok(failed_record(&job.group, "the reader crashed")));
+                    if tx.send(Done { job, outcome }).is_err() {
                         break;
                     }
                 }
@@ -218,7 +226,12 @@ fn write_batch(
         return Ok(());
     }
     let tx = lib.transaction()?;
-    for Done { job, record } in batch.drain(..) {
+    for Done { job, outcome } in batch.drain(..) {
+        let Ok(record) = outcome else {
+            // Couldn't read a file at all: leave the record (or its absence) as it is.
+            summary.skipped += 1;
+            continue;
+        };
         let mut id = job.id;
         if id.is_none() {
             // A new name: is it a vanished photo that moved? Same size and same quick hash.
@@ -253,43 +266,50 @@ fn reachable_root(root: &Path, unc: Option<&str>) -> Option<PathBuf> {
     std::fs::read_dir(&unc).is_ok().then_some(unc)
 }
 
-/// Reads one photo's metadata. The position comes from the XMP sidecar if it has one, else
-/// from the original's EXIF. The preview JPEG is read only when the original couldn't be read
-/// or has no capture date: on the NAS every extra file costs a disk seek, and a camera that
-/// leaves GPS out of the RAW leaves it out of the JPEG too **(unconfirmed, design.md §2.8(a))**.
-fn read_photo(root: &Path, g: &Group) -> PhotoRecord {
+/// Reads one photo. `Err` is an I/O error (the file couldn't be opened or read at all): the
+/// caller then leaves the photo's record alone, and the next rescan tries again.
+///
+/// The position comes from the XMP sidecar if it has one, else from the original's EXIF. The
+/// preview JPEG is read only when the original's metadata is unreadable or has no capture date:
+/// on the NAS every extra file costs a disk seek, and a camera that leaves GPS out of the RAW
+/// leaves it out of the JPEG too **(unconfirmed, design.md §2.8(a))**.
+fn read_photo(root: &Path, g: &Group) -> Result<PhotoRecord, String> {
     let dir = if g.rel_dir.is_empty() {
         root.to_path_buf()
     } else {
         root.join(&g.rel_dir)
     };
-    let original = dir.join(&g.original.name);
-    let (mut m, mut error) = match metadata::read_image(&original) {
+    // One open per original: the quick hash and the metadata share the handle (and the OS
+    // cache serves the head twice); on the NAS each open costs a disk seek.
+    let mut file = File::open(dir.join(&g.original.name)).map_err(|e| e.to_string())?;
+    let quick_hash = quick_hash(&mut file, g.original.size).map_err(|e| e.to_string())?;
+    let (mut m, mut error) = match metadata::read_image_from(file) {
         Ok(m) => (m, None),
-        Err(e) => (Metadata::default(), Some(e)),
+        Err(ReadError::Io(e)) => return Err(e),
+        Err(e @ ReadError::Format(_)) => (Metadata::default(), Some(e.to_string())),
     };
     if let Some(p) = &g.preview
         && (error.is_some() || m.taken_at.is_none())
-        && let Ok(pm) = metadata::read_image(&dir.join(&p.name))
     {
-        fill_gaps(&mut m, pm);
-        // The photo is still usable through its JPEG; the error stays recorded for the RAW.
+        match metadata::read_image(&dir.join(&p.name)) {
+            Ok(pm) => fill_gaps(&mut m, pm), // usable through its JPEG; a RAW error stays noted
+            Err(ReadError::Io(e)) => return Err(e),
+            Err(ReadError::Format(_)) => {}
+        }
     }
     let mut gps_source = m.gps.map(|_| "exif");
     if let Some(sc) = &g.sidecar {
-        match std::fs::read_to_string(dir.join(&sc.name)).map_err(|e| e.to_string()) {
-            Ok(xml) => match xmp::read_gps(&xml) {
-                Ok(Some(gps)) => {
-                    m.gps = Some(gps);
-                    gps_source = Some("xmp");
-                }
-                Ok(None) => {}
-                Err(e) => error = error.or(Some(format!("sidecar: {e}"))),
-            },
+        let xml = std::fs::read(dir.join(&sc.name)).map_err(|e| e.to_string())?;
+        match xmp::read_gps(&String::from_utf8_lossy(&xml)) {
+            Ok(Some(gps)) => {
+                m.gps = Some(gps);
+                gps_source = Some("xmp");
+            }
+            Ok(None) => {}
             Err(e) => error = error.or(Some(format!("sidecar: {e}"))),
         }
     }
-    PhotoRecord {
+    Ok(PhotoRecord {
         rel_dir: g.rel_dir.clone(),
         stem: g.stem.clone(),
         original_name: g.original.name.clone(),
@@ -298,7 +318,7 @@ fn read_photo(root: &Path, g: &Group) -> PhotoRecord {
         files_sig: g.signature(),
         file_size: g.original.size as i64,
         file_mtime: g.original.mtime,
-        quick_hash: quick_hash(&original, g.original.size),
+        quick_hash: Some(quick_hash),
         lat: m.gps.map(|p| p.lat),
         lon: m.gps.map(|p| p.lon),
         alt: m.gps.and_then(|p| p.alt),
@@ -312,7 +332,7 @@ fn read_photo(root: &Path, g: &Group) -> PhotoRecord {
         height: m.height,
         orientation: m.orientation,
         read_error: error,
-    }
+    })
 }
 
 fn fill_gaps(m: &mut Metadata, from: Metadata) {
@@ -340,18 +360,24 @@ fn failed_record(g: &Group, why: &str) -> PhotoRecord {
     }
 }
 
-/// xxh3 of the file's size and first 64 KB: a cheap fingerprint to recognise a file that moved
-/// (design.md §2.1(c)). The start of a photo holds its EXIF, timestamp included, so two
-/// different photos rarely share it. It's the same bytes the metadata reader just read, so the
-/// OS cache serves them; reading the end as well cost an extra disk seek per photo, a third of
-/// the import time on the NAS (measured 2026-11-14).
-pub fn quick_hash(path: &Path, size: u64) -> Option<i64> {
+/// xxh3 of the file's size, first 64 KB and last 64 KB: a cheap fingerprint to recognise a file
+/// that moved (design.md §2.1(c), user-confirmed). Reads from an open handle, so the import opens
+/// each original only once.
+pub fn quick_hash(file: &mut File, size: u64) -> std::io::Result<i64> {
     const PART: u64 = 64 * 1024;
-    let f = File::open(path).ok()?;
-    let mut buf = Vec::with_capacity(PART.min(size) as usize);
-    f.take(PART).read_to_end(&mut buf).ok()?;
     let mut h = Xxh3::new();
     h.update(&size.to_le_bytes());
-    h.update(&buf);
-    Some(h.digest() as i64)
+    file.seek(SeekFrom::Start(0))?;
+    let mut head = vec![0; PART.min(size) as usize];
+    file.read_exact(&mut head)?;
+    h.update(&head);
+    if size > PART {
+        // The tail, without overlapping the head for files under 128 KB.
+        let start = size.saturating_sub(PART).max(PART);
+        let mut tail = vec![0; (size - start) as usize];
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut tail)?;
+        h.update(&tail);
+    }
+    Ok(h.digest() as i64)
 }

@@ -476,21 +476,38 @@ photo(id, source_id, rel_dir, stem,        -- one photo = the files of one name 
   shows startup needs it.
 
 **Import rules (M2, verified by tests):**
-- **Unchanged** photos (same names, sizes and times of all files, `files_sig`) aren't read again.
-  A rescan of 591 unchanged photos took 0.1 s, and a cancelled import resumes where it stopped.
-- **Missing:** a photo becomes missing only if its folder was listed completely in this run.
-  A folder that can't be read, a vanished folder, a cancel or an unreachable source changes
+- **Unchanged** photos (same names, sizes and times of all files, `files_sig`) aren't read
+  again. A rescan of 591 unchanged photos took 0.1 s, and a cancelled import resumes where it
+  stopped.
+- **Not found any more:** a known photo that a run doesn't find is judged only if its folder was
+  seen well enough:
+  - its folder was listed completely; or
+  - the nearest completely listed parent no longer contains the folder (renamed or deleted).
+
+  Otherwise it stays as it is: when its folder exists but couldn't be read, sits below an
+  unreadable folder, or is outside the picked folders. A cancel or an unreachable source changes
   nothing.
-- **Moved:** a new name with the size and quick hash of a vanished photo is that photo, and its
-  record (and later its thumbnail) is kept. The quick hash covers the size and the first 64 KB,
-  the bytes the metadata reader reads anyway **(unconfirmed)**.
-- **Failures:** a file that can't be read is recorded with its error, and the run goes on.
-  Reader panics are caught.
+- **Moved or missing:** a new name with the same size and quick hash as a vanished photo is that
+  photo, so its record (and later its thumbnail) is kept. A renamed folder therefore moves its
+  photos rather than duplicating them. The remaining vanished photos become missing, which
+  takes them off the map but keeps their records.
+- **Quick hash:** the size plus the first and last 64 KB (§2.1(c)), read on the same handle as
+  the metadata, so each original is opened once.
+- **I/O errors and format errors are handled differently:**
+  - A file that can't be opened or read at all (NAS hiccup, locked file) is skipped and counted.
+    Its record, or its absence, stays as it was, and the next rescan tries again, so a hiccup
+    during a rescan can't wipe a position.
+  - Unreadable metadata is recorded with the error, and the photo is read again on every
+    rescan.
+  - Reader panics are caught.
 - **Speed:** 4 parallel readers **(unconfirmed)**. On the NAS an import runs at about 25–30
-  photos per second, whether with 1, 4 or 16 readers: the limit is the NAS's per-file latency
-  (measured 2026-11-14). A first import of the whole library would take about an hour.
-- **Read-only, checked:** three real folders (598, 902 and 1,736 files) had an identical
+  photos per second, whether with 1, 4 or 16 readers, and with or without the tail of the quick
+  hash. The limit is the NAS's per-file latency (measured 2026-11-14), so a first import of the
+  whole library would take about an hour.
+- **Read-only, checked:** four real folders (598, 902, 1,736 and 818 files) had an identical
   fingerprint of every file's name, size and time before and after importing.
+- **Mapped drives:** the UNC target of the user's mapped drive resolves and is readable
+  (checked 2026-11-14). If the drive letter isn't mapped, the stored UNC path is used.
 
 ### 3.5 Map providers & geocoding (researched 2026-11-14)
 
@@ -700,7 +717,7 @@ Unconfirmed defaults awaiting review:
 - §2.8(a): the paired JPEG read only when the RAW can't be read or has no date.
 - §2.8(c): which file is the original (DNG first), the preview, and the sidecar order.
 - §3.2: the planned crates.
-- §3.4: the data model, the quick hash over the first 64 KB, 4 readers.
+- §3.4: the data model, 4 readers.
 - §3.5(d): trimming the tile cache at startup, in M6.
 - §3.6(a): `photo.allMetadata` as the fallback EXIF reader.
 

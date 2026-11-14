@@ -28,7 +28,7 @@ but the app isn't sold or advertised (user, 2026-11-14).
 
 ## Current status (2026-11-14)
 
-**M1 done: a window with the OSM map; no photos yet.**
+**M2 in progress: the import works headless; its UI is next (mockups first).**
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
   copies.
@@ -40,7 +40,8 @@ but the app isn't sold or advertised (user, 2026-11-14).
 - M0 is done (2026-11-14): the spikes (results in `design.md` §2.2(b), §2.6, §3.6(c)), and GPS
   comes from EXIF and XMP only in v1 (§2.8(g)). The design system and the main
   window's mockup exist and are approved (§3.9).
-- M1 is done (2026-11-14). Next: M2, library and import (`design.md` §5).
+- M1 is done (2026-11-14), tested by the user. M2's backend is done and checked on real folders
+  (`design.md` §3.4); next are the mockups for its screens, then the UI (`design.md` §5).
 - **The user's real photo library is read-only to us.** Never write, rename or create sidecars
   there. Its path stays out of the repo (it's in Claude's local memory).
 
@@ -49,6 +50,10 @@ but the app isn't sold or advertised (user, 2026-11-14).
   attribution and the empty-library card (`src/app.rs`, `src/ui/`).
 - The theme, read from the design system's tokens (`src/theme/`, `assets/design/tokens.json`).
 - The tile provider (`src/provider.rs`) and the bootstrap settings (`src/settings.rs`).
+- The metadata reader: our own TIFF/EXIF reader for TIFF, DNG, CR2, JPEG and RAF, plus XMP
+  sidecars (`src/metadata/`).
+- The library (SQLite, `src/library/`) and the headless import with rescan, moves and missing
+  photos (`src/import/`). No UI for it yet.
 
 ## How we work
 
@@ -126,6 +131,22 @@ committed):
 - The first build takes about 1.5 minutes; incremental ones take seconds.
 - On disk: `%APPDATA%\MapCraft\settings.toml` (created on first start) and
   `%LOCALAPPDATA%\MapCraft\tiles\` (the tile cache).
+- The crate is a library (`src/lib.rs`, all modules) plus a thin binary (`src/main.rs`), so tests
+  and the dev probes in `examples/` can use everything.
+- `mapcraft --data <folder>` runs the GUI on another data folder (trials never touch the real
+  library).
+- Dev command: `mapcraft --import <folder> --data <scratch folder> [--readers N]` imports one
+  folder headless and prints the summary and GPS rates per file type. Run it from the release
+  build and pipe its output (`cmd /c "… 2>&1"`): the release exe is a GUI-subsystem app and
+  prints nothing to a console otherwise.
+- Probes (read-only, aggregates only): `cargo run --release --example exif_probe -- <list>`
+  (our reader against `kamadak-exif`), `xmp_probe -- <folder>`, `unc_check -- <path>`.
+- Pitfall: `kamadak-exif` reads a whole TIFF-based file (a 25 MB RAW) before parsing, and fails
+  on a partial read. Use our `metadata` module for TIFF, DNG, CR2, JPEG and RAF.
+- Pitfall: on the NAS, time goes to each file's open and first read (about 40 ms), not to
+  parsing or bandwidth. Count opens, not bytes, when tuning the import.
+- Pitfall: probes and scratch imports of the real library contain real positions. Keep them in
+  the scratchpad and delete them afterwards; never print names or coordinates.
 - Pitfall: the API of egui/eframe 0.37 differs from most examples online (for example
   `App::ui` instead of `update`, `Panel::top`, `Id::unique`). Check signatures in
   `%USERPROFILE%\.cargo\registry\src\` or let the compiler say, not from memory.

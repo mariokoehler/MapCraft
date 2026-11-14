@@ -169,9 +169,11 @@ fn rescan_skips_unchanged_and_finds_moves_and_missing() {
     let a_id = photo(&lib, "A").unwrap().id;
 
     let again = import(&mut lib, src);
+    // D's metadata is unreadable, so it is read again on every rescan (it might be a bug fixed
+    // in a later version); the other three are skipped.
     assert_eq!(
-        (again.unchanged, again.new, again.changed),
-        (4, 0, 0),
+        (again.unchanged, again.new, again.changed, again.failed),
+        (3, 0, 1, 1),
         "{again:?}"
     );
 
@@ -200,25 +202,135 @@ fn rescan_skips_unchanged_and_finds_moves_and_missing() {
 }
 
 #[test]
-fn photos_outside_the_listed_folders_are_never_marked_missing() {
+fn a_renamed_folder_moves_its_photos() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     setup(root);
-    fs::create_dir_all(root.join("other")).unwrap();
-    fs::write(
-        root.join("other").join("F.jpg"),
-        jpeg_with_gps(5.0, 5.0, "2021:01:01 00:00:00"),
-    )
-    .unwrap();
     let mut lib = Library::open_in_memory().unwrap();
     let src = lib.add_source(root, None, "test", &[]).unwrap();
     import(&mut lib, src);
-    // A folder that disappears entirely (an unplugged sub-share, a rename at the top) isn't
-    // listed, so its photos stay as they were until the user decides.
-    fs::remove_dir_all(root.join("other")).unwrap();
+    let before: Vec<i64> = ["A", "B", "C", "D"]
+        .map(|s| photo(&lib, s).unwrap().id)
+        .to_vec();
+    let positions = lib.positions().unwrap().len();
+
+    // The classic: `2023-05-19_Trip` renamed to `2023-05-19_Lisbon`.
+    fs::rename(root.join("trip"), root.join("lisbon")).unwrap();
     let s = import(&mut lib, src);
-    assert_eq!(s.missing, 0, "{s:?}");
-    assert!(!photo(&lib, "F").unwrap().missing);
+    assert_eq!((s.moved, s.new, s.missing), (4, 0, 0), "{s:?}");
+    let after: Vec<i64> = ["A", "B", "C", "D"]
+        .map(|s| photo(&lib, s).unwrap().id)
+        .to_vec();
+    assert_eq!(before, after, "every photo keeps its record");
+    assert_eq!(lib.counts().unwrap().photos, 4, "no duplicates");
+    assert_eq!(lib.positions().unwrap().len(), positions);
+}
+
+#[test]
+fn a_deleted_folder_makes_its_photos_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    setup(root);
+    let mut lib = Library::open_in_memory().unwrap();
+    let src = lib.add_source(root, None, "test", &[]).unwrap();
+    import(&mut lib, src);
+    fs::remove_dir_all(root.join("trip")).unwrap();
+    let s = import(&mut lib, src);
+    assert_eq!(s.missing, 4, "{s:?}");
+    assert!(
+        lib.positions().unwrap().is_empty(),
+        "missing photos leave the map"
+    );
+    assert_eq!(lib.counts().unwrap().photos, 4, "but their records stay");
+}
+
+/// Opens a file with no sharing: until it's dropped, every other open fails (Windows).
+fn lock(path: &Path) -> fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(path)
+        .unwrap()
+}
+
+#[test]
+fn a_locked_file_is_skipped_and_tried_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    setup(root);
+    let mut lib = Library::open_in_memory().unwrap();
+    let src = lib.add_source(root, None, "test", &[]).unwrap();
+    let guard = lock(&root.join("trip").join("A.jpg"));
+    let s = import(&mut lib, src);
+    assert_eq!((s.new, s.skipped), (3, 1), "{s:?}");
+    assert!(photo(&lib, "A").is_none(), "not recorded while unreadable");
+    drop(guard);
+    let s = import(&mut lib, src);
+    assert_eq!(s.new, 1, "picked up on the next rescan: {s:?}");
+    assert!(photo(&lib, "A").is_some());
+}
+
+#[test]
+fn a_rescan_hiccup_keeps_the_position() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    setup(root);
+    let mut lib = Library::open_in_memory().unwrap();
+    let src = lib.add_source(root, None, "test", &[]).unwrap();
+    import(&mut lib, src);
+    let positions = lib.positions().unwrap().len();
+    // A changes (so it must be read again), but can't be opened during the rescan.
+    let a = root.join("trip").join("A.jpg");
+    fs::write(&a, jpeg_with_gps(-33.8688, -70.6, "2023:05:19 21:06:15")).unwrap();
+    let guard = lock(&a);
+    let s = import(&mut lib, src);
+    assert_eq!(s.skipped, 1, "{s:?}");
+    assert_eq!(
+        lib.positions().unwrap().len(),
+        positions,
+        "the old position stays"
+    );
+    drop(guard);
+    let s = import(&mut lib, src);
+    assert_eq!(s.changed, 2, "A, and D (always re-read): {s:?}");
+}
+
+#[test]
+fn an_offline_drive_letter_falls_back_to_the_unc_path() {
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path());
+    let mut lib = Library::open_in_memory().unwrap();
+    // The stored root no longer resolves (the drive letter isn't mapped in this session), but
+    // its stored UNC target does.
+    let unc = dir.path().to_string_lossy().into_owned();
+    let src = lib
+        .add_source(&dir.path().join("unmapped"), Some(&unc), "test", &[])
+        .unwrap();
+    let s = import(&mut lib, src);
+    assert_eq!(s.new, 4, "{s:?}");
+}
+
+#[test]
+fn the_ui_can_read_while_the_import_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path());
+    let db = dir.path().join("library.sqlite");
+    let mut writer = Library::open(&db).unwrap();
+    let reader = Library::open(&db).unwrap();
+    let src = writer.add_source(dir.path(), None, "test", &[]).unwrap();
+    import(&mut writer, src);
+    // An open write transaction (as during an import batch) doesn't block the UI's reads.
+    let tx = writer.transaction().unwrap();
+    tx.execute("UPDATE photo SET lat = NULL", []).unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(
+        reader.positions().unwrap().len(),
+        2,
+        "sees the last committed state"
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    drop(tx);
 }
 
 #[test]
@@ -268,18 +380,21 @@ fn quick_hash_ignores_name_and_sees_content() {
     fs::write(dir.path().join("a"), &big).unwrap();
     fs::write(dir.path().join("b"), &big).unwrap();
     let mut early = big.clone();
-    early[1000] ^= 1; // differs in the first 64 KB: a different photo
+    early[1000] ^= 1; // differs in the first 64 KB
     fs::write(dir.path().join("c"), &early).unwrap();
     let mut late = big.clone();
-    late[299_999] ^= 1; // differs only after the first 64 KB: by design the same fingerprint,
-    fs::write(dir.path().join("d"), &late).unwrap(); // the price of one disk seek less
-    let h = |n: &str| quick_hash(&dir.path().join(n), 300_000).unwrap();
+    late[299_999] ^= 1; // differs in the last 64 KB
+    fs::write(dir.path().join("d"), &late).unwrap();
+    let mut middle = big.clone();
+    middle[150_000] ^= 1; // differs only in the middle: by design not seen
+    fs::write(dir.path().join("e"), &middle).unwrap();
+    let h =
+        |n: &str| quick_hash(&mut fs::File::open(dir.path().join(n)).unwrap(), 300_000).unwrap();
     assert_eq!(h("a"), h("b"));
     assert_ne!(h("a"), h("c"));
-    assert_eq!(h("a"), h("d"));
-    assert_ne!(
-        h("a"),
-        quick_hash(&dir.path().join("a"), 299_999).unwrap(),
-        "size counts"
-    );
+    assert_ne!(h("a"), h("d"));
+    assert_eq!(h("a"), h("e"));
+    let small = dir.path().join("small");
+    fs::write(&small, b"tiny").unwrap();
+    quick_hash(&mut fs::File::open(&small).unwrap(), 4).unwrap(); // under 64 KB: no tail read
 }

@@ -40,6 +40,8 @@ pub struct Existing {
     pub file_size: i64,
     pub quick_hash: Option<i64>,
     pub missing: bool,
+    /// The last read recorded an error: read it again on the next rescan.
+    pub has_error: bool,
 }
 
 /// One photo as the import writes it.
@@ -200,7 +202,8 @@ impl Library {
     /// Every photo of a source, by (folder key, name key), for the import's comparison.
     pub fn existing(&self, source_id: i64) -> Result<HashMap<(String, String), Existing>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, rel_dir_key, stem_key, files_sig, file_size, quick_hash, state
+            "SELECT id, rel_dir_key, stem_key, files_sig, file_size, quick_hash, state,
+                    read_error IS NOT NULL
              FROM photo WHERE source_id = ?1",
         )?;
         let rows = stmt.query_map([source_id], |r| {
@@ -213,6 +216,7 @@ impl Library {
                     file_size: r.get(4)?,
                     quick_hash: r.get(5)?,
                     missing: r.get::<_, String>(6)? == "missing",
+                    has_error: r.get(7)?,
                 },
             ))
         })?;
