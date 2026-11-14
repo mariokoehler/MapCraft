@@ -131,15 +131,23 @@ when the thumbnail is made, so it is always stored upright.
    256 px thumbnail *and* the 1024 px detail preview (verified 2026-11-14: 300 random files each of
    DNG, CR2 and RAF, read-only over SMB):
 
-   | Type | Long edge of the largest preview |
+   | Type | Long edge of the largest preview (of 300 files) |
    |---|---|
-   | DNG | always 1024 px (the Adobe converter's standard preview) |
-   | CR2 | 2360 to 5760 px, the median 2622 |
-   | RAF | 1920 or 4416 px |
+   | DNG | 1024 px in 291 (the Adobe converter's standard preview); 3504 to 5760 px in 9 |
+   | CR2 | 5760 px in 116, 1936 px in 110, 1536 px in 72, 5184 px in 2 |
+   | RAF | 4416 px in 211, 1920 px in 54, 2048 px in 35 |
 
    - Finding the preview means reading the TIFF directory (DNG, CR2) or RAF's header pointer, then
-     the JPEG's own size. It took about 80 ms per file over SMB, which is mostly the open and a few
+     the JPEG's own size. It took 60 to 80 ms per file over SMB, which is mostly the open and a few
      seeks. It shares one open with the EXIF read (§2.8).
+   - **Pitfalls** (found in the spike):
+     - A CR2's raw image is itself stored as a *lossless* JPEG (SOF3). Only baseline and
+       progressive JPEGs (SOF0–SOF2) count as previews.
+     - A preview is cut out by its recorded length: `JPEGInterchangeFormatLength` or
+       `StripByteCounts` in TIFF, and the length in RAF's header. Searching for the end-of-image
+       marker stops early, at the EXIF thumbnail inside the preview.
+     - Cut out that way, the previews of two sample files per type all decoded at the expected
+       size.
    - The preview is the camera's or converter's rendering, not a later edit. That's fine for a map.
    - CRW (27 files, a pre-TIFF Canon format) isn't covered by this reader and goes to LightCraft.
    - A JPEG's own EXIF thumbnail (often about 160 px) is too small; JPEGs are decoded instead (2.).
@@ -529,7 +537,8 @@ scratch library and a scratch settings folder):
     GUI opens the user's last library.
   - If it is running without `--control`, MapCraft can't drive it and says so.
   - If the photo isn't in LightCraft's library, MapCraft offers to import it (`mode: "add"`) and
-    doesn't do it silently.
+    doesn't do it silently. `importPreview` shows that case as a candidate with no `duplicate`
+    and no `existing` (verified).
 - **Not found:** a command that switches the GUI to its Develop or Loupe view. The photo is
   selected, but the view stays where it was. An upstream issue for a `library.reveal {path}` that
   also switches the view would make this one call.

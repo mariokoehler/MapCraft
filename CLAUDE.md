@@ -93,7 +93,8 @@ but the app isn't sold or advertised (user, 2026-11-14).
   - The user's LightCraft is a fresh install with no collections yet (2026-11-14). We may create
     some while exploring, but ask before changing the user's real library: use a scratch
     `--library` folder for experiments. For the GUI, also set `LIGHTCRAFT_CONFIG_DIR` to a scratch
-    folder, or it remembers the scratch library as "last opened".
+    folder, or it may remember the scratch library as "last opened". Headless `run --library`
+    calls left the real settings folder (`%APPDATA%\LightCraft`) untouched (checked 2026-11-14).
   - Pitfall: Windows PowerShell 5.1 strips the quotes from JSON arguments (`bad JSON params`).
     Write JSON lines `{"command": id, "params": {…}}` to a file and pass `--script FILE` instead.
 - **PhotoCraft 0.22.0** (an open-source Photoshop, pure Rust/egui):
