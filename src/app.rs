@@ -1060,7 +1060,8 @@ mod tests {
         imported(dir.path(), 40);
         let mut h = harness(dir.path());
         settled(&mut h);
-        // Without the place index, the dropdown offers the download (only when clicked).
+        // Without the place index, the dropdown offers the download: only on a click. Enter
+        // goes to the first result (the trip's folder), never to the download.
         h.get_by_label("Search").click();
         h.run_steps(2);
         h.get_by_label("Search").type_text("hamb");
@@ -1069,6 +1070,16 @@ mod tests {
                 .is_some()
         });
         h.get_by_label_contains("2023-05-19_Hamburg"); // the demo trip's folder
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        let app = h.state().as_ref().unwrap();
+        assert_eq!(app.search.download_asked, 0, "Enter never downloads");
+        assert!(!app.search.is_open(), "Enter went to the folder");
+        h.state_mut().as_mut().unwrap().search.type_in("hamb");
+        step_until(&mut h, "the results again", |h| {
+            h.query_by_label("Download place names (14 MB, from geonames.org)")
+                .is_some()
+        });
         h.get_by_label("Download place names (14 MB, from geonames.org)")
             .click();
         h.run_steps(3);
@@ -1096,7 +1107,7 @@ mod tests {
         assert_eq!(app.map.zoom(), 11.0, "a city's zoom");
         assert!(!app.search.is_open());
 
-        // A file: ↓ to it and Enter selects it.
+        // A file: Enter goes to the first result and selects the photo.
         h.state_mut().as_mut().unwrap().search.type_in("IMG_00012");
         step_until(&mut h, "the file", |h| {
             h.query_by_label("IMG_00012.jpg").is_some()

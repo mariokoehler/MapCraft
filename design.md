@@ -324,8 +324,11 @@ One search box with two kinds of results **(user, 2026-11-14)**:
     for country names.
   - The data is CC BY 4.0. It never goes into the repo.
 - **Download (unconfirmed):** only when the user clicks the row the dropdown offers while there's
-  no index ("Download place names (14 MB, from geonames.org)").
-  - It requests three fixed URLs with a generic User-Agent and sends nothing about the user.
+  no index ("Download place names (14 MB, from geonames.org)"). The keys never reach that row, so
+  Enter can't start it.
+  - It requests three fixed URLs with the User-Agent `MapCraft/<version>` and sends nothing
+    about the user.
+  - Run once for real on 2026-11-14: 3.7 s including the index (`examples/places_download.rs`).
   - The zip is checked and its unpacked size capped.
   - A failed download can be retried from the same row. Photo search works without it.
 - **Index:** `geonames/places.sqlite` in the data folder.
@@ -340,7 +343,7 @@ One search box with two kinds of results **(user, 2026-11-14)**:
   - Then come the others, by population weighted by how the name matched: the own name starts
     with the text × 1, another name does × 0.3, a later word × 0.1 or × 0.03.
   - Up to 4 places show. A place's count is how many of the user's photos are near it.
-- **Photo results** come only from photos on the map (with a position). Up to five show:
+- **Photo results** come only from photos on the map (with a position). Up to seven show:
   - a period (`2019`, `2019-08`, `2019-08-14`);
   - up to 2 folders (`…\last folder`, the fullest first);
   - 1 camera;
@@ -588,9 +591,16 @@ thumbnail textures cheaply. The risk is that walkers' feature set falls short an
 - Positions and capture dates agree with a whole-file `kamadak-exif` read on every file, to the
   last digit.
 
-**Planned crates (unconfirmed):**
-- `image` (decode and resize);
-- `rayon` or a small thread pool (thumbnail jobs).
+**Added in M3:**
+- `image` 0.25 (PNG, TIFF, WebP decoding, resizing, JPEG encoding);
+- `jpeg-decoder` 0.3 (JPEG decoding at 1/2 to 1/8 scale).
+
+Thumbnail jobs use plain `std::thread` workers, not `rayon`.
+
+**Added in M5:**
+- `reqwest` 0.13 with `blocking`, the same reqwest and rustls TLS that walkers already uses
+  (the place-name download);
+- `flate2` 1 (unpacking GeoNames' zip; already in the dependency tree).
 
 **Assets in the repo:**
 - IBM Plex Sans (Regular, SemiBold) and Mono (Regular) as static TTFs in `assets/fonts/`, from

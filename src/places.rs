@@ -281,7 +281,7 @@ pub fn download(data: &Path, progress: &dyn Fn(u64, u64)) -> Result<usize, Strin
     let dir = dir(data);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let client = reqwest::blocking::Client::builder()
-        .user_agent("MapCraft (photo map; https://github.com/mariokoehler/MapCraft)")
+        .user_agent(concat!("MapCraft/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(std::time::Duration::from_secs(20))
         .timeout(std::time::Duration::from_secs(600))
         .build()

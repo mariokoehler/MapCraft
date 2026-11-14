@@ -124,7 +124,7 @@ impl SearchBox {
         // Keys for the dropdown, taken before the text field sees them.
         let focused = ui.memory(|m| m.has_focus(id));
         let (mut up, mut down, mut esc) = (false, false, false);
-        if focused && self.open {
+        if self.open {
             ui.input_mut(|i| {
                 up = i.consume_key(Modifiers::NONE, Key::ArrowUp);
                 down = i.consume_key(Modifiers::NONE, Key::ArrowDown);
@@ -180,11 +180,14 @@ impl SearchBox {
         if esc {
             self.open = false;
         }
+        // The keys move over results only: the download row is click-only, so Enter never
+        // starts a connection.
         let rows = self
             .rows()
             .iter()
-            .filter(|r| !matches!(r.act, Do::Nothing))
+            .filter(|r| matches!(r.act, Do::Act(_)))
             .count();
+        self.cursor = self.cursor.min(rows.saturating_sub(1));
         if rows > 0 {
             if down {
                 self.cursor = (self.cursor + 1) % rows;
@@ -320,12 +323,17 @@ impl SearchBox {
 
     /// The dropdown under the field, while open. Returns the chosen result's action.
     pub fn dropdown(&mut self, ctx: &egui::Context, p: &Palette) -> Option<SearchAction> {
-        let enter = std::mem::take(&mut self.enter);
         if !self.open {
+            self.enter = false;
             return None;
         }
         let rows = self.rows();
         let waiting = self.current().is_none();
+        // An Enter typed before the results for this text arrived waits for them.
+        let enter = self.enter && !waiting;
+        if !waiting {
+            self.enter = false;
+        }
         let mut chosen: Option<Do> = None;
         let mut selectable = 0usize;
         let width = 360.0;
@@ -359,11 +367,11 @@ impl SearchBox {
                                 section = row.section;
                                 header(ui, p, section);
                             }
-                            let index = if matches!(row.act, Do::Nothing) {
-                                None
-                            } else {
+                            let index = if matches!(row.act, Do::Act(_)) {
                                 selectable += 1;
                                 Some(selectable - 1)
+                            } else {
+                                None
                             };
                             let at_cursor = index == Some(self.cursor);
                             if draw_row(ui, p, row, &self.text, at_cursor) || (enter && at_cursor) {
