@@ -28,7 +28,7 @@ but the app isn't sold or advertised (user, 2026-11-14).
 
 ## Current status (2026-11-14)
 
-**M3 built: thumbnails, markers and the detail panel; awaiting the user's try.**
+**M4 in progress: grouping (clustering per zoom, count badges, the strip).**
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
   copies.
@@ -41,8 +41,7 @@ but the app isn't sold or advertised (user, 2026-11-14).
   comes from EXIF and XMP only in v1 (§2.8(g)). The design system and the main
   window's mockup exist and are approved (§3.9).
 - M1 and M2 are done (2026-11-14), tested by the user (M2 on about 4,700 Iceland photos).
-- M3 is built (`design.md` §5, §2.2(d)): thumbnails measured on the real set, the UI checked on
-  generated photos. The user's own try is next, then M4.
+- M3 is done (2026-11-14), tested by the user on the Iceland set (`design.md` §5, §2.2(d)).
 - **The user's real photo library is read-only to us.** Never write, rename or create sidecars
   there. Its path stays out of the repo (it's in Claude's local memory).
 

@@ -859,7 +859,8 @@ Milestones are rough and get refined as we go.
 
     Checked by headless UI tests (`egui_kittest`) and by captures of the untouched window, on
     generated photos.
-- **M3 — Thumbnails on the map** (built 2026-11-14; awaiting the user's try):
+- **M3 — Thumbnails on the map** (done 2026-11-14; tried by the user on the Iceland set,
+  including Show in Explorer, Open and the `._` cleanup):
   - Done: the thumbnail pipeline (§2.2(d)) as a background job;
   - thumbnail markers (§2.3) with textures loaded off the UI thread;
   - the hover card;
