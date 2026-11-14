@@ -371,15 +371,39 @@ Tools' C++ workload. Installed on this PC: Rust 1.100.0 with clippy and rustfmt,
 **Decision (user, 2026-11-14): egui + walkers.** It keeps the whole app in one language, matching the
 user's wish to learn Rust. It is the toolkit the companion apps use, and it draws thousands of
 thumbnail textures cheaply. The risk is that walkers' feature set falls short and we extend it.
-The M1 spike settles that, starting with two things the OSM policy requires that walkers' README
-doesn't mention: setting our own User-Agent, and a disk tile cache that honours `Cache-Control`
-(unverified).
 
-**Other crates (unconfirmed, versions picked at setup):** `rusqlite` (SQLite, bundled), `kamadak-exif`
-(EXIF from JPEG, TIFF, HEIF, PNG and WebP; TIFF-based RAW such as DNG, NEF and ARW should work;
-Canon CR3 may not; unverified), `image` (decode and resize), `serde` + `toml` (settings), `rayon`
-or a small thread pool (thumbnail jobs), `reqwest` (tiles, if walkers doesn't fetch them itself),
-`tracing` (logging).
+**walkers 0.65 covers what the OSM policy needs** (verified 2026-11-14, its source
+`src/io/http.rs`, and M1 running):
+- `HttpOptions.user_agent` is applied to every request. Its default is `walkers/<version>`, so
+  MapCraft sets its own: `MapCraft/<version> (+https://github.com/mariokoehler/MapCraft)`.
+- `HttpOptions.cache` is an on-disk HTTP cache (`http-cache-reqwest` with `cacache`, in its
+  default mode, which follows the servers' caching headers). A second start on the same view
+  added no cache entries. It has **no size limit**; see §3.5(d).
+- It doesn't draw the attribution; MapCraft draws it.
+- Its default wheel behaviour is Ctrl+wheel to zoom, so MapCraft sets `zoom_with_ctrl(false)`.
+
+**Crates in use (M1, 2026-11-14):**
+- `eframe`/`egui` 0.37 (the window and the UI) and `egui_extras` with `svg` (the icons);
+- `walkers` 0.65 (the map);
+- `serde` + `toml` (settings) and `serde_json` (the design tokens);
+- `directories` (the AppData folders);
+- `tracing` + `tracing-subscriber` (logging); `tempfile` (tests only).
+
+**Planned crates (unconfirmed):**
+- `rusqlite` (SQLite, bundled);
+- `kamadak-exif`: EXIF from JPEG, TIFF, HEIF, PNG and WebP. TIFF-based RAW such as DNG, NEF and
+  ARW should work; Canon CR3 may not (unverified);
+- `image` (decode and resize);
+- `rayon` or a small thread pool (thumbnail jobs).
+
+**Assets in the repo:**
+- IBM Plex Sans (Regular, SemiBold) and Mono (Regular) as static TTFs in `assets/fonts/`, from
+  IBM's GitHub releases (`@ibm/plex-sans@1.1.0`, `@ibm/plex-mono@2.5.0`), under the SIL OFL 1.1
+  (`assets/fonts/OFL.txt`). Google Fonts only has Plex Sans as a variable font, which egui can't
+  split into weights.
+- Lucide icons from `lucide-static` 1.65.0 in `assets/icons/`, ISC licence.
+- The design system's `tokens.json` in `assets/design/`, copied from `MapCraft — Design system`
+  (version `1794665619-d118`, 2026-11-14). Copy it again when the design system changes.
 
 ### 3.3 Where data lives
 
@@ -485,6 +509,11 @@ provider's geocoder) as an explicit "search online" action, not search-as-you-ty
 **(d) Tile cache.** Tiles are cached on disk in the data folder as long as the provider's headers
 allow, with a size limit (default 500 MB **(user, 2026-11-14)**, least recently used evicted first).
 There is no prefetching for OSM or Google, by their policies.
+
+**The size limit isn't built yet.** walkers' cache has no limit (§3.2), so MapCraft has to trim
+the cache folder itself. Proposal **(unconfirmed)**: at startup, delete the oldest entries until
+the folder is under the limit; done in M6, with the other providers. Until then the cache grows
+with every new area viewed, by about 6 KB per tile.
 
 **(e) Privacy.** Every tile request tells the provider which area the user is looking at, which
 for a photo library is close to where the user has been. That is accepted as not an issue (user,
@@ -610,8 +639,9 @@ Product:
 
 Unconfirmed defaults awaiting review:
 - §2.3: filters in M5 rather than v1.
-- §3.2: the crate list.
+- §3.2: the planned crates.
 - §3.4: the data model.
+- §3.5(d): trimming the tile cache at startup, in M6.
 - §3.6(a): `photo.allMetadata` as the fallback EXIF reader.
 
 ## 5. Roadmap
@@ -624,12 +654,15 @@ Milestones are rough and get refined as we go.
   (2026-11-14): embedded previews and LightCraft render timing (§2.2(b)), `photocraft.exe <path>`
   (§2.6), and LightCraft path → id (§3.6(c)). Still to do:
   - answer the remaining questions in §4.
-- **M1 — Window with a map:**
+- **M1 — Window with a map** (done 2026-11-14):
   - the Cargo project;
   - the design system canvas, then the main window's mockup built on it (§3.9);
   - a window with the map, pan and zoom, tiles from OSM with a proper User-Agent, the disk cache
     and attribution;
   - settings with the bootstrap file.
+
+  The window matches the mockup's "Empty library" state. Search, "Add folder…", settings, "zoom to
+  all photos" and the map-style menu are drawn disabled until their milestones.
 - **M2 — Library & import:** SQLite schema, add a source, a background scan, EXIF/GPS reading,
   progress, rescan.
 - **M3 — Thumbnails on the map:** the thumbnail pipeline (§2.2(b)) with LightCraft for RAW,

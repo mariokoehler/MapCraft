@@ -39,12 +39,16 @@ but the app isn't sold or advertised (user, 2026-11-14).
   (§2.8).
 - M0 is done (2026-11-14): the spikes (results in `design.md` §2.2(b), §2.6, §3.6(c)), and GPS
   comes from EXIF and XMP only in v1 (§2.8(g)). The design system and the main
-  window's mockup exist (§3.9). Next: the user's review of the mockup, then M1 (the Cargo
-  project, the `theme` module from the tokens, a window with the map).
+  window's mockup exist and are approved (§3.9).
+- M1 is done (2026-11-14). Next: M2, library and import (`design.md` §5).
 - **The user's real photo library is read-only to us.** Never write, rename or create sidecars
   there. Its path stays out of the repo (it's in Claude's local memory).
 
-**What's built:** nothing yet.
+**What's built:**
+- The main window: top bar plus the OSM map (walkers) with zoom controls, scale bar,
+  attribution and the empty-library card (`src/app.rs`, `src/ui/`).
+- The theme, read from the design system's tokens (`src/theme/`, `assets/design/tokens.json`).
+- The tile provider (`src/provider.rs`) and the bootstrap settings (`src/settings.rs`).
 
 ## How we work
 
@@ -111,9 +115,20 @@ but the app isn't sold or advertised (user, 2026-11-14).
 
 ## Build and run
 
-Not set up yet. Planned: one Cargo project, `cargo run` for a dev build, `cargo test`, `cargo
-clippy` (a linter, like SpotBugs/Checkstyle in one) and `cargo fmt` before each commit. Fill this
-in at M1.
+One Cargo project (`Cargo.toml` is its `pom.xml`; `Cargo.lock` pins every version and is
+committed):
+- `cargo run` builds a debug build and starts it. A console window shows the log, and
+  `RUST_LOG=debug` makes it chattier. `cargo run --release` builds the optimised build, without
+  a console window.
+- `cargo test` runs the unit tests (`#[cfg(test)] mod tests` at the bottom of each file).
+- Before each commit: `cargo fmt` (formatter), `cargo clippy --all-targets` (a linter, like
+  SpotBugs/Checkstyle in one; keep it warning-free), `cargo test`.
+- The first build takes about 1.5 minutes; incremental ones take seconds.
+- On disk: `%APPDATA%\MapCraft\settings.toml` (created on first start) and
+  `%LOCALAPPDATA%\MapCraft\tiles\` (the tile cache).
+- Pitfall: the API of egui/eframe 0.37 differs from most examples online (for example
+  `App::ui` instead of `update`, `Panel::top`, `Id::unique`). Check signatures in
+  `%USERPROFILE%\.cargo\registry\src\` or let the compiler say, not from memory.
 
 **Toolchain** (per Windows user, shared by all Rust projects):
 - `rustup` manages Rust like SDKMAN manages JDKs. It lives in `%USERPROFILE%\.rustup`, with

@@ -10,8 +10,14 @@ in Lightroom Classic.
   [LightCraft](https://github.com/storytold/lightcraft) and
   [PhotoCraft](https://github.com/storytold/photocraft).
 
-**Status:** design phase; nothing is built yet. See [`design.md`](design.md) for the concept,
-features, architecture and roadmap.
+**Status:** early development. Milestone 1 is done: a window with the OpenStreetMap map. Photos
+aren't imported yet. See [`design.md`](design.md) for the concept, features, architecture and
+roadmap.
+
+## Building
+
+You need Rust (via [rustup](https://rustup.rs)) and, on Windows, the Visual Studio Build Tools
+with the C++ workload. Then `cargo run`.
 
 MapCraft is a personal, non-commercial project. It is **not affiliated** with the storytold /
 ArtCraft team that makes LightCraft and PhotoCraft.
@@ -30,4 +36,11 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any
 additional terms or conditions.
 
-Map data © OpenStreetMap contributors (ODbL). Place names from GeoNames (CC-BY 4.0).
+## Third-party material
+
+- Map data © OpenStreetMap contributors (ODbL). Place names from GeoNames (CC-BY 4.0), once
+  place search is built.
+- [IBM Plex](https://github.com/IBM/plex) Sans and Mono fonts, © IBM Corp., under the SIL Open Font
+  License 1.1 ([`assets/fonts/OFL.txt`](assets/fonts/OFL.txt)).
+- [Lucide](https://lucide.dev) icons, © Lucide Icons and Contributors, under the ISC licence
+  ([`assets/icons/LICENSE`](assets/icons/LICENSE)).
