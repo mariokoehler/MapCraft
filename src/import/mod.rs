@@ -12,6 +12,7 @@
 //! - A file that can't be read is recorded with its error and counted; it never stops the run.
 
 pub mod scan;
+pub mod scope;
 #[cfg(test)]
 mod tests;
 
@@ -112,7 +113,7 @@ pub fn run(
         .ok_or_else(|| ImportError::SourceOffline(source.root_path.clone()))?;
     let cancelled = || cancel.load(Ordering::Relaxed);
 
-    let mut listing = scan::list(&root, &source.folders, &cancelled);
+    let mut listing = scan::list(&root, &source.scope, &cancelled);
     progress(Progress::Listing {
         files: listing.files.len(),
     });

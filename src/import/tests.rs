@@ -142,7 +142,9 @@ fn first_import_reads_positions_pairs_and_sidecars() {
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path());
     let mut lib = Library::open_in_memory().unwrap();
-    let src = lib.add_source(dir.path(), None, "test", &[]).unwrap();
+    let src = lib
+        .add_source(dir.path(), None, "test", &scope::Scope::all())
+        .unwrap();
     let s = import(&mut lib, src);
     // A, B (dng + jpg + xmp), C, D; not the video, not the trash.
     assert_eq!((s.photos, s.new, s.failed), (4, 4, 1), "{s:?}");
@@ -164,7 +166,9 @@ fn rescan_skips_unchanged_and_finds_moves_and_missing() {
     let root = dir.path();
     setup(root);
     let mut lib = Library::open_in_memory().unwrap();
-    let src = lib.add_source(root, None, "test", &[]).unwrap();
+    let src = lib
+        .add_source(root, None, "test", &scope::Scope::all())
+        .unwrap();
     import(&mut lib, src);
     let a_id = photo(&lib, "A").unwrap().id;
 
@@ -207,7 +211,9 @@ fn a_renamed_folder_moves_its_photos() {
     let root = dir.path();
     setup(root);
     let mut lib = Library::open_in_memory().unwrap();
-    let src = lib.add_source(root, None, "test", &[]).unwrap();
+    let src = lib
+        .add_source(root, None, "test", &scope::Scope::all())
+        .unwrap();
     import(&mut lib, src);
     let before: Vec<i64> = ["A", "B", "C", "D"]
         .map(|s| photo(&lib, s).unwrap().id)
@@ -232,7 +238,9 @@ fn a_deleted_folder_makes_its_photos_missing() {
     let root = dir.path();
     setup(root);
     let mut lib = Library::open_in_memory().unwrap();
-    let src = lib.add_source(root, None, "test", &[]).unwrap();
+    let src = lib
+        .add_source(root, None, "test", &scope::Scope::all())
+        .unwrap();
     import(&mut lib, src);
     fs::remove_dir_all(root.join("trip")).unwrap();
     let s = import(&mut lib, src);
@@ -260,7 +268,9 @@ fn a_locked_file_is_skipped_and_tried_again() {
     let root = dir.path();
     setup(root);
     let mut lib = Library::open_in_memory().unwrap();
-    let src = lib.add_source(root, None, "test", &[]).unwrap();
+    let src = lib
+        .add_source(root, None, "test", &scope::Scope::all())
+        .unwrap();
     let guard = lock(&root.join("trip").join("A.jpg"));
     let s = import(&mut lib, src);
     assert_eq!((s.new, s.skipped), (3, 1), "{s:?}");
@@ -277,7 +287,9 @@ fn a_rescan_hiccup_keeps_the_position() {
     let root = dir.path();
     setup(root);
     let mut lib = Library::open_in_memory().unwrap();
-    let src = lib.add_source(root, None, "test", &[]).unwrap();
+    let src = lib
+        .add_source(root, None, "test", &scope::Scope::all())
+        .unwrap();
     import(&mut lib, src);
     let positions = lib.positions().unwrap().len();
     // A changes (so it must be read again), but can't be opened during the rescan.
@@ -305,7 +317,12 @@ fn an_offline_drive_letter_falls_back_to_the_unc_path() {
     // its stored UNC target does.
     let unc = dir.path().to_string_lossy().into_owned();
     let src = lib
-        .add_source(&dir.path().join("unmapped"), Some(&unc), "test", &[])
+        .add_source(
+            &dir.path().join("unmapped"),
+            Some(&unc),
+            "test",
+            &scope::Scope::all(),
+        )
         .unwrap();
     let s = import(&mut lib, src);
     assert_eq!(s.new, 4, "{s:?}");
@@ -318,7 +335,9 @@ fn the_ui_can_read_while_the_import_writes() {
     let db = dir.path().join("library.sqlite");
     let mut writer = Library::open(&db).unwrap();
     let reader = Library::open(&db).unwrap();
-    let src = writer.add_source(dir.path(), None, "test", &[]).unwrap();
+    let src = writer
+        .add_source(dir.path(), None, "test", &scope::Scope::all())
+        .unwrap();
     import(&mut writer, src);
     // An open write transaction (as during an import batch) doesn't block the UI's reads.
     let tx = writer.transaction().unwrap();
@@ -345,11 +364,50 @@ fn picked_folders_limit_the_import() {
     )
     .unwrap();
     let mut lib = Library::open_in_memory().unwrap();
-    let src = lib
-        .add_source(root, None, "test", &["other".into()])
-        .unwrap();
+    let mut only_other = scope::Scope::all();
+    only_other.set("", false);
+    only_other.set("other", true);
+    let src = lib.add_source(root, None, "test", &only_other).unwrap();
     let s = import(&mut lib, src);
     assert_eq!(s.photos, 1);
+}
+
+#[test]
+fn leaving_a_folder_out_later_removes_its_records_without_missing_noise() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    setup(root);
+    fs::create_dir_all(root.join("other")).unwrap();
+    fs::write(
+        root.join("other").join("F.jpg"),
+        jpeg_with_gps(5.0, 5.0, "2021:01:01 00:00:00"),
+    )
+    .unwrap();
+    let mut lib = Library::open_in_memory().unwrap();
+    let src = lib
+        .add_source(root, None, "test", &scope::Scope::all())
+        .unwrap();
+    assert_eq!(import(&mut lib, src).photos, 5);
+
+    // "Change folders…": leave `trip` out.
+    let mut narrower = scope::Scope::all();
+    narrower.set("trip", false);
+    assert_eq!(
+        lib.set_scope(src, &narrower).unwrap(),
+        4,
+        "A, B, C, D removed"
+    );
+    let s = import(&mut lib, src);
+    assert_eq!((s.photos, s.missing, s.new), (1, 0, 0), "{s:?}");
+
+    // A folder added later under an included folder is found by the next rescan.
+    fs::create_dir_all(root.join("2027-01-01_new")).unwrap();
+    fs::write(
+        root.join("2027-01-01_new").join("G.jpg"),
+        jpeg_with_gps(6.0, 6.0, "2027:01:01 00:00:00"),
+    )
+    .unwrap();
+    assert_eq!(import(&mut lib, src).new, 1);
 }
 
 #[test]
@@ -357,14 +415,21 @@ fn cancel_and_offline_change_nothing() {
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path());
     let mut lib = Library::open_in_memory().unwrap();
-    let src = lib.add_source(dir.path(), None, "test", &[]).unwrap();
+    let src = lib
+        .add_source(dir.path(), None, "test", &scope::Scope::all())
+        .unwrap();
     let s = run(&mut lib, src, &AtomicBool::new(true), 4, |_| {}).unwrap();
     assert!(s.cancelled);
     assert_eq!(lib.counts().unwrap().photos, 0);
 
     import(&mut lib, src);
     let gone = lib
-        .add_source(&dir.path().join("unplugged"), None, "gone", &[])
+        .add_source(
+            &dir.path().join("unplugged"),
+            None,
+            "gone",
+            &scope::Scope::all(),
+        )
         .unwrap();
     assert!(matches!(
         run(&mut lib, gone, &AtomicBool::new(false), 4, |_| {}),

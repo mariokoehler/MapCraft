@@ -10,6 +10,7 @@ use std::time::UNIX_EPOCH;
 
 use xxhash_rust::xxh3::Xxh3;
 
+use super::scope::Scope;
 use crate::library::key;
 
 /// Folders never imported: other tools' trash and Lightroom's own data (design.md §2.8(e)).
@@ -52,24 +53,32 @@ pub struct FileEntry {
 
 #[derive(Debug, Default)]
 pub struct Listing {
-    /// Every folder listed completely, by key (relative path, lower case), with the keys of the
-    /// subfolder names it contained (excluded ones too).
+    /// Every folder read completely (included ones and those only passed through), by key
+    /// (relative path, lower case), with the keys of the subfolder names it contained
+    /// (excluded ones too).
     pub listed: HashMap<String, HashSet<String>>,
+    /// The included folders among `listed`: their files were collected.
+    pub collected: HashSet<String>,
     /// Folders that couldn't be read (a NAS hiccup, permissions).
     pub unreadable: usize,
-    /// Files by folder (relative path as on disk).
+    /// Files by folder (relative path as on disk), from included folders only.
     pub files: Vec<(String, FileEntry)>,
+    /// The scope the listing followed.
+    pub scope: Scope,
 }
 
 impl Listing {
     /// Can a known photo in folder `dir_key` that wasn't found be called missing (or moved)?
     ///
-    /// Yes if its folder was listed completely. Otherwise the nearest listed ancestor decides:
-    /// if that ancestor no longer contains the folder, the folder was renamed or deleted, so
-    /// yes. If the folder is still there but couldn't be read, or no ancestor was listed (it
-    /// isn't among the picked folders), no: the photo stays as it is.
+    /// Only if the folder is in scope. Then yes if its files were collected; otherwise the
+    /// nearest completely read ancestor decides: if it no longer contains the folder, the folder
+    /// was renamed or deleted, so yes. If the folder is still there but couldn't be read, no: the
+    /// photo stays as it is.
     pub fn can_judge(&self, dir_key: &str) -> bool {
-        if self.listed.contains_key(dir_key) {
+        if !self.scope.includes(dir_key) {
+            return false;
+        }
+        if self.collected.contains(dir_key) {
             return true;
         }
         let mut child = dir_key;
@@ -92,23 +101,25 @@ fn split_parent(dir: &str) -> Option<(&str, &str)> {
     }
 }
 
-/// Lists `root` below each of `folders` (relative; empty = the whole root), skipping excluded
-/// folders. Stops early, with a partial listing, when `cancelled` returns true.
-pub fn list(root: &Path, folders: &[String], cancelled: &dyn Fn() -> bool) -> Listing {
-    let mut out = Listing::default();
-    let mut todo: Vec<String> = if folders.is_empty() {
+/// Lists `root` following `scope`: collects the files of included folders, and passes through
+/// left-out folders only to reach included ones below them. Folders that are never imported
+/// (`is_excluded_dir`) are skipped. Stops early, with a partial listing, when `cancelled`
+/// returns true.
+pub fn list(root: &Path, scope: &Scope, cancelled: &dyn Fn() -> bool) -> Listing {
+    let mut out = Listing {
+        scope: scope.clone(),
+        ..Listing::default()
+    };
+    let mut todo: Vec<String> = if scope.reaches("") {
         vec![String::new()]
     } else {
-        folders.to_vec()
+        Vec::new()
     };
-    let mut seen = HashSet::new();
     while let Some(rel) = todo.pop() {
         if cancelled() {
             break;
         }
-        if !seen.insert(key(&rel)) {
-            continue; // already listed (overlapping picks)
-        }
+        let collect = scope.includes(&rel);
         let dir = if rel.is_empty() {
             root.to_path_buf()
         } else {
@@ -132,14 +143,15 @@ pub fn list(root: &Path, folders: &[String], cancelled: &dyn Fn() -> bool) -> Li
             };
             if meta.is_dir() {
                 subdirs.insert(key(&name));
-                if !is_excluded_dir(&name) {
-                    todo.push(if rel.is_empty() {
-                        name
-                    } else {
-                        format!("{rel}\\{name}")
-                    });
+                let sub = if rel.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{rel}\\{name}")
+                };
+                if !is_excluded_dir(&name) && scope.reaches(&sub) {
+                    todo.push(sub);
                 }
-            } else {
+            } else if collect {
                 let mtime = meta
                     .modified()
                     .ok()
@@ -156,6 +168,9 @@ pub fn list(root: &Path, folders: &[String], cancelled: &dyn Fn() -> bool) -> Li
             }
         }
         if complete {
+            if collect {
+                out.collected.insert(key(&rel));
+            }
             out.listed.insert(key(&rel), subdirs);
         } else {
             // A partly read folder doesn't count as listed: nothing in it becomes "missing".
@@ -390,27 +405,58 @@ mod tests {
         )
         .unwrap();
         fs::write(root.join(".dtrash").join("c.jpg"), b"x").unwrap();
-        let l = list(root, &[], &|| false);
+        let l = list(root, &Scope::all(), &|| false);
         assert_eq!(l.files.len(), 1);
         assert_eq!(l.files[0].0, "2023");
-        assert!(l.listed.contains_key("") && l.listed.contains_key("2023"));
+        assert!(l.collected.contains("") && l.collected.contains("2023"));
         assert!(
             l.listed["2023"].contains("lightroom catalog backup"),
             "excluded, but seen"
         );
         assert_eq!(l.unreadable, 0);
-        let picked = list(root, &["2023".into(), "nope".into()], &|| false);
-        assert_eq!(picked.files.len(), 1);
-        assert_eq!(picked.unreadable, 1);
-        assert!(!picked.listed.contains_key("")); // the root wasn't picked
     }
 
-    fn listing(dirs: &[(&str, &[&str])]) -> Listing {
+    #[test]
+    fn listing_passes_through_left_out_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("Phone").join("2021")).unwrap();
+        fs::create_dir_all(root.join("Other")).unwrap();
+        fs::write(root.join("top.jpg"), b"x").unwrap();
+        fs::write(root.join("Phone").join("p.jpg"), b"x").unwrap();
+        fs::write(root.join("Phone").join("2021").join("q.jpg"), b"x").unwrap();
+        fs::write(root.join("Other").join("o.jpg"), b"x").unwrap();
+        // Only Phone\2021 is picked.
+        let mut scope = Scope::all();
+        scope.set("", false);
+        scope.set(r"Phone\2021", true);
+        let l = list(root, &scope, &|| false);
+        let names: Vec<&str> = l.files.iter().map(|(_, f)| f.name.as_str()).collect();
+        assert_eq!(names, vec!["q.jpg"]);
+        assert!(l.listed.contains_key("phone"), "passed through");
+        assert!(
+            !l.collected.contains("phone"),
+            "but its own files aren't imported"
+        );
+        assert!(!l.listed.contains_key("other"), "not entered at all");
+        // Nothing picked: nothing listed.
+        let mut none = Scope::all();
+        none.set("", false);
+        assert!(list(root, &none, &|| false).listed.is_empty());
+    }
+
+    fn listing(dirs: &[(&str, &[&str])], scope: Scope) -> Listing {
         Listing {
+            collected: dirs
+                .iter()
+                .map(|(d, _)| d.to_string())
+                .filter(|d| scope.includes(d))
+                .collect(),
             listed: dirs
                 .iter()
                 .map(|(d, subs)| (d.to_string(), subs.iter().map(|s| s.to_string()).collect()))
                 .collect(),
+            scope,
             ..Listing::default()
         }
     }
@@ -418,7 +464,7 @@ mod tests {
     #[test]
     fn which_vanished_photos_can_be_judged() {
         // The root was listed and contains `kept` and `locked`; `locked` couldn't be read.
-        let l = listing(&[("", &["kept", "locked"]), ("kept", &[])]);
+        let l = listing(&[("", &["kept", "locked"]), ("kept", &[])], Scope::all());
         assert!(l.can_judge("kept"), "listed itself");
         assert!(
             l.can_judge("renamed"),
@@ -436,12 +482,30 @@ mod tests {
             !l.can_judge(r"locked\sub"),
             "below an unreadable folder: untouched"
         );
-        // Only `2023` was picked: the root and its other folders are out of scope.
-        let picked = listing(&[("2023", &["may"]), (r"2023\may", &[])]);
-        assert!(!picked.can_judge("2022"), "not picked: out of scope");
+        // Only `2023` is included; the root was passed through to reach it.
+        let mut scope = Scope::all();
+        scope.set("", false);
+        scope.set("2023", true);
+        let picked = listing(
+            &[
+                ("", &["2023", "2022"]),
+                ("2023", &["may"]),
+                (r"2023\may", &[]),
+            ],
+            scope,
+        );
+        assert!(
+            !picked.can_judge(""),
+            "the root's own files are out of scope"
+        );
+        assert!(
+            !picked.can_judge("2022"),
+            "left out: out of scope, never judged"
+        );
+        assert!(!picked.can_judge("2019"), "gone, but out of scope anyway");
         assert!(
             picked.can_judge(r"2023\june"),
-            "gone inside a picked folder"
+            "gone inside an included folder"
         );
     }
 }

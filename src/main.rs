@@ -117,7 +117,12 @@ fn dev_import(args: &[String]) -> i32 {
             let label = folder
                 .file_name()
                 .map_or("source".into(), |n| n.to_string_lossy().into_owned());
-            match lib.add_source(&folder, unc.as_deref(), &label, &[]) {
+            match lib.add_source(
+                &folder,
+                unc.as_deref(),
+                &label,
+                &mapcraft::import::scope::Scope::all(),
+            ) {
                 Ok(id) => id,
                 Err(e) => {
                     eprintln!("can't add the source: {e}");

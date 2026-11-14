@@ -11,11 +11,12 @@ CREATE TABLE source (
     last_scan_at TEXT
 );
 
--- The folders picked for import (design.md §2.8(f)); each includes its subfolders.
--- No rows: the whole root.
+-- Which folders are imported (design.md §2.8(f)): decisions, not a list. A folder without a
+-- row inherits from its nearest parent that has one; no rows at all means everything.
 CREATE TABLE source_folder (
     source_id INTEGER NOT NULL REFERENCES source(id) ON DELETE CASCADE,
-    rel_dir   TEXT NOT NULL,
+    rel_dir   TEXT NOT NULL,              -- key form: lower case, '' for the root
+    included  INTEGER NOT NULL,           -- 1 = imported, 0 = left out
     PRIMARY KEY (source_id, rel_dir)
 );
 

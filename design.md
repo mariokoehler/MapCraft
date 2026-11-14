@@ -338,6 +338,17 @@ What follows for the design (all **(user, 2026-11-14)**):
   `Lightroom Catalog Backup` and `*.lrdata`.
 - **(f) Picking folders.** Since only part of the library is imported, adding a source shows its
   folder tree with checkboxes, so the user picks folders rather than whole roots.
+
+  The pick is stored as **decisions**: (folder, included yes/no). A folder without one inherits
+  from its nearest parent, and with no decisions everything is included. So:
+  - a folder added later under an included folder is imported by the next rescan;
+  - the files lying directly in a partly picked folder are a decision like any other;
+  - unticking everything imports nothing.
+
+  The import passes through left-out folders only to reach included ones below them. The tree
+  starts with everything ticked **(unconfirmed)**. Leaving a folder out later ("Change
+  folders…") removes its photos' records, after a confirmation that names the count; the files
+  are never touched **(unconfirmed)**.
 - **(g) Getting GPS out of Lightroom.** Two routes:
   1. **Simplest, no code.** In Lightroom, select all photos and choose *Save Metadata to File*
      once. Every position then sits in the files or sidecars, where (a) reads it. This writes to
@@ -463,7 +474,7 @@ The schema is `src/library/migrations/0001_init.sql`; in short:
 
 ```
 source(id, root_path, unc_path, label, added_at, last_scan_at)
-source_folder(source_id, rel_dir)          -- the picked folders (§2.8(f)); none = whole root
+source_folder(source_id, rel_dir, included) -- folder decisions (§2.8(f)); none = everything
 photo(id, source_id, rel_dir, stem,        -- one photo = the files of one name in one folder
       original_name, preview_name, sidecar_name,
       files_sig,                           -- hash of all members' names, sizes, times
@@ -723,6 +734,7 @@ Product:
 Unconfirmed defaults awaiting review:
 - §2.3: filters in M5 rather than v1.
 - §3.2: the planned crates.
+- §2.8(f): the tree starts all ticked; leaving a folder out later removes its records.
 - §3.4: the data model.
 - §3.5(d): trimming the tile cache at startup, in M6.
 - §3.6(a): `photo.allMetadata` as the fallback EXIF reader.

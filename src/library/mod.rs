@@ -10,6 +10,8 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
+use crate::import::scope::Scope;
+
 pub use rusqlite::Error;
 pub type Result<T> = rusqlite::Result<T>;
 
@@ -27,8 +29,8 @@ pub struct Source {
     pub unc_path: Option<String>,
     pub label: String,
     pub last_scan_at: Option<String>,
-    /// The picked folders (relative to the root); empty means the whole root.
-    pub folders: Vec<String>,
+    /// Which folders are imported (§2.8(f)).
+    pub scope: Scope,
 }
 
 /// What the import needs to know about a photo that is already in the library.
@@ -134,7 +136,7 @@ impl Library {
         root: &Path,
         unc_path: Option<&str>,
         label: &str,
-        folders: &[String],
+        scope: &Scope,
     ) -> Result<i64> {
         let tx = self.conn.transaction()?;
         tx.execute(
@@ -143,14 +145,42 @@ impl Library {
             params![root.to_string_lossy(), unc_path, label],
         )?;
         let id = tx.last_insert_rowid();
-        for f in folders {
-            tx.execute(
-                "INSERT OR IGNORE INTO source_folder (source_id, rel_dir) VALUES (?1, ?2)",
-                params![id, f],
-            )?;
-        }
+        write_scope(&tx, id, scope)?;
         tx.commit()?;
         Ok(id)
+    }
+
+    /// Replaces a source's folder decisions ("Change folders…"). Photos in folders that are no
+    /// longer included are removed from the library (their files are untouched); returns how
+    /// many **(unconfirmed, design.md §2.8(f))**.
+    pub fn set_scope(&mut self, source_id: i64, scope: &Scope) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        write_scope(&tx, source_id, scope)?;
+        let dirs: Vec<(i64, String)> = tx
+            .prepare("SELECT id, rel_dir_key FROM photo WHERE source_id = ?1")?
+            .query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_>>()?;
+        let mut removed = 0;
+        {
+            let mut del = tx.prepare("DELETE FROM photo WHERE id = ?1")?;
+            for (id, dir) in dirs {
+                if !scope.includes(&dir) {
+                    removed += del.execute([id])?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    /// How many photos a new scope would remove, for the confirmation.
+    pub fn count_out_of_scope(&self, source_id: i64, scope: &Scope) -> Result<usize> {
+        let dirs: Vec<String> = self
+            .conn
+            .prepare("SELECT rel_dir_key FROM photo WHERE source_id = ?1")?
+            .query_map([source_id], |r| r.get(0))?
+            .collect::<Result<_>>()?;
+        Ok(dirs.iter().filter(|d| !scope.includes(d)).count())
     }
 
     pub fn source(&self, id: i64) -> Result<Option<Source>> {
@@ -166,7 +196,7 @@ impl Library {
                         unc_path: r.get(2)?,
                         label: r.get(3)?,
                         last_scan_at: r.get(4)?,
-                        folders: Vec::new(),
+                        scope: Scope::all(),
                     })
                 },
             )
@@ -174,10 +204,12 @@ impl Library {
         let Some(mut source) = source else {
             return Ok(None);
         };
-        let mut stmt = self
+        let rules: Vec<(String, bool)> = self
             .conn
-            .prepare("SELECT rel_dir FROM source_folder WHERE source_id = ?1 ORDER BY rel_dir")?;
-        source.folders = stmt.query_map([id], |r| r.get(0))?.collect::<Result<_>>()?;
+            .prepare("SELECT rel_dir, included FROM source_folder WHERE source_id = ?1")?
+            .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_>>()?;
+        source.scope = Scope::from_rules(rules);
         Ok(Some(source))
     }
 
@@ -358,6 +390,19 @@ pub fn write_photo(
     Ok(())
 }
 
+fn write_scope(tx: &Transaction<'_>, source_id: i64, scope: &Scope) -> Result<()> {
+    tx.execute(
+        "DELETE FROM source_folder WHERE source_id = ?1",
+        [source_id],
+    )?;
+    let mut ins =
+        tx.prepare("INSERT INTO source_folder (source_id, rel_dir, included) VALUES (?1, ?2, ?3)")?;
+    for (dir, included) in scope.rules() {
+        ins.execute(params![source_id, dir, included])?;
+    }
+    Ok(())
+}
+
 /// Marks photos missing: their folder was listed in this scan and their files weren't there.
 pub fn mark_missing(tx: &Transaction<'_>, ids: &[i64]) -> Result<()> {
     let mut stmt = tx.prepare("UPDATE photo SET state = 'missing' WHERE id = ?1")?;
@@ -388,24 +433,46 @@ mod tests {
     fn migrations_run_once_and_sources_round_trip() {
         let mut lib = Library::open_in_memory().unwrap();
         lib.migrate().unwrap(); // a second run is a no-op
+        let mut scope = Scope::all();
+        scope.set("Screenshots", false);
         let id = lib
             .add_source(
                 Path::new(r"Z:\Photos"),
                 Some(r"\\nas\photos"),
                 "Photos",
-                &["2023".into()],
+                &scope,
             )
             .unwrap();
         let s = lib.source(id).unwrap().unwrap();
         assert_eq!(s.unc_path.as_deref(), Some(r"\\nas\photos"));
-        assert_eq!(s.folders, vec!["2023".to_string()]);
+        assert_eq!(s.scope, scope);
         assert_eq!(lib.sources().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn narrowing_the_scope_removes_the_records_it_excludes() {
+        let mut lib = Library::open_in_memory().unwrap();
+        let src = lib
+            .add_source(Path::new(r"C:\P"), None, "P", &Scope::all())
+            .unwrap();
+        let tx = lib.transaction().unwrap();
+        write_photo(&tx, src, None, &record("keep", "a")).unwrap();
+        write_photo(&tx, src, None, &record(r"drop\deep", "b")).unwrap();
+        tx.commit().unwrap();
+        let mut narrow = Scope::all();
+        narrow.set("Drop", false);
+        assert_eq!(lib.count_out_of_scope(src, &narrow).unwrap(), 1);
+        assert_eq!(lib.set_scope(src, &narrow).unwrap(), 1);
+        assert_eq!(lib.counts().unwrap().photos, 1);
+        assert_eq!(lib.source(src).unwrap().unwrap().scope, narrow);
     }
 
     #[test]
     fn upsert_is_case_insensitive_and_remove_cascades() {
         let mut lib = Library::open_in_memory().unwrap();
-        let src = lib.add_source(Path::new(r"C:\P"), None, "P", &[]).unwrap();
+        let src = lib
+            .add_source(Path::new(r"C:\P"), None, "P", &Scope::all())
+            .unwrap();
         let tx = lib.transaction().unwrap();
         write_photo(&tx, src, None, &record("Trip", "IMG_1")).unwrap();
         write_photo(&tx, src, None, &record("trip", "img_1")).unwrap(); // same photo
@@ -421,7 +488,9 @@ mod tests {
     #[test]
     fn missing_photos_leave_the_map_and_moved_ones_keep_their_id() {
         let mut lib = Library::open_in_memory().unwrap();
-        let src = lib.add_source(Path::new(r"C:\P"), None, "P", &[]).unwrap();
+        let src = lib
+            .add_source(Path::new(r"C:\P"), None, "P", &Scope::all())
+            .unwrap();
         let tx = lib.transaction().unwrap();
         write_photo(&tx, src, None, &record("a", "x")).unwrap();
         tx.commit().unwrap();
