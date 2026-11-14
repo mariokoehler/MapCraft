@@ -903,7 +903,7 @@ Milestones are rough and get refined as we go.
   Checked on the real Iceland set for the thumbnails (probes, aggregates only). The UI is checked
   by headless tests and window captures on generated photos. The LightCraft fallback is deferred
   (§2.2(d)).
-- **M4 — Grouping** (built 2026-11-14; awaiting the user's try): clustering per zoom (§2.4), count
+- **M4 — Grouping** (done 2026-11-14; tried by the user): clustering per zoom (§2.4), count
   badges, click to zoom, the strip for photos at one spot.
   - Checked by unit tests (counts kept at every level, nesting, order independence, same-spot
     groups, the representative), headless UI tests, and window captures on generated photos.
