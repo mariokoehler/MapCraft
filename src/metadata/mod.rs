@@ -71,10 +71,12 @@ pub fn read_image(path: &Path) -> Result<Metadata, String> {
         return read_jpeg(file, u32::from_be_bytes(ptr) as u64);
     }
     let file = File::open(path).map_err(|e| e.to_string())?;
-    exif::Reader::new()
-        .read_from_container(&mut BufReader::new(file))
-        .map(|e| from_kamadak(&e))
-        .map_err(|e| e.to_string())
+    match exif::Reader::new().read_from_container(&mut BufReader::new(file)) {
+        Ok(e) => Ok(from_kamadak(&e)),
+        // No EXIF at all is normal for PNGs and screenshots: nothing to tell, not an error.
+        Err(exif::Error::NotFound(_)) => Ok(Metadata::default()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// A JPEG starting at `start`: walk its segments to the EXIF block (APP1 `Exif\0\0`).

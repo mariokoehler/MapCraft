@@ -15,6 +15,11 @@ use tracing::{error, info, warn};
 fn main() -> eframe::Result {
     init_logging();
 
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--import") {
+        std::process::exit(dev_import(&args[2..]));
+    }
+
     let Some(locations) = Locations::from_system() else {
         error!("Windows didn't report the AppData folders; can't start");
         std::process::exit(1);
@@ -63,6 +68,86 @@ fn load_settings(locations: &Locations) -> Settings {
         Err(e) => {
             error!("{e}; using the defaults and leaving the file as it is");
             Settings::default()
+        }
+    }
+}
+
+/// Dev command: `mapcraft --import <folder> --data <data folder> [--readers N]`.
+/// Imports (or rescans) one folder headless and prints the summary and GPS rates per file type.
+/// Reads the folder only; writes only `<data folder>\library.sqlite`.
+fn dev_import(args: &[String]) -> i32 {
+    let usage = "usage: mapcraft --import <folder> --data <data folder> [--readers N]";
+    let flag = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+    };
+    let (Some(folder), Some(data)) = (args.first(), flag("--data")) else {
+        eprintln!("{usage}");
+        return 2;
+    };
+    let readers = flag("--readers").and_then(|n| n.parse().ok()).unwrap_or(8);
+    let folder = std::path::PathBuf::from(folder);
+    let mut lib = match mapcraft::library::Library::open(
+        &std::path::Path::new(data).join("library.sqlite"),
+    ) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("can't open the library: {e}");
+            return 1;
+        }
+    };
+    let existing = lib
+        .sources()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|s| s.root_path == folder);
+    let id = match existing {
+        Some(s) => s.id,
+        None => {
+            let unc = mapcraft::paths::unc_target(&folder);
+            let label = folder
+                .file_name()
+                .map_or("source".into(), |n| n.to_string_lossy().into_owned());
+            match lib.add_source(&folder, unc.as_deref(), &label, &[]) {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!("can't add the source: {e}");
+                    return 1;
+                }
+            }
+        }
+    };
+    let started = std::time::Instant::now();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let result = mapcraft::import::run(&mut lib, id, &cancel, readers, |p| {
+        if let mapcraft::import::Progress::Reading { done, total } = p
+            && (done % 1000 == 0 || done == total)
+        {
+            eprintln!(
+                "  read {done} / {total} at {:.1} s",
+                started.elapsed().as_secs_f64()
+            );
+        }
+    });
+    match result {
+        Ok(s) => {
+            println!("{s:?}");
+            println!(
+                "took {:.1} s with {readers} readers",
+                started.elapsed().as_secs_f64()
+            );
+            for (ext, n, gps, xmp) in lib.gps_by_type().unwrap_or_default() {
+                println!(
+                    "  {ext:5} {n:6} photos, {:5.1} % with position ({xmp} from sidecars)",
+                    100.0 * gps as f64 / n.max(1) as f64
+                );
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("import failed: {e}");
+            1
         }
     }
 }

@@ -302,13 +302,32 @@ read-only survey (a full directory walk plus EXIF reads of a random sample of 80
 
 What follows for the design (all **(user, 2026-11-14)**):
 - **(a) GPS from sidecars.** GPS is read from the XMP sidecar as well as from EXIF. When both have
-  a position, the sidecar wins, as in LightCraft and Lightroom.
+  a position, the sidecar wins, as in LightCraft and Lightroom. In the library the sidecars hold
+  it as an attribute or as an element, always as degrees and decimal minutes (`53,32.6N`); all
+  1,112 sidecars that mention a position are read (verified 2026-11-14). The paired JPEG's EXIF is
+  read only when the original can't be read or has no capture date **(unconfirmed)**: every
+  extra file costs a disk seek on the NAS, and a camera that leaves GPS out of the RAW leaves it
+  out of its JPEG too.
 - **(b) Rescan picks up new GPS.** A photo whose file *or* sidecar changed is re-read, so GPS
   written later by a track tool appears after a rescan (§2.1(c)).
 - **(c) RAW and JPEG pairs count as one photo.** Files with the same base name in the same folder
   are one photo, like Lightroom's "treat JPEG next to raw as one". The JPEG gives the fast
   thumbnail, and the RAW is the original that "open" refers to. Edited copies (`_bearbeitet`) stay
   separate photos.
+
+  Found in the library (surveyed 2026-11-14, read-only): 5,170 names have more than one image
+  file. Mostly DNG+JPEG (4,547) and CR2+JPEG (293), but also DNG+RAF (113), DNG+JPEG+RAF (66) and
+  CR2+DNG (24): DNGs converted from a camera RAW, sitting beside it. Rules for these
+  **(unconfirmed)**:
+  - The original is the **DNG** if there is one, else the camera RAW, else TIFF/PSD, else
+    PNG/HEIC, else the JPEG. Here a DNG is mostly the converted, edited working copy.
+  - The **preview** is a JPEG of the same name.
+  - Any further files of the name (the camera RAW beside a DNG) belong to the photo too.
+  - Names match case-insensitively, as Windows does.
+
+  Sidecars come in both naming styles: `name.xmp` (1,525) and `name.ext.xmp` (282); 63 have no
+  image. `name.<original ext>.xmp` wins over another `name.ext.xmp`, which wins over `name.xmp`
+  **(unconfirmed)**.
 - **(d) Videos are left out of v1.**
 - **(e) Excluded folders.** Each source has exclude patterns, by default `.dtrash`,
   `Lightroom Catalog Backup` and `*.lrdata`.
@@ -389,10 +408,23 @@ thumbnail textures cheaply. The risk is that walkers' feature set falls short an
 - `directories` (the AppData folders);
 - `tracing` + `tracing-subscriber` (logging); `tempfile` (tests only).
 
+**Added in M2:**
+- `rusqlite` 0.42 with bundled SQLite (the library, §3.4);
+- `quick-xml` 0.42 (XMP sidecars);
+- `xxhash-rust` (the quick hash and the files' signature);
+- `windows-sys` (`WNetGetConnectionW`, the UNC target of a mapped drive);
+- `kamadak-exif` 0.6, only for PNG, HEIF and WebP, and as the reference in tests.
+
+**EXIF is read by MapCraft's own small TIFF reader** (`src/metadata/tiff.rs`). Measured
+2026-11-14 on 240 random files of the library (60 each of CR2, DNG, JPEG, RAF):
+- `kamadak-exif` reads a whole TIFF-based file into memory first: 140–250 ms per CR2 or DNG over
+  SMB. A partial read makes it fail on most RAWs, and it can't read RAF at all.
+- Our reader takes the first 64 KB and seeks only to the Exif and GPS directories. JPEG and RAF
+  go through the same code, via the EXIF block and the embedded JPEG.
+- Positions and capture dates agree with a whole-file `kamadak-exif` read on every file, to the
+  last digit.
+
 **Planned crates (unconfirmed):**
-- `rusqlite` (SQLite, bundled);
-- `kamadak-exif`: EXIF from JPEG, TIFF, HEIF, PNG and WebP. TIFF-based RAW such as DNG, NEF and
-  ARW should work; Canon CR3 may not (unverified);
 - `image` (decode and resize);
 - `rayon` or a small thread pool (thumbnail jobs).
 
@@ -420,20 +452,45 @@ thumbnail textures cheaply. The risk is that walkers' feature set falls short an
 - A data folder on a NAS works but is slow, and SQLite over SMB risks corruption if two machines
   open it at once. The app warns and doesn't forbid it **(user, 2026-11-14)**.
 
-### 3.4 Data model (first draft, unconfirmed)
+### 3.4 Data model (M2, unconfirmed)
+
+The schema is `src/library/migrations/0001_init.sql`; in short:
 
 ```
 source(id, root_path, unc_path, label, added_at, last_scan_at)
-photo(id, source_id, rel_path, file_size, file_mtime, quick_hash,
-      lat, lon, alt, gps_source /* exif | xmp; lrcat later, §2.8(g) */, taken_at, taken_at_offset, camera_make, camera_model, lens,
-      width, height, orientation, state /* ok | missing | no_gps */, thumb_state,
-      lightcraft_id /* nullable, §3.6(c) */)
-  unique(source_id, rel_path); index on (lat, lon)
-schema_version(version)
+source_folder(source_id, rel_dir)          -- the picked folders (§2.8(f)); none = whole root
+photo(id, source_id, rel_dir, stem,        -- one photo = the files of one name in one folder
+      original_name, preview_name, sidecar_name,
+      files_sig,                           -- hash of all members' names, sizes, times
+      file_size, file_mtime, quick_hash,   -- of the original
+      lat, lon, alt, gps_source /* exif | xmp; lrcat later, §2.8(g) */,
+      taken_at, taken_at_offset, camera_make, camera_model, lens, width, height, orientation,
+      state /* ok | missing */, read_error, thumb_state, lightcraft_id /* §3.6(c) */)
+  unique(source_id, rel_dir_key, stem_key) -- lower-cased: Windows names are case-insensitive
 ```
 
-Migrations are numbered SQL files applied at startup. Clusters are rebuilt in memory from
-`photo(lat, lon)` and not stored, unless measuring shows startup needs it.
+- **Migrations** are numbered SQL files compiled into the app. `PRAGMA user_version` records
+  how many have run.
+- **WAL mode:** the import writes while the UI reads, through its own connection.
+- **Clusters** are rebuilt in memory from `photo(lat, lon)` and not stored, unless measuring
+  shows startup needs it.
+
+**Import rules (M2, verified by tests):**
+- **Unchanged** photos (same names, sizes and times of all files, `files_sig`) aren't read again.
+  A rescan of 591 unchanged photos took 0.1 s, and a cancelled import resumes where it stopped.
+- **Missing:** a photo becomes missing only if its folder was listed completely in this run.
+  A folder that can't be read, a vanished folder, a cancel or an unreachable source changes
+  nothing.
+- **Moved:** a new name with the size and quick hash of a vanished photo is that photo, and its
+  record (and later its thumbnail) is kept. The quick hash covers the size and the first 64 KB,
+  the bytes the metadata reader reads anyway **(unconfirmed)**.
+- **Failures:** a file that can't be read is recorded with its error, and the run goes on.
+  Reader panics are caught.
+- **Speed:** 4 parallel readers **(unconfirmed)**. On the NAS an import runs at about 25–30
+  photos per second, whether with 1, 4 or 16 readers: the limit is the NAS's per-file latency
+  (measured 2026-11-14). A first import of the whole library would take about an hour.
+- **Read-only, checked:** three real folders (598, 902 and 1,736 files) had an identical
+  fingerprint of every file's name, size and time before and after importing.
 
 ### 3.5 Map providers & geocoding (researched 2026-11-14)
 
@@ -640,8 +697,10 @@ Product:
 
 Unconfirmed defaults awaiting review:
 - §2.3: filters in M5 rather than v1.
+- §2.8(a): the paired JPEG read only when the RAW can't be read or has no date.
+- §2.8(c): which file is the original (DNG first), the preview, and the sidecar order.
 - §3.2: the planned crates.
-- §3.4: the data model.
+- §3.4: the data model, the quick hash over the first 64 KB, 4 readers.
 - §3.5(d): trimming the tile cache at startup, in M6.
 - §3.6(a): `photo.allMetadata` as the fallback EXIF reader.
 
@@ -666,8 +725,13 @@ Milestones are rough and get refined as we go.
   all photos" and the map-style menu are drawn disabled until their milestones. Checked by
   screenshot and the tile cache; pan, zoom (buttons, `+`/`-` keys, wheel, double-click) and the
   attribution link still need a check by hand.
-- **M2 — Library & import** (next): SQLite schema, add a source, a background scan, EXIF/GPS reading,
-  progress, rescan.
+- **M2 — Library & import** (in progress): SQLite schema, add a source, a background scan,
+  EXIF/GPS reading, progress, rescan.
+  - Done: the metadata reader, the library database and the headless import with rescan, moves
+    and missing photos, checked on three real folders (§3.4). Dev command:
+    `mapcraft --import <folder> --data <scratch folder>`.
+  - Next: mockups for "Add folder…" with the folder tree, the import summary and the sources
+    list; then that UI, the progress chip and simple position dots on the map.
 - **M3 — Thumbnails on the map:** the thumbnail pipeline (§2.2(b)) with LightCraft for RAW,
   markers as thumbnails, hover and select, the detail panel.
 - **M4 — Grouping:** clustering per zoom (§2.4), count badges, click to zoom, the strip for photos

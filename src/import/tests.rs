@@ -1,0 +1,285 @@
+//! Import tests on generated files in a temp folder (never real photos).
+
+use std::fs;
+use std::path::Path;
+use std::sync::atomic::AtomicBool;
+
+use super::*;
+
+/// A minimal JPEG (SOI, APP1 EXIF, EOI) with a GPS position and capture date. Enough for the
+/// metadata readers; not a viewable image.
+fn jpeg_with_gps(lat: f64, lon: f64, date: &str) -> Vec<u8> {
+    let mut jpeg = vec![0xFF, 0xD8];
+    let tiff = tiff_with_gps(lat, lon, date);
+    jpeg.extend([0xFF, 0xE1]);
+    jpeg.extend(((tiff.len() + 8) as u16).to_be_bytes());
+    jpeg.extend(b"Exif\0\0");
+    jpeg.extend(tiff);
+    jpeg.extend([0xFF, 0xD9]);
+    jpeg
+}
+
+/// A little-endian TIFF structure: IFD0 → Exif IFD (DateTimeOriginal) and GPS IFD.
+fn tiff_with_gps(lat: f64, lon: f64, date: &str) -> Vec<u8> {
+    fn entry(out: &mut Vec<u8>, tag: u16, typ: u16, count: u32, value: u32) {
+        out.extend(tag.to_le_bytes());
+        out.extend(typ.to_le_bytes());
+        out.extend(count.to_le_bytes());
+        out.extend(value.to_le_bytes());
+    }
+    fn dms(v: f64) -> [(u32, u32); 3] {
+        let v = v.abs();
+        let d = v.floor();
+        let m = ((v - d) * 60.0).floor();
+        let s = ((v - d) * 60.0 - m) * 60.0;
+        [
+            (d as u32, 1),
+            (m as u32, 1),
+            ((s * 1000.0).round() as u32, 1000),
+        ]
+    }
+    // Layout: header 8 | IFD0 (2 entries) @8 | Exif IFD (1) @38 | GPS IFD (4) @56 | data @110
+    let (ifd0, exif, gps, data) = (8u32, 38u32, 56u32, 110u32);
+    let mut t = b"II*\0".to_vec();
+    t.extend(ifd0.to_le_bytes());
+    t.extend(2u16.to_le_bytes());
+    entry(&mut t, 0x8769, 4, 1, exif);
+    entry(&mut t, 0x8825, 4, 1, gps);
+    t.extend(0u32.to_le_bytes());
+    assert_eq!(t.len() as u32, exif);
+    t.extend(1u16.to_le_bytes());
+    entry(&mut t, 0x9003, 2, 20, data); // DateTimeOriginal, 19 chars + NUL
+    t.extend(0u32.to_le_bytes());
+    assert_eq!(t.len() as u32, gps);
+    t.extend(4u16.to_le_bytes());
+    let ns = if lat < 0.0 { b'S' } else { b'N' };
+    let ew = if lon < 0.0 { b'W' } else { b'E' };
+    entry(&mut t, 1, 2, 2, u32::from_le_bytes([ns, 0, 0, 0]));
+    entry(&mut t, 2, 5, 3, data + 20);
+    entry(&mut t, 3, 2, 2, u32::from_le_bytes([ew, 0, 0, 0]));
+    entry(&mut t, 4, 5, 3, data + 44);
+    t.extend(0u32.to_le_bytes());
+    assert_eq!(t.len() as u32, data);
+    t.extend(date.as_bytes());
+    t.push(0);
+    for (n, d) in dms(lat).into_iter().chain(dms(lon)) {
+        t.extend(n.to_le_bytes());
+        t.extend(d.to_le_bytes());
+    }
+    t
+}
+
+const XMP_GPS: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="48,8.4N" exif:GPSLongitude="2,21E"/>
+</rdf:RDF></x:xmpmeta>"#;
+
+/// The test library: a folder with photos of every interesting kind.
+fn setup(root: &Path) {
+    fs::create_dir_all(root.join("trip")).unwrap();
+    fs::create_dir_all(root.join("trip").join(".dtrash")).unwrap();
+    // South and west, in EXIF.
+    fs::write(
+        root.join("trip").join("A.jpg"),
+        jpeg_with_gps(-33.8688, -70.6, "2023:05:19 21:06:14"),
+    )
+    .unwrap();
+    // A "RAW" (TIFF structure, no GPS) with a JPEG beside it and a sidecar with the position.
+    fs::write(
+        root.join("trip").join("B.dng"),
+        tiff_with_gps(0.0, 0.0, "2022:01:02 03:04:05"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("trip").join("B.jpg"),
+        jpeg_with_gps(10.0, 10.0, "2022:01:02 03:04:05"),
+    )
+    .unwrap();
+    fs::write(root.join("trip").join("B.xmp"), XMP_GPS).unwrap();
+    // No metadata at all; a corrupt TIFF; a video; something in the trash.
+    fs::write(root.join("trip").join("C.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+    fs::write(root.join("trip").join("D.tif"), b"II*\0\xff\xff\xff\x7f").unwrap();
+    fs::write(root.join("trip").join("clip.mov"), b"x").unwrap();
+    fs::write(
+        root.join("trip").join(".dtrash").join("E.jpg"),
+        jpeg_with_gps(1.0, 1.0, "2020:01:01 00:00:00"),
+    )
+    .unwrap();
+}
+
+fn import(lib: &mut Library, src: i64) -> Summary {
+    run(lib, src, &AtomicBool::new(false), 4, |_| {}).unwrap()
+}
+
+fn photo(lib: &Library, stem: &str) -> Option<library::Existing> {
+    let src = lib.sources().unwrap()[0].id;
+    lib.existing(src)
+        .unwrap()
+        .into_iter()
+        .find(|((_, s), _)| s == &stem.to_lowercase())
+        .map(|(_, e)| e)
+}
+
+#[test]
+fn fixture_is_valid_exif_for_another_reader() {
+    // Cross-check the hand-made EXIF with kamadak-exif, so the fixtures don't only agree with
+    // the reader they test.
+    let jpeg = jpeg_with_gps(-33.8688, -70.6, "2023:05:19 21:06:14");
+    let exif = exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(jpeg))
+        .unwrap();
+    let r = exif
+        .get_field(exif::Tag::GPSLatitudeRef, exif::In::PRIMARY)
+        .unwrap();
+    assert_eq!(r.display_value().to_string(), "S");
+    let d = exif
+        .get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
+        .unwrap();
+    assert_eq!(d.display_value().to_string(), "2023-05-19 21:06:14");
+}
+
+#[test]
+fn first_import_reads_positions_pairs_and_sidecars() {
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path());
+    let mut lib = Library::open_in_memory().unwrap();
+    let src = lib.add_source(dir.path(), None, "test", &[]).unwrap();
+    let s = import(&mut lib, src);
+    // A, B (dng + jpg + xmp), C, D; not the video, not the trash.
+    assert_eq!((s.photos, s.new, s.failed), (4, 4, 1), "{s:?}");
+    assert_eq!(s.without_position, 2, "C and D have none");
+
+    let points = lib.positions().unwrap();
+    assert_eq!(points.len(), 2);
+    let a = points.iter().find(|p| p.lat < 0.0).unwrap();
+    assert!((a.lat - -33.8688).abs() < 1e-6 && (a.lon - -70.6).abs() < 1e-6);
+    // The sidecar wins over the preview JPEG's EXIF (10, 10).
+    let b = points.iter().find(|p| p.lat > 0.0).unwrap();
+    assert!((b.lat - 48.14).abs() < 1e-9 && (b.lon - 2.35).abs() < 1e-9);
+    assert_eq!(lib.counts().unwrap().with_position, 2);
+}
+
+#[test]
+fn rescan_skips_unchanged_and_finds_moves_and_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    setup(root);
+    let mut lib = Library::open_in_memory().unwrap();
+    let src = lib.add_source(root, None, "test", &[]).unwrap();
+    import(&mut lib, src);
+    let a_id = photo(&lib, "A").unwrap().id;
+
+    let again = import(&mut lib, src);
+    assert_eq!(
+        (again.unchanged, again.new, again.changed),
+        (4, 0, 0),
+        "{again:?}"
+    );
+
+    // Move A to another folder under a new name; delete C.
+    fs::create_dir_all(root.join("sorted")).unwrap();
+    fs::rename(
+        root.join("trip").join("A.jpg"),
+        root.join("sorted").join("A_renamed.jpg"),
+    )
+    .unwrap();
+    fs::remove_file(root.join("trip").join("C.png")).unwrap();
+    let s = import(&mut lib, src);
+    assert_eq!((s.moved, s.missing, s.new), (1, 1, 0), "{s:?}");
+    assert_eq!(
+        photo(&lib, "A_renamed").unwrap().id,
+        a_id,
+        "a moved photo keeps its record"
+    );
+    assert!(photo(&lib, "C").unwrap().missing);
+
+    // C comes back.
+    fs::write(root.join("trip").join("C.png"), b"\x89PNG\r\n\x1a\n").unwrap();
+    let s = import(&mut lib, src);
+    assert_eq!(s.restored, 1, "{s:?}");
+    assert!(!photo(&lib, "C").unwrap().missing);
+}
+
+#[test]
+fn photos_outside_the_listed_folders_are_never_marked_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    setup(root);
+    fs::create_dir_all(root.join("other")).unwrap();
+    fs::write(
+        root.join("other").join("F.jpg"),
+        jpeg_with_gps(5.0, 5.0, "2021:01:01 00:00:00"),
+    )
+    .unwrap();
+    let mut lib = Library::open_in_memory().unwrap();
+    let src = lib.add_source(root, None, "test", &[]).unwrap();
+    import(&mut lib, src);
+    // A folder that disappears entirely (an unplugged sub-share, a rename at the top) isn't
+    // listed, so its photos stay as they were until the user decides.
+    fs::remove_dir_all(root.join("other")).unwrap();
+    let s = import(&mut lib, src);
+    assert_eq!(s.missing, 0, "{s:?}");
+    assert!(!photo(&lib, "F").unwrap().missing);
+}
+
+#[test]
+fn picked_folders_limit_the_import() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    setup(root);
+    fs::create_dir_all(root.join("other")).unwrap();
+    fs::write(
+        root.join("other").join("F.jpg"),
+        jpeg_with_gps(5.0, 5.0, "2021:01:01 00:00:00"),
+    )
+    .unwrap();
+    let mut lib = Library::open_in_memory().unwrap();
+    let src = lib
+        .add_source(root, None, "test", &["other".into()])
+        .unwrap();
+    let s = import(&mut lib, src);
+    assert_eq!(s.photos, 1);
+}
+
+#[test]
+fn cancel_and_offline_change_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path());
+    let mut lib = Library::open_in_memory().unwrap();
+    let src = lib.add_source(dir.path(), None, "test", &[]).unwrap();
+    let s = run(&mut lib, src, &AtomicBool::new(true), 4, |_| {}).unwrap();
+    assert!(s.cancelled);
+    assert_eq!(lib.counts().unwrap().photos, 0);
+
+    import(&mut lib, src);
+    let gone = lib
+        .add_source(&dir.path().join("unplugged"), None, "gone", &[])
+        .unwrap();
+    assert!(matches!(
+        run(&mut lib, gone, &AtomicBool::new(false), 4, |_| {}),
+        Err(ImportError::SourceOffline(_))
+    ));
+    assert_eq!(lib.counts().unwrap().photos, 4);
+}
+
+#[test]
+fn quick_hash_ignores_name_and_sees_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let big: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    fs::write(dir.path().join("a"), &big).unwrap();
+    fs::write(dir.path().join("b"), &big).unwrap();
+    let mut early = big.clone();
+    early[1000] ^= 1; // differs in the first 64 KB: a different photo
+    fs::write(dir.path().join("c"), &early).unwrap();
+    let mut late = big.clone();
+    late[299_999] ^= 1; // differs only after the first 64 KB: by design the same fingerprint,
+    fs::write(dir.path().join("d"), &late).unwrap(); // the price of one disk seek less
+    let h = |n: &str| quick_hash(&dir.path().join(n), 300_000).unwrap();
+    assert_eq!(h("a"), h("b"));
+    assert_ne!(h("a"), h("c"));
+    assert_eq!(h("a"), h("d"));
+    assert_ne!(
+        h("a"),
+        quick_hash(&dir.path().join("a"), 299_999).unwrap(),
+        "size counts"
+    );
+}
