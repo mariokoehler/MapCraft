@@ -157,7 +157,7 @@ when the thumbnail is made, so it is always stored upright.
    not camera RAW (verified 2026-11-14, its README), so it is the fallback for HEIC and the
    layered formats (PSD, TIFF with layers) **(user, 2026-11-14)**.
 
-**LightCraft is a fallback, so it runs in one long-lived session** **(unconfirmed)**. Timings
+**LightCraft is a fallback, so it runs in one long-lived session** **(user, 2026-11-14)**. Timings
 on 8 copies each of DNG, CR2, RAF and JPEG from the library, 256 px JPEG output (verified
 2026-11-14):
 
@@ -325,8 +325,11 @@ What follows for the design (all **(user, 2026-11-14)**):
      check it on the real catalogue. The catalogue's root paths may name old drive letters, so
      each Lightroom root is mapped to a MapCraft source when importing.
 
-  Default: file metadata first (sidecar, then EXIF), and the catalogue only fills photos that
-  have no position. Each photo records where its position came from (`gps_source`).
+  **Decision (user, 2026-11-14): file metadata only in v1**, the XMP sidecar first and then EXIF
+  (see (a)). MapCraft doesn't read the catalogue. The user saves the Lightroom positions to the
+  files with route 1 at a later date. It doesn't block development: many photos already carry GPS
+  in EXIF or a sidecar. Route 2 stays a later idea if photos turn up whose position exists only in
+  the catalogue. Each photo records where its position came from (`gps_source`).
 - **(h) Track matching inside MapCraft (later).** The GPX step could move into MapCraft itself
   through LightCraft's `photo.autoTagTracklog`, which takes a GPX file and a camera clock offset.
   MapCraft would then *write* GPS, which §1.1 rules out for v1.
@@ -398,7 +401,7 @@ or a small thread pool (thumbnail jobs), `reqwest` (tiles, if walkers doesn't fe
 ```
 source(id, root_path, unc_path, label, added_at, last_scan_at)
 photo(id, source_id, rel_path, file_size, file_mtime, quick_hash,
-      lat, lon, alt, gps_source /* exif | xmp | lrcat, §2.8(g) */, taken_at, taken_at_offset, camera_make, camera_model, lens,
+      lat, lon, alt, gps_source /* exif | xmp; lrcat later, §2.8(g) */, taken_at, taken_at_offset, camera_make, camera_model, lens,
       width, height, orientation, state /* ok | missing | no_gps */, thumb_state,
       lightcraft_id /* nullable, §3.6(c) */)
   unique(source_id, rel_path); index on (lat, lon)
@@ -532,7 +535,7 @@ scratch library and a scratch settings folder):
 - **The control channel** exists only when the GUI was started with `lightcraft --control <port>`
   (or `LIGHTCRAFT_CONTROL_PORT`). It is loopback-only with **no authentication**
   (`docs/control-protocol.md`), so it shouldn't stay on by default.
-- **The flow** **(unconfirmed)**:
+- **The flow** **(user, 2026-11-14)**:
   - If LightCraft isn't running, MapCraft starts it with `--control` on a random free port. The
     GUI opens the user's last library.
   - If it is running without `--control`, MapCraft can't drive it and says so.
@@ -577,9 +580,14 @@ The look and the structure of the screens are designed in **Claude Design** (use
 - Mockups are for the first layout, new screens and bigger changes. Small tweaks go straight into
   code.
 
-The first canvases set a small design system:
-- colours (light and dark), type sizes, spacing;
-- the marker, group-badge and panel styles.
+**A design system of MapCraft's own comes first** (user, 2026-11-14), as its own Claude Design
+canvas (`MapCraft — Design system`), before any screen mockup. It holds:
+- colour tokens for dark and light, the type scale, spacing, radii and strokes;
+- the generic controls, the panels and overlays, and the map's own objects (markers, group
+  badges, attribution).
+
+It is shaped to map onto egui's `Style` and `Visuals`, so the `theme` module is a transcription.
+Fonts and icons must be under open licences that allow bundling them in a public repo.
 
 The egui theme mirrors those tokens in one place (a `theme` module) and is kept in lockstep with
 the design system. Sensible starting points (**user, 2026-11-14**): a dark UI around a light map, as in
@@ -588,10 +596,7 @@ egui.
 
 ## 4. Open questions
 
-Foundational, blocking the architecture:
-- **Lightroom GPS** (§2.8(g)): save metadata to the files once in Lightroom (route 1), or should
-  MapCraft read the `.lrcat` (route 2, which needs the catalogue on this PC)? Possibly both:
-  route 1 now, and route 2 only if photos turn up whose position is only in the catalogue.
+Not blocking v1:
 - **Videos:** left out of v1 (§2.8(d)); wanted later?
 
 Product:
@@ -603,10 +608,7 @@ Unconfirmed defaults awaiting review:
 - §2.3: filters in M5 rather than v1.
 - §3.2: the crate list.
 - §3.4: the data model.
-- §2.2(b): LightCraft as the fallback renderer in one long-lived session, on a scratch library of
-  MapCraft's own.
 - §3.6(a): `photo.allMetadata` as the fallback EXIF reader.
-- §3.6(c): the Open-in-LightCraft flow (start it with `--control`, ask before importing).
 
 ## 5. Roadmap
 
@@ -620,7 +622,7 @@ Milestones are rough and get refined as we go.
   - answer the remaining questions in §4.
 - **M1 — Window with a map:**
   - the Cargo project;
-  - a first Claude Design pass for the main window's layout and the design system (§3.9);
+  - the design system canvas, then the main window's mockup built on it (§3.9);
   - a window with the map, pan and zoom, tiles from OSM with a proper User-Agent, the disk cache
     and attribution;
   - settings with the bootstrap file.

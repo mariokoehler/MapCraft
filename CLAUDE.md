@@ -37,8 +37,9 @@ but the app isn't sold or advertised (user, 2026-11-14).
 - Decided (2026-11-14): egui + walkers (§3.2); a tile-provider abstraction starting with OSM,
   online for v1 (§3.5(b)); licence MIT OR Apache-2.0 (§1.3). The user's library is surveyed
   (§2.8).
-- The M0 spikes are done (2026-11-14; results in `design.md` §2.2(b), §2.6, §3.6(c)). Next: the
-  Lightroom-GPS question in §4, then M1 (needs the main window's Claude Design pass, §3.9).
+- M0 is done (2026-11-14): the spikes (results in `design.md` §2.2(b), §2.6, §3.6(c)), and GPS
+  comes from EXIF and XMP only in v1 (§2.8(g)). Next: M1, starting with the design system canvas
+  in Claude Design and then the main window's mockup (§3.9).
 - **The user's real photo library is read-only to us.** Never write, rename or create sidecars
   there. Its path stays out of the repo (it's in Claude's local memory).
 
