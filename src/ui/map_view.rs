@@ -42,11 +42,32 @@ impl MapView {
             .zoom_with_ctrl(false) // the wheel zooms (design.md §2.3)
             .double_click_to_zoom(true);
         let rect = ui.add(map).rect;
+        self.zoom_keys(ui);
 
         self.controls(ui, p, rect);
         self.scale_bar(ui, p, rect);
         self.attribution(ui, p, rect);
         empty_state(ui, p, rect);
+    }
+
+    /// `+`/`-` zoom (design.md §2.3; walkers has no keyboard handling). `=` counts as `+`, since
+    /// that's the unshifted key on many layouts. Ignored while a text field has the keyboard.
+    fn zoom_keys(&mut self, ui: &Ui) {
+        if ui.ctx().egui_wants_keyboard_input() {
+            return;
+        }
+        let (zoom_in, zoom_out) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::Plus) || i.key_pressed(egui::Key::Equals),
+                i.key_pressed(egui::Key::Minus),
+            )
+        });
+        if zoom_in {
+            let _ = self.memory.zoom_in();
+        }
+        if zoom_out {
+            let _ = self.memory.zoom_out();
+        }
     }
 
     /// Zoom in/out work; "zoom to all photos" and "map style" have nothing to act on yet.
@@ -75,16 +96,10 @@ impl MapView {
                         ui,
                         p,
                         Icon::Scan,
-                        "Zoom to all photos (no photos yet)",
+                        "Zoom to all photos: no photos yet",
                         false,
                     );
-                    control(
-                        ui,
-                        p,
-                        Icon::Layers,
-                        "Map style (one provider so far)",
-                        false,
-                    );
+                    control(ui, p, Icon::Layers, "Map style: not available yet", false);
                 });
             });
     }
@@ -226,7 +241,7 @@ fn empty_state(ui: &Ui, p: &Palette, map: Rect) {
                         )
                         .fill(p.accent);
                         ui.add_enabled(false, add)
-                            .on_disabled_hover_text("Importing photos arrives with M2");
+                            .on_disabled_hover_text("Importing photos isn't available yet");
                     });
                 });
         });

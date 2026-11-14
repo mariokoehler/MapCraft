@@ -238,4 +238,49 @@ mod tests {
             3
         );
     }
+
+    /// `text_styles` is written out by hand; this keeps it equal to the design system's scale.
+    #[test]
+    fn type_scale_matches_the_design_tokens() {
+        let json: serde_json::Value =
+            serde_json::from_str(include_str!("../../assets/design/tokens.json")).unwrap();
+        let styles = text_styles();
+        let mut checked = 0;
+        for group in json["type"]["groups"].as_array().unwrap() {
+            for s in group["styles"].as_array().unwrap() {
+                let name = s["name"].as_str().unwrap();
+                let style = match name {
+                    "Small" => TextStyle::Small,
+                    "Body" => TextStyle::Body,
+                    "Button" => TextStyle::Button,
+                    "Heading" => TextStyle::Heading,
+                    "Monospace" => TextStyle::Monospace,
+                    "Display" => TextStyle::Name(DISPLAY.into()),
+                    other => panic!("the design system has a new text style `{other}`"),
+                };
+                let font = &styles[&style];
+                let size: f32 = s["fontSize"]
+                    .as_str()
+                    .unwrap()
+                    .trim_end_matches("px")
+                    .parse()
+                    .unwrap();
+                assert_eq!(font.size, size, "{name} size");
+                let semibold = s["fontWeight"].as_u64() == Some(600);
+                let is_semibold = font.family == FontFamily::Name(SEMIBOLD.into());
+                assert_eq!(is_semibold, semibold, "{name} weight");
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, styles.len());
+    }
+
+    /// `apply` reads the spacing and widget tokens; a renamed token panics here, not at startup.
+    #[test]
+    fn apply_reads_every_style_token() {
+        let ctx = egui::Context::default();
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            apply(&ctx, &Tokens::embedded(kind).unwrap(), kind);
+        }
+    }
 }

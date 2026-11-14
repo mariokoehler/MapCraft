@@ -24,8 +24,8 @@ pub fn show(ui: &mut Ui, p: &Palette) {
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add_space(p.space_1);
-            ghost_button(ui, p, Icon::Settings, "Settings (coming soon)");
-            ghost_button(ui, p, Icon::FolderPlus, "Add folder… (coming with M2)");
+            ghost_button(ui, p, Icon::Settings, "Settings: not available yet");
+            ghost_button(ui, p, Icon::FolderPlus, "Add folder…: not available yet");
         });
     });
 }
@@ -60,7 +60,7 @@ fn search_field(ui: &mut Ui, p: &Palette) {
         egui::FontId::proportional(13.0),
         p.text_disabled,
     );
-    response.on_hover_text("Search arrives with M5, once photos are imported");
+    response.on_hover_text("Search: not available yet");
 }
 
 fn ghost_button(ui: &mut Ui, p: &Palette, icon: Icon, hint: &str) {

@@ -28,7 +28,7 @@ but the app isn't sold or advertised (user, 2026-11-14).
 
 ## Current status (2026-11-14)
 
-**Design phase; nothing is built.**
+**M1 done: a window with the OSM map; no photos yet.**
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
   copies.
@@ -129,6 +129,10 @@ committed):
 - Pitfall: the API of egui/eframe 0.37 differs from most examples online (for example
   `App::ui` instead of `update`, `Panel::top`, `Id::unique`). Check signatures in
   `%USERPROFILE%\.cargo\registry\src\` or let the compiler say, not from memory.
+- Pitfall: never script real mouse or keyboard input to test the GUI. Windows often refuses to
+  bring the app to the front, and the input lands in whatever the user has open (it did once,
+  2026-11-14, in their browser). Screenshots of an untouched window are fine. Test interaction
+  headlessly (e.g. `egui_kittest`) or ask the user to try it.
 
 **Toolchain** (per Windows user, shared by all Rust projects):
 - `rustup` manages Rust like SDKMAN manages JDKs. It lives in `%USERPROFILE%\.rustup`, with

@@ -511,9 +511,10 @@ allow, with a size limit (default 500 MB **(user, 2026-11-14)**, least recently 
 There is no prefetching for OSM or Google, by their policies.
 
 **The size limit isn't built yet.** walkers' cache has no limit (§3.2), so MapCraft has to trim
-the cache folder itself. Proposal **(unconfirmed)**: at startup, delete the oldest entries until
-the folder is under the limit; done in M6, with the other providers. Until then the cache grows
-with every new area viewed, by about 6 KB per tile.
+the cache folder itself. Proposal **(unconfirmed)**: at startup, remove the least recently used
+entries until the folder is under the limit, through the cache library's own API (`cacache`
+keeps an index next to the content, so deleting files by hand could corrupt it; to be checked in
+M6, with the other providers). Until then the cache grows with every new area viewed.
 
 **(e) Privacy.** Every tile request tells the provider which area the user is looking at, which
 for a photo library is close to where the user has been. That is accepted as not an issue (user,
@@ -648,7 +649,7 @@ Unconfirmed defaults awaiting review:
 
 Milestones are rough and get refined as we go.
 
-- **M0 — Decisions & spikes** (now). Done: the tile provider, the UI stack, offline as later
+- **M0 — Decisions & spikes** (done 2026-11-14). Done: the tile provider, the UI stack, offline as later
   (user, 2026-11-14), the library survey (§2.8), the licence (§1.3) and the public GitHub repo
   (https://github.com/mariokoehler/MapCraft), the Rust toolchain (§3.2), and the four spikes
   (2026-11-14): embedded previews and LightCraft render timing (§2.2(b)), `photocraft.exe <path>`
@@ -662,8 +663,10 @@ Milestones are rough and get refined as we go.
   - settings with the bootstrap file.
 
   The window matches the mockup's "Empty library" state. Search, "Add folder…", settings, "zoom to
-  all photos" and the map-style menu are drawn disabled until their milestones.
-- **M2 — Library & import:** SQLite schema, add a source, a background scan, EXIF/GPS reading,
+  all photos" and the map-style menu are drawn disabled until their milestones. Checked by
+  screenshot and the tile cache; pan, zoom (buttons, `+`/`-` keys, wheel, double-click) and the
+  attribution link still need a check by hand.
+- **M2 — Library & import** (next): SQLite schema, add a source, a background scan, EXIF/GPS reading,
   progress, rescan.
 - **M3 — Thumbnails on the map:** the thumbnail pipeline (§2.2(b)) with LightCraft for RAW,
   markers as thumbnails, hover and select, the detail panel.
