@@ -77,7 +77,8 @@ integration with PhotoCraft and LightCraft.
 - Data the app *displays* has its own terms, which bind the app's behaviour rather than our
   code's licence:
   - OSM tiles: ODbL, attribution on the map (§3.5);
-  - GeoNames: CC-BY 4.0, attribution in About (§2.5).
+  - GeoNames: CC-BY 4.0, credited in the search dropdown wherever place results show (§2.5;
+    there is no About screen yet).
 
 ## 2. Features & behaviour
 
@@ -313,6 +314,52 @@ One search box with two kinds of results **(user, 2026-11-14)**:
   tile provider's own) is an optional add-on; see §3.5(c) for why it can't drive autocomplete.
 - **Photos:** file name, folder, date ("2019-08"), camera. A result centres the map on the photo
   and selects it.
+
+**As built in M5 (2026-11-14):**
+- **Data** (checked 2026-11-14, https://download.geonames.org/export/dump/readme.txt): GeoNames
+  `cities500`.
+  - It lists 237,125 places: every place over 500 people and seats of local government, so
+    Iceland's small towns are in (Vík, Höfn).
+  - The download is 14 MB, plus `admin1CodesASCII.txt` for region names and `countryInfo.txt`
+    for country names.
+  - The data is CC BY 4.0. It never goes into the repo.
+- **Download (unconfirmed):** only when the user clicks the row the dropdown offers while there's
+  no index ("Download place names (14 MB, from geonames.org)").
+  - It requests three fixed URLs with a generic User-Agent and sends nothing about the user.
+  - The zip is checked and its unpacked size capped.
+  - A failed download can be retried from the same row. Photo search works without it.
+- **Index:** `geonames/places.sqlite` in the data folder.
+  - SQLite FTS5 with one row per name: the place's own name, its ASCII form, and its Latin-script
+    alternate names. That is how "Wien" finds Vienna and "München" finds Munich.
+  - Diacritics are folded, so "vik" matches Vík.
+  - The build takes 2.5 s, the index is 50 MB, and searches take under 2 ms (a two-letter prefix
+    takes about 40 ms; `examples/places_probe.rs`, 2026-11-14).
+- **Ranking (unconfirmed):**
+  - Places with the user's photos nearby come first, the most photos first. "Nearby" means
+    within 2 km of a village, up to 25 km of a big city, by population.
+  - Then come the others, by population weighted by how the name matched: the own name starts
+    with the text × 1, another name does × 0.3, a later word × 0.1 or × 0.03.
+  - Up to 4 places show. A place's count is how many of the user's photos are near it.
+- **Photo results** come only from photos on the map (with a position). Up to five show:
+  - a period (`2019`, `2019-08`, `2019-08-14`);
+  - up to 2 folders (`…\last folder`, the fullest first);
+  - 1 camera;
+  - up to 3 file names, the newest first.
+- **Actions:**
+  - A place centres the map at a zoom for its size (11 for a city of a million, 14 for a
+    village).
+  - A folder, period or camera fits the map to its photos. That overlaps the filters, so it may
+    change after the filter review.
+  - A file centres on its photo and selects it; it may sit inside a group, which is then marked
+    as selected.
+- **Keys and privacy:**
+  - Ctrl+K focuses the field. ↑ and ↓ move, Enter goes to the result, and Esc closes the
+    dropdown.
+  - The search runs on its own thread, and Enter acts only on results for the text as typed.
+  - Nothing typed or found is logged.
+- **Not built (unconfirmed):** the mockup's "Ctrl Enter search online" (Nominatim, §3.5(c)).
+  National parks and landmarks (Þingvellir, Jökulsárlón) aren't in the cities list; online
+  search would cover them.
 
 ### 2.6 Photo detail & opening originals
 
@@ -782,7 +829,9 @@ scratch library and a scratch settings folder):
 ### 3.8 Security & robustness notes
 
 - GPS coordinates and file paths are personal data. Nothing leaves the machine except tile requests
-  (and online geocoding if the user enables it) (§3.5(e)). Logs don't contain coordinates
+  (and online geocoding if the user enables it) (§3.5(e)). The one other connection is the
+  place-name download, which runs only when the user clicks it and sends nothing about them
+  (§2.5, M5, unconfirmed). Logs don't contain coordinates
   **(user, 2026-11-14)**.
 - API keys are stored in `settings.toml` in plain text **(user, 2026-11-14)**, which is outside the
   repo. The repo is public (§3.5), so a key never goes into code, tests or committed config. The
@@ -849,6 +898,12 @@ Unconfirmed defaults awaiting review:
   - deselecting by a background click or Esc;
   - × hides the panel, Ctrl+I toggles it.
 - §2.6 (M3): no online state and no exposure row in the panel yet.
+- §2.5 (M5):
+  - the place names are downloaded only when the user clicks;
+  - ranking by photos nearby, the radius by population, the weights;
+  - the photo rows and what they do;
+  - no online search yet.
+- Filters (M5): the proposal on the canvas `MapCraft — Filters`, awaiting review.
 - §2.3: filters in M5 rather than v1.
 - §3.2: the planned crates.
 - §2.8(f): the tree starts all ticked; leaving a folder out later removes its records; a folder
@@ -907,7 +962,11 @@ Milestones are rough and get refined as we go.
   badges, click to zoom, the strip for photos at one spot.
   - Checked by unit tests (counts kept at every level, nesting, order independence, same-spot
     groups, the representative), headless UI tests, and window captures on generated photos.
-- **M5 — Search & filters:** GeoNames place search, photo search, date and source filters.
+- **M5 — Search & filters** (in progress): GeoNames place search, photo search, date and source
+  filters.
+  - Done 2026-11-14: search, both places and photos (§2.5), per the approved mockup.
+  - Filters: a mockup (canvas `MapCraft — Filters`) awaits the user's review; they're built
+    after it.
 - **M6 — Companion links & providers:** Open in PhotoCraft, Show in Explorer, Open in LightCraft
   if M0's spike found a way; the keyed provider and PMTiles offline.
 - **M7 — Packaging:** an installer or a portable zip, an icon, the GitHub repo and CI.

@@ -28,7 +28,7 @@ but the app isn't sold or advertised (user, 2026-11-14).
 
 ## Current status (2026-11-14)
 
-**M5 in progress: search (places and photos) and filters.**
+**M5 in progress: search is built; the filter mockup awaits the user's review.**
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
   copies.
@@ -62,6 +62,8 @@ but the app isn't sold or advertised (user, 2026-11-14).
   Explorer / Open (`src/launch.rs`).
 - Grouping per zoom level (`src/cluster.rs`, built off the UI thread in `src/ui/map_view.rs`),
   group markers and the strip (`src/ui/strip.rs`).
+- Search: the offline place index from GeoNames (`src/places.rs`), the search thread
+  (`src/search.rs`) and the field with its dropdown (`src/ui/search.rs`).
 
 ## How we work
 
@@ -140,6 +142,8 @@ committed):
 - On disk: `%APPDATA%\MapCraft\settings.toml` (created on first start) and
   `%LOCALAPPDATA%\MapCraft\tiles\` (the tile cache).
 - Thumbnails and previews: `%LOCALAPPDATA%\MapCraft\thumbs\` and `previews\` (by photo id).
+- The place index: `%LOCALAPPDATA%\MapCraft\geonames\places.sqlite`, downloaded when the user
+  asks (`--data` folders have their own).
 - `%LOCALAPPDATA%\MapCraft\library.sqlite` is created by the first normal start. From then on
   the migrations in `src/library/migrations/` are frozen: change the schema with a new numbered
   file, never by editing an existing one.
@@ -152,21 +156,26 @@ committed):
   build and pipe its output (`cmd /c "… 2>&1"`): the release exe is a GUI-subsystem app and
   prints nothing to a console otherwise.
 - More dev flags:
-  - `--open add-folder[=<folder>]`, `--open sources`, `--open details` or `--open strip`
-    starts with that dialog open, the first photo selected, or the first strip open (for
-    comparing with the mockups);
+  - `--open add-folder[=<folder>]`, `--open sources`, `--open details`, `--open strip` or
+    `--open search=<text>` starts with that dialog open, the first photo selected, the first
+    strip open, or the text searched (for comparing with the mockups);
   - `--perf` logs the frame time every 3 s;
   - `--make-demo <folder> [n]` writes generated photos;
   - `--fill-library <scratch data> <n>` writes synthetic rows.
 - UI tests: `egui_kittest` drives the whole app headless (`src/app.rs` tests), finding widgets
   by their accessible names. Its accessibility check fails on unnamed icon buttons, so use
   `widgets::ghost` or `widgets::named`.
-  - Painted things (markers) need an `interact` rect with a name to be found.
+  - Painted things (markers) need an `interact` rect with a name to be found. A `TextEdit` has
+    no name of its own (the hint isn't one): set it with `ctx.accesskit_node_builder`, and
+    click it before `type_text`.
+  - Tests never reach the network: `Config.network` is off and downloads are only recorded.
   - Paint transient decorations (a spinner over an image) with `paint_at`, never `ui.put`/`add`:
     an extra widget shifts the layout and the ids below it, and clicks get lost.
   - Wait for the thumbnail job (`thumbs.is_none()`) before `h.run()`: its chip's spinner keeps
     the frame repainting.
 - `cargo run --release --example cluster_probe -- [n]` times the grouping on synthetic photos.
+- `places_probe -- <cities500.zip> <admin1> <countryInfo> <out.sqlite> [queries…]` builds the
+  place index from downloaded GeoNames files and times searches (public data only).
 - Probes (read-only, aggregates only): `cargo run --release --example exif_probe -- <list>`
   (our reader against `kamadak-exif`), `xmp_probe -- <folder>`, `unc_check -- <path>`.
 - Pitfall: `kamadak-exif` reads a whole TIFF-based file (a 25 MB RAW) before parsing, and fails
@@ -185,6 +194,8 @@ committed):
   area. A screen copy picks up whatever covers the window; it once captured the user's other
   work (2026-11-14). The capture script is in the scratchpad (`scripts\shot.ps1`), and every
   capture is deleted after use.
+- Pitfall: a backslash in SQL inside a Rust string needs `\\` (`ESCAPE '\\'`); `'\'` is just
+  a quote. Edit it with the Edit tool: shell and Python quoting layers eat it.
 - Pitfall: the borrow checker forbids two closures holding `&mut self` at once, for example a
   dialog's body and button row. Let the button row set local flags, and act on them after the
   dialog has drawn.
