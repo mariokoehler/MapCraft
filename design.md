@@ -234,11 +234,11 @@ with a position; read-only over SMB):
 - **Position dots** (user, 2026-11-14): a photo appears as a small pin dot as soon as the import
   has read its position, and becomes its thumbnail marker once the thumbnail exists. Reading
   metadata costs one small read per file, but a thumbnail needs a decode, so thumbnails are made
-  by a background job after the import (M3), and the map is useful from the first minute. In M2
-  every photo is a dot. Dots closer than 5 px are drawn once. With 100,000 photos over Europe
-  at continent zoom (the worst case), the release build draws about 30 frames per second, with
-  8 ms of UI work per frame (measured 2026-11-14, `--fill-library` and `--perf`). M4's grouping
-  replaces this.
+  by a background job after the import (M3), and the map is useful from the first minute.
+  - Since M4, a single photo stays a dot only while its thumbnail is pending (§2.4).
+  - With 100,000 synthetic photos at continent zoom, a frame takes about 0.3 ms of UI work
+    (release build, `--fill-library` and `--perf`, 2026-11-14). Grouping them took 1.2 s in the
+    background at start-up; until it's done, the photos show as dots.
 - **Selection (built in M3, unconfirmed):**
   - Clicking the map's background or pressing Esc clears the selection.
   - The panel's × hides the panel and keeps the selection; Ctrl+I shows or hides it again.
@@ -264,14 +264,20 @@ distance on the ground, and groups split. The representative of a group is its n
 **As built in M4 (2026-11-14; `src/cluster.rs`):**
 - **Levels:** zoom levels 0 to 19, because OpenStreetMap's tiles end at 19. The map can zoom
   further (walkers interpolates tiles), but it shows level 19's groups there.
-- **Radius:** 64 px. Each level is built from the one below, so levels nest.
+- **Radius: 72 px** **(unconfirmed;** the confirmed rule is "about 64 px, where markers would
+  overlap"**)**. A marker is 68 px wide.
+  - One greedy pass left neighbouring centres as close as 34 px: at zooms 11 to 14, up to 74% of
+    markers overlapped a neighbour (measured, `cluster_probe`).
+  - So each level is merged again until a pass merges nothing. Then no two markers are closer
+    than 72 px.
+- **Nesting:** each level is built from the one below, so levels nest.
 - **Stability:**
   - Groups depend on positions only. The input is sorted by id first, so the same photos always
     give the same groups.
   - A change of thumbnail state or date only picks new representatives.
   - The groups are built on a background thread whenever the photos change.
-- **Speed:** 100,000 synthetic photos group in about 0.26 s, and picking new representatives
-  takes about 12 ms (release build, `examples/cluster_probe.rs`, 2026-11-14).
+- **Speed:** 100,000 synthetic photos group in about 0.7 s, and picking new representatives
+  takes about 11 ms (release build, `examples/cluster_probe.rs`, 2026-11-14).
 - **The representative (unconfirmed):** the newest photo *with a made thumbnail*, else the newest
   photo. Undated photos count as oldest. This departs from the confirmed "newest photo": a group
   shouldn't show a placeholder when it has thumbnails.
@@ -291,13 +297,10 @@ distance on the ground, and groups split. The representative of a group is its n
   - MapCraft needs its own representative rule, group extents and the "can it split?" test, so
     the algorithm is about 300 lines of our own.
 
-**Algorithm (user, 2026-11-14):** hierarchical greedy clustering per integer zoom level (0 to about
-20), the approach used by Mapbox's Supercluster. It is precomputed once over a spatial index (a
-KD-tree) after each import, so a frame only looks up the groups in view. Supercluster handles
-hundreds of thousands of points in well under a second, so library size isn't a worry for this
-approach. The real size of the user's library is asked in §4. A Rust port may exist as a crate
-(unverified); otherwise it is a few hundred lines to write ourselves. Between two zoom levels,
-groups fade or animate apart **(user, 2026-11-14; nice-to-have)**.
+**Algorithm (user, 2026-11-14):** hierarchical greedy clustering per integer zoom level, the
+approach of Mapbox's Supercluster, precomputed whenever the photos change. As built above: a
+hash grid instead of a KD-tree, levels 0 to 19, and our own code. Between two zoom levels,
+groups fade or animate apart **(user, 2026-11-14; nice-to-have, not built)**.
 
 ### 2.5 Search
 
@@ -839,6 +842,7 @@ Unconfirmed defaults awaiting review:
   - the representative prefers a photo with a made thumbnail; undated photos count as oldest;
   - a pending single photo stays a dot; a group is always a marker;
   - groups for zoom levels 0 to 19, and a group still together at 19 opens the strip;
+  - a 72 px radius with repeated merging, so markers never overlap;
   - the strip: 8 per page, oldest first, the date without a place until M5;
   - the badge style is the design system's (`map-badge-*`, "1.2k" rounded down).
 - §2.3 (M3):

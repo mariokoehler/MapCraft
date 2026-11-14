@@ -704,7 +704,7 @@ impl MapCraftApp {
             *frames += 1;
             if since.elapsed() >= Duration::from_secs(3) {
                 info!(
-                    "perf: {} dots, {:.2} ms per frame over {frames} frames",
+                    "perf: {} photos, {:.2} ms per frame over {frames} frames",
                     self.map
                         .all_bounds()
                         .map_or(0, |_| self.counts.with_position),
@@ -966,16 +966,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let photos = dir.path().join("photos");
         std::fs::create_dir_all(&photos).unwrap();
-        for (i, date) in [
-            "2023:05:19 21:06:14",
-            "2023:05:19 21:07:00",
-            "2023:05:20 08:00:00",
-        ]
-        .iter()
-        .enumerate()
-        {
-            let jpeg = crate::demo::photo_with_gps(53.5436, 9.9893, date, i as f64 / 3.0);
-            std::fs::write(photos.join(format!("SPOT_{i}.jpg")), jpeg).unwrap();
+        // Twelve photos at one spot, a minute apart; the last on the next day.
+        for i in 0..12 {
+            let date = if i == 11 {
+                "2023:05:20 08:00:00".to_owned()
+            } else {
+                format!("2023:05:19 21:{i:02}:00")
+            };
+            let jpeg = crate::demo::photo_with_gps(53.5436, 9.9893, &date, i as f64 / 12.0);
+            std::fs::write(photos.join(format!("SPOT_{i:02}.jpg")), jpeg).unwrap();
         }
         {
             let mut lib = Library::open(&dir.path().join("library.sqlite")).unwrap();
@@ -986,25 +985,44 @@ mod tests {
         }
         let mut h = harness(dir.path());
         settled(&mut h);
-        h.get_by_label("Group of 3 photos").click();
+        // Zoomed far out, where the view is wider than the world, the group still shows.
+        h.state_mut().as_mut().unwrap().map.set_zoom(1.0);
+        h.run_steps(3);
+        h.get_by_label("Group of 12 photos").click();
         step_until(&mut h, "the strip", |h| {
-            h.query_by_label("3 photos at this spot").is_some()
-                && h.query_by_label("Photo SPOT_1.jpg").is_some()
+            h.query_by_label("12 photos at this spot").is_some()
+                && h.query_by_label("Photo SPOT_01.jpg").is_some()
         });
         h.get_by_label("19 May – 20 May 2023");
-        h.get_by_label("Photo SPOT_1.jpg").click();
+        // Eight per page, oldest first; the next page has the rest.
+        assert!(h.query_by_label("Photo SPOT_08.jpg").is_none());
+        h.get_by_label("Next photos").click();
+        step_until(&mut h, "the next page", |h| {
+            h.query_by_label("Photo SPOT_08.jpg").is_some()
+        });
+        assert!(h.query_by_label("Photo SPOT_01.jpg").is_none());
+        h.get_by_label("Photo SPOT_11.jpg").click();
         step_until(&mut h, "the panel", |h| {
             h.query_by_label("Photo details").is_some()
         });
         assert!(
-            h.query_by_label("3 photos at this spot").is_some(),
+            h.query_by_label("12 photos at this spot").is_some(),
             "the strip stays"
         );
         // Esc closes the strip first, then clears the selection.
         h.key_press(egui::Key::Escape);
         h.run_steps(3);
-        assert!(h.query_by_label("3 photos at this spot").is_none());
+        assert!(h.query_by_label("12 photos at this spot").is_none());
         assert!(h.query_by_label("Photo details").is_some());
+        // The group holding the selected photo stays marked as selected.
+        assert!(
+            h.state_mut()
+                .as_mut()
+                .unwrap()
+                .map
+                .selected_group()
+                .is_some()
+        );
         h.key_press(egui::Key::Escape);
         h.run_steps(3);
         assert!(h.query_by_label("Photo details").is_none());

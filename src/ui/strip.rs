@@ -68,6 +68,7 @@ impl Strip {
         tip: Pos2,
         map: Rect,
         textures: &mut Textures,
+        made: &std::collections::HashSet<i64>,
         names: &std::collections::HashMap<i64, String>,
         wanted: &mut Vec<i64>,
         selected: Option<i64>,
@@ -127,7 +128,8 @@ impl Strip {
                             let start = self.page * PAGE;
                             let end = (start + PAGE).min(self.photos.len());
                             for &(id, _) in &self.photos[start..end] {
-                                if thumb(ui, p, id, textures, names, wanted, selected == Some(id)) {
+                                let tex = made.contains(&id).then_some(&mut *textures);
+                                if thumb(ui, p, id, tex, names, wanted, selected == Some(id)) {
                                     action = Some(StripAction::Select(id));
                                 }
                             }
@@ -219,12 +221,13 @@ fn nav(ui: &mut Ui, p: &Palette, icon: Icon, hint: &str, enabled: bool) -> bool 
     enabled && r.clicked()
 }
 
-/// One thumbnail of the row; true when clicked.
+/// One thumbnail of the row (`textures`: `None` while its thumbnail isn't made); true when
+/// clicked.
 fn thumb(
     ui: &mut Ui,
     p: &Palette,
     id: i64,
-    textures: &mut Textures,
+    textures: Option<&mut Textures>,
     names: &std::collections::HashMap<i64, String>,
     wanted: &mut Vec<i64>,
     selected: bool,
@@ -247,8 +250,8 @@ fn thumb(
     } else if r.hovered() {
         painter.rect_filled(rect.expand(p.stroke_focus), 3, p.map_marker_frame);
     }
-    match textures.get(id) {
-        Look::Ready(t) => {
+    match textures.map(|t| t.get(id)) {
+        Some(Look::Ready(t)) => {
             let [w, h] = t.size().map(|v| v as f32);
             let uv = if w > h {
                 let m = (1.0 - h / w) / 2.0;

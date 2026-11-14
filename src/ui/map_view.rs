@@ -54,6 +54,12 @@ pub struct MapView {
     strip: Option<Strip>,
     /// Dev flag `--open strip`: open the first one once the groups are built.
     open_strip: bool,
+    /// Photos whose thumbnail is made: only those textures are loaded (a changed photo's old
+    /// file would show otherwise).
+    made: HashSet<i64>,
+    /// The node containing the selected photo, for (selected, level, build), so it's marked
+    /// even when another photo represents its group.
+    selected_node: Option<(i64, usize, usize, usize)>,
     textures: Textures,
     /// File names of photos with a marker, for their accessible names; filled by the app.
     names: HashMap<i64, String>,
@@ -89,6 +95,8 @@ impl MapView {
             builder: Builder::new(ctx.clone()),
             strip: None,
             open_strip: false,
+            made: HashSet::new(),
+            selected_node: None,
             textures: Textures::new(data.to_path_buf(), ctx),
             names: HashMap::new(),
             wanted_names: Vec::new(),
@@ -108,6 +116,7 @@ impl MapView {
             .map(|p| p.id)
             .collect();
         self.textures.retain(|id| made.contains(&id));
+        self.made = made;
         if self
             .selected
             .is_some_and(|s| !points.iter().any(|p| p.id == s))
@@ -123,6 +132,41 @@ impl MapView {
         }
         self.builder.request(points.clone());
         self.points = points;
+    }
+
+    #[cfg(test)]
+    pub fn set_zoom(&mut self, zoom: f64) {
+        let _ = self.memory.set_zoom(zoom);
+    }
+
+    /// The group or photo marker that holds the selected photo, at the current zoom (tests).
+    #[cfg(test)]
+    pub fn selected_group(&mut self) -> Option<(usize, usize)> {
+        self.selected_node()
+    }
+
+    /// The (level, index) of the node at the current zoom that holds the selected photo.
+    fn selected_node(&mut self) -> Option<(usize, usize)> {
+        let (id, c) = (self.selected?, self.clusters.clone()?);
+        let (z, nodes) = c.level(self.memory.zoom());
+        let build = Arc::as_ptr(&c) as usize;
+        if let Some((sid, sz, sbuild, i)) = self.selected_node
+            && (sid, sz, sbuild) == (id, z, build)
+        {
+            return Some((z, i));
+        }
+        let pts = c.points();
+        let p = pts.binary_search_by_key(&id, |p| p.id).ok()?;
+        let (lat, lon) = (pts[p].lat, pts[p].lon);
+        // Few nodes cover the photo's position; confirm with their members.
+        let i = nodes.iter().enumerate().position(|(i, n)| {
+            let b = n.bounds();
+            (b.min_lat..=b.max_lat).contains(&lat)
+                && (b.min_lon..=b.max_lon).contains(&lon)
+                && (n.count == 1 && n.rep as usize == p || c.members(z, i).contains(&(p as u32)))
+        })?;
+        self.selected_node = Some((id, z, build, i));
+        Some((z, i))
     }
 
     /// Opens the strip of the first group at one spot at the current zoom, once grouped.
@@ -213,6 +257,7 @@ impl MapView {
             }
         }
         self.textures.begin_frame(ui.ctx());
+        let selected_node = self.selected_node();
         let mut out = PhotosOut::default();
         let photos = Photos {
             clusters: self.clusters.as_deref(),
@@ -222,6 +267,7 @@ impl MapView {
             wanted: &mut self.wanted_names,
             palette: p,
             selected: self.selected,
+            selected_node,
             strip: self.strip.as_ref(),
             out: &mut out,
         };
@@ -260,6 +306,7 @@ impl MapView {
                 tip,
                 rect,
                 &mut self.textures,
+                &self.made,
                 &self.names,
                 &mut self.wanted_names,
                 self.selected,
@@ -535,6 +582,7 @@ struct Photos<'a> {
     wanted: &'a mut Vec<i64>,
     palette: &'a Palette,
     selected: Option<i64>,
+    selected_node: Option<(usize, usize)>,
     strip: Option<&'a Strip>,
     out: &'a mut PhotosOut,
 }
@@ -570,6 +618,8 @@ struct Shown {
     rep: PhotoPoint,
     /// Screen radius of the area a group covers (for the hover halo).
     reach: f32,
+    /// Stable across rebuilds while the group is the same (its centre), for egui's hit ids.
+    key: (u64, u64),
 }
 
 impl Plugin for Photos<'_> {
@@ -620,9 +670,11 @@ impl Plugin for Photos<'_> {
         let view = clip.expand(p.size_marker + 24.0);
         let (x0, y0) = world(view.left_top());
         let (x1, y1) = world(view.right_bottom());
+        // Zoomed far out the view can be wider than the world; then nothing is culled here.
+        let cull = x0 < x1 && y0 < y1;
         let mut shown = Vec::new();
         for (i, n) in nodes.iter().enumerate() {
-            if n.x < x0 || n.x > x1 || n.y < y0 || n.y > y1 {
+            if cull && (n.x < x0 || n.x > x1 || n.y < y0 || n.y > y1) {
                 continue;
             }
             let (lat, lon) = n.lat_lon();
@@ -655,6 +707,7 @@ impl Plugin for Photos<'_> {
                 count: n.count,
                 rep,
                 reach,
+                key: (n.x.to_bits(), n.y.to_bits()),
             });
         }
         // Southern markers in front (they're nearer the viewer's eye line).
@@ -666,15 +719,12 @@ impl Plugin for Photos<'_> {
         for m in &shown {
             let rect = markers::frame_rect(p, m.pos, false);
             let hit = rect.union(Rect::from_center_size(m.pos, egui::vec2(10.0, 12.0)));
-            let key = if m.count > 1 {
-                (
-                    "photo-group",
-                    level as i64 * 1_000_000_000 + m.level_index as i64,
-                )
+            let id = if m.count > 1 {
+                Id::unique(("photo-group", level, m.key))
             } else {
-                ("photo-marker", m.rep.id)
+                Id::unique(("photo-marker", m.rep.id))
             };
-            let r = ui.interact(hit, Id::unique(key), Sense::click());
+            let r = ui.interact(hit, id, Sense::click());
             let name = if m.count > 1 {
                 format!("Group of {} photos", m.count)
             } else {
@@ -700,7 +750,9 @@ impl Plugin for Photos<'_> {
         }
 
         let is_selected = |m: &Shown| {
-            self.selected == Some(m.rep.id) || self.strip.is_some_and(|s| s.contains(m.rep.id))
+            self.selected == Some(m.rep.id)
+                || self.selected_node == Some((level, m.level_index))
+                || self.strip.is_some_and(|s| s.contains(m.rep.id))
         };
         let mut last = Vec::new();
         for m in &shown {

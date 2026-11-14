@@ -46,4 +46,59 @@ fn main() {
         .collect();
     println!("{n} photos: build {build:?}, same-positions check + new representatives {reps:?}");
     println!("nodes at zoom 0/4/8/12/16/19: {nodes:?}");
+    // How close do neighbouring markers get on screen, per level (at that whole zoom)?
+    let mut worst = Vec::new();
+    for z in 0..=mapcraft::cluster::MAX_LEVEL {
+        let (_, nodes) = c.level(z as f64);
+        let scale = 256.0 * 2f64.powi(z as i32);
+        let mut grid: std::collections::HashMap<(i64, i64), Vec<(f64, f64)>> = Default::default();
+        for n in nodes {
+            let (x, y) = (n.x * scale, n.y * scale);
+            grid.entry(((x / 100.0) as i64, (y / 100.0) as i64))
+                .or_default()
+                .push((x, y));
+        }
+        let mut min = f64::MAX;
+        for (&(cx, cy), list) in &grid {
+            for &(x, y) in list {
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        for &(x2, y2) in grid.get(&(cx + dx, cy + dy)).into_iter().flatten() {
+                            let d = (x - x2).hypot(y - y2);
+                            if d > 0.0 && d < min {
+                                min = d;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let under = |lim: f64| {
+            nodes.len() // count nodes having a neighbour closer than lim
+                - nodes
+                    .iter()
+                    .filter(|n| {
+                        let (x, y) = (n.x * scale, n.y * scale);
+                        let (cx, cy) = ((x / 100.0) as i64, (y / 100.0) as i64);
+                        !(-1..=1).any(|dx| {
+                            (-1..=1).any(|dy| {
+                                grid.get(&(cx + dx, cy + dy)).into_iter().flatten().any(|&(x2, y2)| {
+                                    let d = (x - x2).hypot(y - y2);
+                                    d > 0.0 && d < lim
+                                })
+                            })
+                        })
+                    })
+                    .count()
+        };
+        worst.push(format!(
+            "z{z}: min {:.0} px, {} of {} under 68 px",
+            if min == f64::MAX { 0.0 } else { min },
+            under(68.0),
+            nodes.len()
+        ));
+    }
+    for w in worst {
+        println!("{w}");
+    }
 }

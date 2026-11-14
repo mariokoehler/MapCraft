@@ -26,9 +26,10 @@ use crate::library::{PhotoPoint, Thumb};
 /// grouped there are "at one spot" (within about 20 m) and open the strip instead of zooming.
 pub const MAX_LEVEL: usize = 19;
 
-/// Two photos group when their markers would be closer than this many screen pixels at the
-/// level's zoom (design.md §2.4: "about 64 px").
-pub const RADIUS: f64 = 64.0;
+/// Markers closer than this many screen pixels at the level's zoom merge into a group: a
+/// 68 px marker plus a little room, so no two markers overlap (design.md §2.4, "about 64 px";
+/// 72 is unconfirmed).
+pub const RADIUS: f64 = 72.0;
 
 /// A photo or a group at one level.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -124,7 +125,34 @@ impl Clusters {
         let mut levels: Vec<Vec<Node>> = vec![Vec::new(); MAX_LEVEL + 1];
 
         for z in (0..=MAX_LEVEL).rev() {
-            let (next, order) = merge(&cur, RADIUS / (256.0 * 2f64.powi(z as i32)));
+            let r = RADIUS / (256.0 * 2f64.powi(z as i32));
+            let (mut next, mut order) = merge(&cur, r);
+            // Merge the new nodes again until a pass merges nothing. One pass only keeps what
+            // lies within `r` of each group's first member, so neighbouring centres can end up
+            // half of `r` apart (measured: a third of the markers overlapped at zooms 11-14).
+            // At the fixed point, no two centres are within `r`.
+            for _ in 0..32 {
+                let (again, order2) = merge(&next, r);
+                if again.len() == next.len() {
+                    break;
+                }
+                // Re-base the merged nodes' children onto the level below.
+                let mut flat = Vec::with_capacity(order.len());
+                let mut rebased = again;
+                for b in &mut rebased {
+                    let start = flat.len() as u32;
+                    for &a in &order2[b.first as usize..(b.first + b.len) as usize] {
+                        let a = next[a as usize];
+                        flat.extend_from_slice(
+                            &order[a.first as usize..(a.first + a.len) as usize],
+                        );
+                    }
+                    b.first = start;
+                    b.len = flat.len() as u32 - start;
+                }
+                next = rebased;
+                order = flat;
+            }
             // Reorder the level below so each new node's children are a range of it.
             if z == MAX_LEVEL {
                 leaves = order.iter().map(|&j| leaves[j as usize]).collect();
@@ -400,6 +428,20 @@ mod tests {
             c.levels[MAX_LEVEL].len() > 1_900,
             "street level splits nearly all"
         );
+    }
+
+    #[test]
+    fn no_two_markers_overlap_at_any_level() {
+        let c = Clusters::build(sample());
+        for (z, nodes) in c.levels.iter().enumerate() {
+            let scale = 256.0 * 2f64.powi(z as i32);
+            for (i, a) in nodes.iter().enumerate() {
+                for b in &nodes[i + 1..] {
+                    let d = ((a.x - b.x) * scale).hypot((a.y - b.y) * scale);
+                    assert!(d > RADIUS, "level {z}: two markers {d:.0} px apart");
+                }
+            }
+        }
     }
 
     #[test]
