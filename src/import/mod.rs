@@ -41,7 +41,7 @@ pub enum Progress {
 }
 
 /// What an import did, for the summary ("812 imported, 37 without a location").
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Summary {
     pub photos: usize,
     pub new: usize,
@@ -59,6 +59,37 @@ pub struct Summary {
     pub without_position: usize,
     pub unreadable_folders: usize,
     pub cancelled: bool,
+    /// The area covered by the positions written in this run ("Zoom to new photos").
+    pub bounds: Option<Bounds>,
+}
+
+/// A latitude/longitude box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bounds {
+    pub min_lat: f64,
+    pub max_lat: f64,
+    pub min_lon: f64,
+    pub max_lon: f64,
+}
+
+impl Bounds {
+    pub fn around(lat: f64, lon: f64) -> Self {
+        Self {
+            min_lat: lat,
+            max_lat: lat,
+            min_lon: lon,
+            max_lon: lon,
+        }
+    }
+
+    pub fn include(self, lat: f64, lon: f64) -> Self {
+        Self {
+            min_lat: self.min_lat.min(lat),
+            max_lat: self.max_lat.max(lat),
+            min_lon: self.min_lon.min(lon),
+            max_lon: self.max_lon.max(lon),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -253,6 +284,12 @@ fn write_batch(
         }
         summary.failed += record.read_error.is_some() as usize;
         summary.without_position += record.lat.is_none() as usize;
+        if let (Some(lat), Some(lon)) = (record.lat, record.lon) {
+            summary.bounds = Some(match summary.bounds {
+                Some(b) => b.include(lat, lon),
+                None => Bounds::around(lat, lon),
+            });
+        }
         library::write_photo(&tx, source_id, id, &record)?;
     }
     tx.commit()

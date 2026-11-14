@@ -5,69 +5,7 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
 use super::*;
-
-/// A minimal JPEG (SOI, APP1 EXIF, EOI) with a GPS position and capture date. Enough for the
-/// metadata readers; not a viewable image.
-fn jpeg_with_gps(lat: f64, lon: f64, date: &str) -> Vec<u8> {
-    let mut jpeg = vec![0xFF, 0xD8];
-    let tiff = tiff_with_gps(lat, lon, date);
-    jpeg.extend([0xFF, 0xE1]);
-    jpeg.extend(((tiff.len() + 8) as u16).to_be_bytes());
-    jpeg.extend(b"Exif\0\0");
-    jpeg.extend(tiff);
-    jpeg.extend([0xFF, 0xD9]);
-    jpeg
-}
-
-/// A little-endian TIFF structure: IFD0 → Exif IFD (DateTimeOriginal) and GPS IFD.
-fn tiff_with_gps(lat: f64, lon: f64, date: &str) -> Vec<u8> {
-    fn entry(out: &mut Vec<u8>, tag: u16, typ: u16, count: u32, value: u32) {
-        out.extend(tag.to_le_bytes());
-        out.extend(typ.to_le_bytes());
-        out.extend(count.to_le_bytes());
-        out.extend(value.to_le_bytes());
-    }
-    fn dms(v: f64) -> [(u32, u32); 3] {
-        let v = v.abs();
-        let d = v.floor();
-        let m = ((v - d) * 60.0).floor();
-        let s = ((v - d) * 60.0 - m) * 60.0;
-        [
-            (d as u32, 1),
-            (m as u32, 1),
-            ((s * 1000.0).round() as u32, 1000),
-        ]
-    }
-    // Layout: header 8 | IFD0 (2 entries) @8 | Exif IFD (1) @38 | GPS IFD (4) @56 | data @110
-    let (ifd0, exif, gps, data) = (8u32, 38u32, 56u32, 110u32);
-    let mut t = b"II*\0".to_vec();
-    t.extend(ifd0.to_le_bytes());
-    t.extend(2u16.to_le_bytes());
-    entry(&mut t, 0x8769, 4, 1, exif);
-    entry(&mut t, 0x8825, 4, 1, gps);
-    t.extend(0u32.to_le_bytes());
-    assert_eq!(t.len() as u32, exif);
-    t.extend(1u16.to_le_bytes());
-    entry(&mut t, 0x9003, 2, 20, data); // DateTimeOriginal, 19 chars + NUL
-    t.extend(0u32.to_le_bytes());
-    assert_eq!(t.len() as u32, gps);
-    t.extend(4u16.to_le_bytes());
-    let ns = if lat < 0.0 { b'S' } else { b'N' };
-    let ew = if lon < 0.0 { b'W' } else { b'E' };
-    entry(&mut t, 1, 2, 2, u32::from_le_bytes([ns, 0, 0, 0]));
-    entry(&mut t, 2, 5, 3, data + 20);
-    entry(&mut t, 3, 2, 2, u32::from_le_bytes([ew, 0, 0, 0]));
-    entry(&mut t, 4, 5, 3, data + 44);
-    t.extend(0u32.to_le_bytes());
-    assert_eq!(t.len() as u32, data);
-    t.extend(date.as_bytes());
-    t.push(0);
-    for (n, d) in dms(lat).into_iter().chain(dms(lon)) {
-        t.extend(n.to_le_bytes());
-        t.extend(d.to_le_bytes());
-    }
-    t
-}
+use crate::demo::{jpeg_with_gps, tiff_with_gps};
 
 const XMP_GPS: &str = r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
 <rdf:Description xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="48,8.4N" exif:GPSLongitude="2,21E"/>

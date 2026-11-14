@@ -116,18 +116,18 @@ pub fn read_image_from(mut file: File) -> Result<Metadata, ReadError> {
 fn read_jpeg(mut file: File, start: u64) -> Result<Metadata, ReadError> {
     let mut pos = start + 2;
     for _ in 0..64 {
-        let mut hdr = [0u8; 4];
+        // The marker first: the end-of-image marker has no length after it.
+        let mut marker = [0u8; 2];
         file.seek(SeekFrom::Start(pos))
-            .and_then(|_| file.read_exact(&mut hdr))
+            .and_then(|_| file.read_exact(&mut marker))
             .map_err(io)?;
-        if hdr[0] != 0xFF {
-            break;
+        if marker[0] != 0xFF || marker[1] == 0xDA || marker[1] == 0xD9 {
+            break; // not a segment, or the image data starts: no EXIF before it
         }
-        let marker = hdr[1];
-        let len = u16::from_be_bytes([hdr[2], hdr[3]]) as u64;
-        if marker == 0xDA || marker == 0xD9 {
-            break; // start of image data: no EXIF before it
-        }
+        let marker = marker[1];
+        let mut len = [0u8; 2];
+        file.read_exact(&mut len).map_err(io)?;
+        let len = u16::from_be_bytes(len) as u64;
         if marker == 0xE1 {
             let mut id = [0u8; 6];
             file.read_exact(&mut id).map_err(io)?;

@@ -2,7 +2,9 @@
 //! and the dev probes in `examples/` all use it.
 
 pub mod app;
+pub mod demo;
 pub mod import;
+pub mod jobs;
 pub mod library;
 pub mod metadata;
 pub mod paths;
