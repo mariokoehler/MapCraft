@@ -38,8 +38,9 @@ but the app isn't sold or advertised (user, 2026-11-14).
   online for v1 (§3.5(b)); licence MIT OR Apache-2.0 (§1.3). The user's library is surveyed
   (§2.8).
 - M0 is done (2026-11-14): the spikes (results in `design.md` §2.2(b), §2.6, §3.6(c)), and GPS
-  comes from EXIF and XMP only in v1 (§2.8(g)). Next: M1, starting with the design system canvas
-  in Claude Design and then the main window's mockup (§3.9).
+  comes from EXIF and XMP only in v1 (§2.8(g)). The design system and the main
+  window's mockup exist (§3.9). Next: the user's review of the mockup, then M1 (the Cargo
+  project, the `theme` module from the tokens, a window with the map).
 - **The user's real photo library is read-only to us.** Never write, rename or create sidecars
   there. Its path stays out of the repo (it's in Claude's local memory).
 
@@ -63,11 +64,13 @@ but the app isn't sold or advertised (user, 2026-11-14).
   source and dated in `design.md`, as **(verified YYYY-MM-DD)** with the URL. Quotas and terms
   change, so re-check before relying on an old one.
 - **Screens and the look: Claude Design** (user, 2026-11-14; `design.md` §3.9).
-  - For a new screen, a new component or a bigger layout change, Claude writes a self-contained
-    Claude Design prompt in a copyable code block. It covers purpose, content, states, existing
-    tokens and components to reuse, and the egui constraints.
-  - The user pastes it into Claude Design. Claude then opens the resulting canvas itself (the
-    Artifact tool's `list`, canvases named `MapCraft — <screen>`) and builds from it.
+  - For a new screen, a new component or a bigger layout change, Claude makes the mockup itself:
+    a Design canvas named `MapCraft — <screen>`, built on the design system
+    `MapCraft — Design system` (find both with the Artifact tool's `list`). The user reviews and
+    comments there; then Claude builds from it.
+  - The design system serves `tokens.json` and `components/bundle.css` but no `tokens.css`, so a
+    canvas carries its own generated `ds/mapcraft/tokens.css` (dark on `:root`, light under
+    `.theme-light`). Regenerate it when the tokens change.
   - Small changes go straight into code.
   - Keep the egui `theme` module in lockstep with the design system whenever a canvas adds or
     changes a token.

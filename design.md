@@ -574,14 +574,18 @@ scratch library and a scratch settings folder):
 ### 3.9 Visual design
 
 The look and the structure of the screens are designed in **Claude Design** (user, 2026-11-14).
-- Claude writes a prompt for a screen or component, and the user pastes it into Claude Design.
-- The mockup lands on a canvas Claude can open directly (the Artifact tool lists them).
-- Claude then builds it in egui.
+- **Claude makes the mockups itself**, as Claude Design canvases named `MapCraft — <screen>`,
+  built from the design system's tokens and component styles (user, 2026-11-14). The user reviews
+  them and comments on the canvas.
+- Claude then builds the screen in egui from the canvas.
 - Mockups are for the first layout, new screens and bigger changes. Small tweaks go straight into
   code.
+- Canvases so far: `MapCraft — Main window`, with six states: browsing, a photo selected from a
+  group strip, search, an import running, a source offline, and an empty library. Each has a
+  dark/light switch.
 
-**A design system of MapCraft's own comes first** (user, 2026-11-14), as its own Claude Design
-canvas (`MapCraft — Design system`), before any screen mockup. It holds:
+**A design system of MapCraft's own** (user, 2026-11-14) is its own canvas,
+`MapCraft — Design system` (done 2026-11-14; the user made it in Claude Design). It holds:
 - colour tokens for dark and light, the type scale, spacing, radii and strokes;
 - the generic controls, the panels and overlays, and the map's own objects (markers, group
   badges, attribution).
