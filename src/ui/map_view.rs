@@ -71,6 +71,8 @@ pub struct MapView {
     last_rect: Rect,
     /// Keyboard shortcuts are live this frame.
     keys: bool,
+    /// Filters are set: the points are the photos they show.
+    filtered: bool,
 }
 
 impl MapView {
@@ -104,7 +106,13 @@ impl MapView {
             hovered: None,
             last_rect: Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 760.0)),
             keys: true,
+            filtered: false,
         }
+    }
+
+    /// Whether filters narrow the points (the zoom-to-all control says so).
+    pub fn set_filtered(&mut self, filtered: bool) {
+        self.filtered = filtered;
     }
 
     pub fn set_points(&mut self, points: Vec<PhotoPoint>) {
@@ -415,10 +423,11 @@ impl MapView {
                         let _ = self.memory.zoom_out();
                     }
                     ui.separator();
-                    let hint = if all.is_some() {
-                        "Zoom to all photos (F)"
-                    } else {
-                        "Zoom to all photos: no photos on the map yet"
+                    let hint = match (all.is_some(), self.filtered) {
+                        (true, false) => "Zoom to all photos (F)",
+                        (true, true) => "Zoom to all photos shown (F)",
+                        (false, false) => "Zoom to all photos: no photos on the map yet",
+                        (false, true) => "Zoom to all photos shown: the filters hide them all",
                     };
                     let fit = control(ui, p, Icon::Scan, hint, all.is_some()).clicked()
                         || (all.is_some()

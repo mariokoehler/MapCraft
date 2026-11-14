@@ -28,7 +28,7 @@ but the app isn't sold or advertised (user, 2026-11-14).
 
 ## Current status (2026-11-14)
 
-**M5 in progress: search is built; the filter mockup awaits the user's review.**
+**M5 built: search (tried by the user) and filters (awaiting the user's try).**
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
   copies.
@@ -64,6 +64,8 @@ but the app isn't sold or advertised (user, 2026-11-14).
   group markers and the strip (`src/ui/strip.rs`).
 - Search: the offline place index from GeoNames (`src/places.rs`), the search thread
   (`src/search.rs`) and the field with its dropdown (`src/ui/search.rs`).
+- Filters: one SQL condition for map, counts and search (`src/filter.rs`), the panel, chips and
+  no-match card (`src/ui/filters.rs`).
 
 ## How we work
 
@@ -156,9 +158,10 @@ committed):
   build and pipe its output (`cmd /c "… 2>&1"`): the release exe is a GUI-subsystem app and
   prints nothing to a console otherwise.
 - More dev flags:
-  - `--open add-folder[=<folder>]`, `--open sources`, `--open details`, `--open strip` or
-    `--open search=<text>` starts with that dialog open, the first photo selected, the first
-    strip open, or the text searched (for comparing with the mockups);
+  - `--open add-folder[=<folder>]`, `--open sources`, `--open details`, `--open strip`,
+    `--open filters[=<year>]` or `--open search=<text>` starts with that dialog open, the first
+    photo selected, the first strip open, the filter panel open (or only that year shown), or
+    the text searched (for comparing with the mockups);
   - `--perf` logs the frame time every 3 s;
   - `--make-demo <folder> [n]` writes generated photos;
   - `--fill-library <scratch data> <n>` writes synthetic rows.
@@ -194,6 +197,8 @@ committed):
   area. A screen copy picks up whatever covers the window; it once captured the user's other
   work (2026-11-14). The capture script is in the scratchpad (`scripts\shot.ps1`), and every
   capture is deleted after use.
+- Library queries that take a filter use named parameters (`:name`, `query_named`): the
+  filter's condition adds its own, so positional `?1` would collide.
 - Pitfall: a backslash in SQL inside a Rust string needs `\\` (`ESCAPE '\\'`); `'\'` is just
   a quote. Edit it with the Edit tool: shell and Python quoting layers eat it.
 - Pitfall: the borrow checker forbids two closures holding `&mut self` at once, for example a

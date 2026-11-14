@@ -4,6 +4,7 @@
 pub mod app;
 pub mod cluster;
 pub mod demo;
+pub mod filter;
 pub mod import;
 pub mod jobs;
 pub mod launch;

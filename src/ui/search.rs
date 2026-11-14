@@ -13,6 +13,7 @@ use egui::{
     text::{LayoutJob, TextFormat},
 };
 
+use crate::filter::Filter;
 use crate::import::Bounds;
 use crate::places;
 use crate::search::{PhotoHit, Results, Searcher};
@@ -85,6 +86,9 @@ pub struct SearchBox {
     /// Download requests, when `network` is off (for the tests).
     pub download_asked: usize,
     ctx: egui::Context,
+    /// Search looks only at the photos the filter shows; each change is a new generation.
+    filter: Filter,
+    generation: u64,
 }
 
 impl SearchBox {
@@ -102,6 +106,8 @@ impl SearchBox {
             download: None,
             download_asked: 0,
             ctx,
+            filter: Filter::default(),
+            generation: 0,
         }
     }
 
@@ -111,7 +117,25 @@ impl SearchBox {
 
     /// The results for the text as typed now (older answers are ignored).
     fn current(&self) -> Option<&Results> {
-        self.results.as_ref().filter(|r| r.text == self.text)
+        self.results
+            .as_ref()
+            .filter(|r| r.text == self.text && r.generation == self.generation)
+    }
+
+    fn ask(&self) {
+        self.searcher.ask(&self.text, &self.filter, self.generation);
+    }
+
+    /// Search only the photos `filter` shows; what's typed is asked again.
+    pub fn set_filter(&mut self, filter: &Filter) {
+        if *filter == self.filter {
+            return;
+        }
+        self.filter = filter.clone();
+        self.generation += 1;
+        if !self.text.trim().is_empty() {
+            self.ask();
+        }
     }
 
     /// The field, in the top bar.
@@ -163,7 +187,7 @@ impl SearchBox {
                     if r.changed() {
                         self.open = self.text.trim().chars().count() >= 2;
                         self.cursor = 0;
-                        self.searcher.ask(&self.text);
+                        self.ask();
                     }
                     if r.gained_focus() && self.text.trim().chars().count() >= 2 {
                         self.open = true;
@@ -416,7 +440,7 @@ impl SearchBox {
         self.text = text.to_owned();
         self.open = true;
         self.cursor = 0;
-        self.searcher.ask(text);
+        self.ask();
         self.ctx
             .memory_mut(|m| m.request_focus(egui::Id::unique("search-field")));
     }
@@ -466,7 +490,7 @@ impl SearchBox {
                 tracing::info!("place index built: {n} places");
                 self.download = None;
                 self.searcher.reopen_places();
-                self.searcher.ask(&self.text);
+                self.ask();
             }
             Ok(Err(e)) => {
                 tracing::warn!("place names download failed: {e}");

@@ -27,13 +27,18 @@ fn main() -> eframe::Result {
             .position(|a| a == name)
             .and_then(|i| args.get(i + 1))
     };
-    // `--open add-folder[=<folder>]`, `--open sources`, `--open details`, `--open strip` or
-    // `--open search=<text>`: start with that dialog, the first photo selected, the first strip
-    // open, or the text searched (screenshots).
+    // `--open add-folder[=<folder>]`, `--open sources`, `--open details`, `--open strip`,
+    // `--open filters[=<year>]` or `--open search=<text>`: start with that dialog, the first
+    // photo selected, the first strip open, a year's photos only, or the text searched
+    // (screenshots).
     let open = match flag("--open").map(String::as_str) {
         Some("sources") => Some(app::StartDialog::Sources),
         Some("details") => Some(app::StartDialog::Details),
         Some("strip") => Some(app::StartDialog::Strip),
+        Some("filters") => Some(app::StartDialog::Filters(None)),
+        Some(s) if s.starts_with("filters=") => {
+            Some(app::StartDialog::Filters(s[8..].parse().ok()))
+        }
         Some(s) if s.starts_with("search=") => Some(app::StartDialog::Search(s[7..].to_owned())),
         Some(o) if o.starts_with("add-folder") => Some(app::StartDialog::AddFolder(
             o.strip_prefix("add-folder=").map(std::path::PathBuf::from),

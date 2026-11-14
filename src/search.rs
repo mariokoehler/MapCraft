@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 
+use crate::filter::Filter;
 use crate::import::Bounds;
 use crate::library::{FoundPhoto, FoundSet, Library};
 use crate::places::{Place, Places};
@@ -33,6 +34,8 @@ pub enum PhotoHit {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Results {
     pub text: String,
+    /// The filter generation it was answered for (a filter change makes older answers stale).
+    pub generation: u64,
     pub places: Vec<PlaceHit>,
     /// The place index isn't there (not downloaded yet).
     pub no_places: bool,
@@ -83,11 +86,12 @@ pub fn period(text: &str) -> Option<String> {
     ok.then(|| t.to_owned())
 }
 
-/// Answers one query from `lib` and `places`.
-pub fn answer(lib: &Library, places: Option<&Places>, text: &str) -> Results {
+/// Answers one query from `lib` and `places`, about the photos `filter` shows.
+pub fn answer(lib: &Library, places: Option<&Places>, text: &str, filter: &Filter) -> Results {
     let t = text.trim();
     let mut out = Results {
         text: text.to_owned(),
+        generation: 0,
         places: Vec::new(),
         no_places: places.is_none(),
         photos: Vec::new(),
@@ -101,7 +105,7 @@ pub fn answer(lib: &Library, places: Option<&Places>, text: &str) -> Results {
             .into_iter()
             .map(|place| {
                 let b = around(place.lat, place.lon, near_km(place.population));
-                let photos = lib.count_in(b).unwrap_or(0);
+                let photos = lib.count_in(b, filter).unwrap_or(0);
                 PlaceHit {
                     place,
                     photos,
@@ -122,24 +126,28 @@ pub fn answer(lib: &Library, places: Option<&Places>, text: &str) -> Results {
         out.places = hits;
     }
     if let Some(p) = period(t)
-        && let Ok(sets) = lib.search_period(&p)
+        && let Ok(sets) = lib.search_period(&p, filter)
     {
         out.photos.extend(sets.into_iter().map(PhotoHit::Period));
     }
-    if let Ok(sets) = lib.search_folders(t, 2) {
+    if let Ok(sets) = lib.search_folders(t, 2, filter) {
         out.photos.extend(sets.into_iter().map(PhotoHit::Folder));
     }
-    if let Ok(sets) = lib.search_cameras(t, 1) {
+    if let Ok(sets) = lib.search_cameras(t, 1, filter) {
         out.photos.extend(sets.into_iter().map(PhotoHit::Camera));
     }
-    if let Ok(files) = lib.search_files(t, 3) {
+    if let Ok(files) = lib.search_files(t, 3, filter) {
         out.photos.extend(files.into_iter().map(PhotoHit::File));
     }
     out
 }
 
 enum Request {
-    Query(String),
+    Query {
+        text: String,
+        filter: Filter,
+        generation: u64,
+    },
     /// The place index appeared (downloaded): open it.
     Reopen,
 }
@@ -161,8 +169,13 @@ impl Searcher {
         Self { requests, results }
     }
 
-    pub fn ask(&self, text: &str) {
-        let _ = self.requests.send(Request::Query(text.to_owned()));
+    /// Asks for `text` among the photos `filter` shows; the answer carries `generation`.
+    pub fn ask(&self, text: &str, filter: &Filter, generation: u64) {
+        let _ = self.requests.send(Request::Query {
+            text: text.to_owned(),
+            filter: filter.clone(),
+            generation,
+        });
     }
 
     /// The place index was (re)built.
@@ -186,15 +199,22 @@ fn run(db: &Path, places: &Path, rx: Receiver<Request>, tx: Sender<Results>, ctx
         let mut query = None;
         for r in std::iter::once(first).chain(rx.try_iter()) {
             match r {
-                Request::Query(q) => query = Some(q),
+                Request::Query {
+                    text,
+                    filter,
+                    generation,
+                } => query = Some((text, filter, generation)),
                 Request::Reopen => index = Places::open(places),
             }
         }
-        let Some(q) = query else { continue };
+        let Some((q, filter, generation)) = query else {
+            continue;
+        };
         let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self::answer(&lib, index.as_ref(), &q)
+            self::answer(&lib, index.as_ref(), &q, &filter)
         }));
-        let Ok(a) = answer else { continue };
+        let Ok(mut a) = answer else { continue };
+        a.generation = generation;
         if tx.send(a).is_err() {
             break;
         }
@@ -245,7 +265,7 @@ mod tests {
         crate::import::run(&mut lib, src, &Default::default(), 2, |_| {}).unwrap();
         let places = Places::open(&crate::places::tests::index(dir.path())).unwrap();
 
-        let r = answer(&lib, Some(&places), "hamb");
+        let r = answer(&lib, Some(&places), "hamb", &Filter::default());
         assert_eq!(r.places[0].place.name, "Hamburg");
         assert!(r.places[0].photos > 0, "the demo photos around Hamburg");
         assert_eq!(r.places[0].place.country, "Germany");
@@ -261,9 +281,9 @@ mod tests {
             |h| matches!(h, PhotoHit::Folder(f) if f.label == "2023-05-19_Hamburg" && f.photos == 4)
         ));
         // Periods and file names.
-        let r = answer(&lib, Some(&places), "2023-05");
+        let r = answer(&lib, Some(&places), "2023-05", &Filter::default());
         assert!(matches!(&r.photos[0], PhotoHit::Period(p) if p.photos == 4));
-        let r = answer(&lib, None, "img_0000");
+        let r = answer(&lib, None, "img_0000", &Filter::default());
         assert!(r.no_places && r.places.is_empty());
         let files: Vec<&str> = r
             .photos
@@ -276,12 +296,60 @@ mod tests {
         assert_eq!(files.len(), 3);
         assert!(files.iter().all(|f| f.starts_with("IMG_0000")));
         // Wildcards are text.
-        assert!(answer(&lib, None, "%").photos.is_empty());
         assert!(
-            answer(&lib, None, "IMG_")
+            answer(&lib, None, "%", &Filter::default())
+                .photos
+                .is_empty()
+        );
+        assert!(
+            answer(&lib, None, "IMG_", &Filter::default())
                 .photos
                 .iter()
                 .all(|h| !matches!(h, PhotoHit::Folder(_)))
         );
+        // Filters narrow the positions, the place counts and every kind of photo result.
+        let facets = lib.facets().unwrap();
+        // Every eighth demo photo (the Barcelona trip) has no position.
+        assert_eq!(facets.months.len(), 7, "one month per trip");
+        assert_eq!(facets.years(), [2024, 2023, 2022, 2021, 2020, 2019]);
+        assert_eq!(facets.cameras.len(), 3);
+        assert_eq!(facets.sources[&src], 28);
+        assert_eq!(lib.positions().unwrap().len(), 28);
+        let year_2023 = Filter {
+            dates: Some((202301, 202312)),
+            ..Filter::default()
+        };
+        assert_eq!(lib.positions_shown(&year_2023).unwrap().len(), 8);
+        let r = answer(&lib, Some(&places), "hamb", &year_2023);
+        assert!(r.places[0].photos > 0, "Hamburg's photos are from 2023");
+        let year_2019 = Filter {
+            dates: Some((201901, 201912)),
+            ..Filter::default()
+        };
+        let r = answer(&lib, Some(&places), "hamb", &year_2019);
+        assert!(r.places.iter().all(|h| h.photos == 0));
+        assert!(r.photos.is_empty(), "no folder of 2023 in 2019");
+        assert!(answer(&lib, None, "2023-05", &year_2019).photos.is_empty());
+        let mut no_canon = Filter::default();
+        no_canon.hidden_cameras.insert(crate::filter::camera_key(
+            Some("Canon"),
+            Some("Canon EOS R5"),
+        ));
+        assert!(
+            answer(&lib, None, "canon", &Filter::default())
+                .photos
+                .iter()
+                .any(|h| matches!(h, PhotoHit::Camera(_)))
+        );
+        assert!(
+            !answer(&lib, None, "canon", &no_canon)
+                .photos
+                .iter()
+                .any(|h| matches!(h, PhotoHit::Camera(_)))
+        );
+        let mut no_source = Filter::default();
+        no_source.hidden_sources.insert(src);
+        assert!(lib.positions_shown(&no_source).unwrap().is_empty());
+        assert!(answer(&lib, None, "img_0000", &no_source).photos.is_empty());
     }
 }

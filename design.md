@@ -251,8 +251,35 @@ with a position; read-only over SMB):
   Clicking zooms to the group's extent. If a group can't split any further (photos taken at the
   same spot), clicking opens a strip of its photos instead **(user, 2026-11-14)**.
 - **Selection** is shared between the map and the detail panel **(user, 2026-11-14)**.
-- **Filters** (date range, source, camera) narrow what the map shows **(unconfirmed for v1; maybe
-  M5)**.
+- **Filters** (built in M5 from the canvas `MapCraft — Filters`, reviewed 2026-11-14): a date
+  range, sources and cameras narrow what the map shows. Hidden photos also leave the groups, the
+  counts and search.
+  - **The panel:** the Filters button beside search opens it; a badge counts the filters set.
+    - The date has a histogram of photos per month and a two-handle range. The range applies
+      when a handle is released. Spans longer than 96 months put several months in one bar.
+    - Quick buttons: "Any time", the 4 newest years, and "Earlier…" for the rest.
+    - Sources (shown with 2 or more) and cameras are checklists with counts. The 6 most used
+      cameras show first, then "Show all N cameras".
+    - Cameras whose make and model read the same are one entry ("Unknown camera" for none).
+    - The footer says "N of M photos on the map" and has Clear all.
+    - Esc or a click elsewhere closes it, and Esc closes it before the strip and the selection.
+  - **Active filters:** chips over the map's top left, each removable, plus Clear all. Each chip
+    names what's left: "May 2019 – Aug 2023", "All cameras but Apple iPhone 13 mini", "2 of 5
+    cameras". The top bar says "N of M photos shown", where M counts the photos on the map (not
+    those without a position).
+  - **Nothing matches:** a card offers "Clear all filters" or "Change filters…".
+  - **One rule:** one SQL condition (`src/filter.rs`) serves the map, the counts, the place
+    counts and every search query. Camera names are bound as parameters.
+  - **Speed:** a filter change re-reads the positions and the panel's counts on the UI thread:
+    about 150 ms for 100,000 synthetic photos (release build, 2026-11-14). That needed `+lat`
+    in the queries over all photos: through the partial position index they took 8 times
+    longer, which also slowed the map's refresh during imports.
+  - **Unconfirmed:**
+    - Filters last for the session only; they aren't saved and never logged.
+    - A date range hides undated photos; the panel says how many.
+    - Sources and cameras are stored as what's hidden, so one added later shows.
+    - The checklist counts don't change with the other filters.
+    - A selected photo the filters hide is let go (the panel closes).
 
 ### 2.4 Grouping (clustering)
 
@@ -351,8 +378,8 @@ One search box with two kinds of results **(user, 2026-11-14)**:
 - **Actions:**
   - A place centres the map at a zoom for its size (11 for a city of a million, 14 for a
     village).
-  - A folder, period or camera fits the map to its photos. That overlaps the filters, so it may
-    change after the filter review.
+  - A folder, period or camera fits the map to its photos. Search looks only at the photos the
+    filters show (unconfirmed).
   - A file centres on its photo and selects it; it may sit inside a group, which is then marked
     as selected.
 - **Keys and privacy:**
@@ -913,8 +940,9 @@ Unconfirmed defaults awaiting review:
   - ranking by photos nearby, the radius by population, the weights;
   - the photo rows and what they do;
   - no online search yet.
-- Filters (M5): the proposal on the canvas `MapCraft — Filters`, awaiting review.
-- §2.3: filters in M5 rather than v1.
+- §2.3 filters (M5): session only; undated photos hidden by a date range; hidden sources and
+  cameras stored as exclusions; static checklist counts; 6 cameras then Show all; 4 year buttons
+  then Earlier…; a hidden selection is let go; search follows the filters.
 - §3.2: the planned crates.
 - §2.8(f): the tree starts all ticked; leaving a folder out later removes its records; a folder
   that is, lies inside, or contains an existing source can't be added (it would duplicate
@@ -972,11 +1000,13 @@ Milestones are rough and get refined as we go.
   badges, click to zoom, the strip for photos at one spot.
   - Checked by unit tests (counts kept at every level, nesting, order independence, same-spot
     groups, the representative), headless UI tests, and window captures on generated photos.
-- **M5 — Search & filters** (in progress): GeoNames place search, photo search, date and source
+- **M5 — Search & filters** (built 2026-11-14): GeoNames place search, photo search, date and source
   filters.
-  - Done 2026-11-14: search, both places and photos (§2.5), per the approved mockup.
-  - Filters: a mockup (canvas `MapCraft — Filters`) awaits the user's review; they're built
-    after it.
+  - Done 2026-11-14: search, both places and photos (§2.5), per the approved mockup; tried by
+    the user.
+  - Done 2026-11-14: filters (date, sources, cameras; §2.3) per the canvas `MapCraft — Filters`.
+    Checked by unit tests (the SQL condition, months, camera merging), headless UI tests, and
+    window captures on generated photos.
 - **M6 — Companion links & providers:** Open in PhotoCraft, Show in Explorer, Open in LightCraft
   if M0's spike found a way; the keyed provider and PMTiles offline.
 - **M7 — Packaging:** an installer or a portable zip, an icon, the GitHub repo and CI.

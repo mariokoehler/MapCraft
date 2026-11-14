@@ -58,6 +58,7 @@ icons! {
     Sliders => "sliders-horizontal",
     MapPin => "map-pin",
     Download => "download",
+    Filter => "list-filter",
 }
 
 impl Icon {

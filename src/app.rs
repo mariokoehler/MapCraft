@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use egui::{Frame, Panel, RichText, Stroke};
 use tracing::{error, info};
 
+use crate::filter::{Facets, Filter};
 use crate::import::scope::Scope;
 use crate::jobs::{ImportJob, JobEvent, ThumbEvent, ThumbJob};
 use crate::launch::{self, Launch};
@@ -19,12 +20,13 @@ use crate::library::{Counts, Library, PhotoDetail, Source};
 use crate::provider::Provider;
 use crate::theme::{self, Palette, ThemeKind, Tokens};
 use crate::ui::details::{self, DetailPanel, PanelAction, PreviewFace, Previews};
+use crate::ui::filters::{self, FilterPanel, FiltersAction};
 use crate::ui::folder_dialog::{FolderAction, FolderDialog};
 use crate::ui::map_view::{MapAction, MapView};
 use crate::ui::search::{SearchAction, SearchBox};
 use crate::ui::sources_dialog::{SourcesAction, SourcesDialog};
 use crate::ui::toasts::{self, ToastAction, Toasts};
-use crate::ui::top_bar::{self, Running, Task, TopBarAction};
+use crate::ui::top_bar::{self, BarFilters, Running, Task, TopBarAction};
 use crate::ui::widgets::{self, thousands};
 
 /// Parallel metadata readers per import (design.md §3.4, user-confirmed).
@@ -46,6 +48,8 @@ pub enum StartDialog {
     Strip,
     /// This text typed into the search field.
     Search(String),
+    /// The filter panel open, or (with a year) that year's photos shown, the panel closed.
+    Filters(Option<u32>),
 }
 
 pub struct Config {
@@ -111,6 +115,12 @@ pub struct MapCraftApp {
     launched: Vec<(Launch, i64)>,
     launch_errors: (Sender<String>, Receiver<String>),
     search: SearchBox,
+    /// The filters (session only, design.md §2.3) and what the panel offers.
+    filter: Filter,
+    facets: Facets,
+    filters: FilterPanel,
+    /// Photos on the map the filter shows.
+    shown: usize,
 }
 
 impl MapCraftApp {
@@ -169,6 +179,10 @@ impl MapCraftApp {
                 config.network,
                 ctx.clone(),
             ),
+            filter: Filter::default(),
+            facets: Facets::default(),
+            filters: FilterPanel::default(),
+            shown: 0,
         };
         app.refresh();
         // Thumbnails left over from the last session (or never made) are made now.
@@ -198,6 +212,11 @@ impl MapCraftApp {
             }
             Some(StartDialog::Strip) => app.map.open_first_strip(),
             Some(StartDialog::Search(text)) => app.search.type_in(&text),
+            Some(StartDialog::Filters(None)) => app.filters.open = true,
+            Some(StartDialog::Filters(Some(year))) => {
+                app.filter.dates = Some((year * 100 + 1, year * 100 + 12));
+                app.filter_changed();
+            }
             None => {}
         }
         app
@@ -211,15 +230,30 @@ impl MapCraftApp {
                 lib.sources()?,
                 lib.source_counts()?,
                 lib.counts()?,
-                lib.positions()?,
+                lib.facets()?,
             ))
         })();
         match loaded {
-            Ok((sources, per_source, counts, points)) => {
+            Ok((sources, per_source, counts, facets)) => {
+                // A removed source's id may come back for a new one: forget it.
+                let before = self.filter.clone();
+                self.filter
+                    .prune_sources(|id| sources.iter().any(|s| s.id == id));
+                if self.filter != before {
+                    self.search.set_filter(&self.filter);
+                }
                 self.sources = sources;
                 self.source_counts = per_source;
                 self.counts = counts;
-                self.map.set_points(points);
+                self.facets = facets;
+                match lib.positions_shown(&self.filter) {
+                    Ok(points) => {
+                        self.shown = points.len();
+                        self.map.set_filtered(self.filter.is_active());
+                        self.map.set_points(points);
+                    }
+                    Err(e) => error!("can't read the positions: {e}"),
+                }
             }
             Err(e) => error!("can't read the library: {e}"),
         }
@@ -233,10 +267,17 @@ impl MapCraftApp {
             }
             if fresh.is_none() {
                 self.map.select(None);
+                self.panel_open = false;
             }
             self.detail = fresh;
         }
         self.last_reload = Instant::now();
+    }
+
+    /// The filter changed: the map, the counts and search follow it.
+    fn filter_changed(&mut self) {
+        self.search.set_filter(&self.filter);
+        self.refresh();
     }
 
     /// Selects a photo (`None`: nothing) and opens the panel for it.
@@ -584,7 +625,12 @@ impl MapCraftApp {
             .exact_size(p.size_topbar)
             .frame(Frame::NONE.fill(p.bg_panel))
             .show(ui, |ui| {
-                bar_action = top_bar::show(ui, &p, counts, running, &mut self.search)
+                let filters = BarFilters {
+                    panel: &mut self.filters,
+                    active: self.filter.active_count(),
+                    shown: self.filter.is_active().then_some(self.shown),
+                };
+                bar_action = top_bar::show(ui, &p, counts, running, &mut self.search, filters)
             });
         let r = bar.response.rect;
         ui.painter().hline(
@@ -604,7 +650,20 @@ impl MapCraftApp {
                     t.cancel();
                 }
             }
+            Some(TopBarAction::Filters) => self.search.close(),
             None => {}
+        }
+        // The filter panel takes Esc first while open, before the strip and the selection.
+        if self.filters.panel(
+            &ctx,
+            &p,
+            &mut self.filter,
+            &self.facets,
+            &self.sources,
+            self.shown,
+            self.counts.with_position.max(0) as usize,
+        ) {
+            self.filter_changed();
         }
 
         while let Ok(msg) = self.launch_errors.1.try_recv() {
@@ -705,6 +764,33 @@ impl MapCraftApp {
                 }
             }
             _ => self.hover = None,
+        }
+        // The active filters over the map, and the card when they hide everything.
+        let on_map = self.counts.with_position.max(0) as usize;
+        let mut filter_action = filters::chips(
+            &ctx,
+            &p,
+            map_rect,
+            &mut self.filter,
+            &self.facets,
+            &self.sources,
+        );
+        if self.filter.is_active() && self.shown == 0 && on_map > 0 && !dialog_open {
+            filter_action = filter_action.or(filters::no_match(
+                &ctx,
+                &p,
+                map_rect,
+                &mut self.filter,
+                on_map,
+            ));
+        }
+        match filter_action {
+            Some(FiltersAction::Changed) => self.filter_changed(),
+            Some(FiltersAction::OpenPanel) => {
+                self.search.close();
+                self.filters.open = true;
+            }
+            None => {}
         }
         match self.search.dropdown(&ctx, &p) {
             Some(SearchAction::GoTo { lat, lon, zoom }) => self.map.go_to(lat, lon, zoom),
@@ -1117,6 +1203,99 @@ mod tests {
             h.query_by_label("Photo details").is_some()
         });
         assert!(!h.state().as_ref().unwrap().search.is_open());
+    }
+
+    #[test]
+    fn filters_narrow_the_map_and_say_so() {
+        let dir = tempfile::tempdir().unwrap();
+        // 24 demo photos, 21 on the map; trips by year, cameras taking turns.
+        imported(dir.path(), 24);
+        let mut h = harness(dir.path());
+        settled(&mut h);
+        let shown = |h: &Harness<'static, Option<MapCraftApp>>| h.state().as_ref().unwrap().shown;
+        let click_first = |h: &mut Harness<'static, Option<MapCraftApp>>, label: &str| {
+            // A checklist row is named twice (box and text): either toggles it.
+            h.query_all_by_label(label).next().unwrap().click();
+            h.run_steps(3);
+        };
+        h.get_by_label("Filters").click();
+        h.run_steps(3);
+        h.get_by_label("21 of 21 photos on the map");
+        h.get_by_label("From");
+        h.get_by_label("To");
+
+        // A year: the map, the counts and the chip follow.
+        h.get_by_label("2022").click();
+        h.run_steps(3);
+        assert_eq!(shown(&h), 3);
+        h.get_by_label_contains("3 of 21 photos shown");
+        assert!(h.query_all_by_label("Jan 2022 – Dec 2022").count() >= 1);
+        // Older years wait behind Earlier….
+        assert!(h.query_by_label("2019").is_none());
+        h.get_by_label("Earlier…").click();
+        h.run_steps(3);
+        h.get_by_label("2019");
+        step_until(&mut h, "the groups", |h| {
+            h.state().as_ref().unwrap().map.grouped()
+        });
+
+        // Cameras: hiding one names it on the chip.
+        click_first(&mut h, "Apple iPhone 13 mini");
+        assert_eq!(shown(&h), 2);
+        h.get_by_label("All cameras but Apple iPhone 13 mini");
+        h.get_by_label("Filters (2 set)");
+
+        // Esc closes the panel first.
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+        assert!(!h.state().as_ref().unwrap().filters.open);
+        assert!(h.query_by_label("21 of 21 photos on the map").is_none());
+
+        // Hiding every camera leaves nothing: the card offers to clear.
+        h.get_by_label("Filters (2 set)").click();
+        h.run_steps(3);
+        click_first(&mut h, "Canon EOS R5");
+        click_first(&mut h, "FUJIFILM X-T3");
+        assert_eq!(shown(&h), 0);
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        h.get_by_label("No photo matches the filters");
+        h.get_by_label("Clear all filters").click();
+        h.run_steps(3);
+        assert_eq!(shown(&h), 21);
+        assert!(!h.state().as_ref().unwrap().filter.is_active());
+        assert!(h.query_by_label("No photo matches the filters").is_none());
+        h.get_by_label("Filters");
+
+        // A chip's remove button takes its filter away.
+        h.get_by_label("Filters").click();
+        h.run_steps(3);
+        h.get_by_label("2021").click();
+        h.run_steps(3);
+        assert_eq!(shown(&h), 3);
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+        h.get_by_label("Remove the date filter").click();
+        h.run_steps(3);
+        assert_eq!(shown(&h), 21);
+    }
+
+    #[test]
+    fn a_selected_photo_the_filter_hides_is_let_go() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 16);
+        let mut h = harness_with(dir.path(), Some(StartDialog::Details));
+        step_until(&mut h, "the panel", |h| {
+            h.query_by_label("Photo details").is_some()
+        });
+        let app = h.state_mut().as_mut().unwrap();
+        // The first photo is from 2019: show 2020 only.
+        app.filter.dates = Some((202001, 202012));
+        app.filter_changed();
+        h.run_steps(3);
+        let app = h.state().as_ref().unwrap();
+        assert!(app.detail.is_none() && app.map.selected().is_none());
+        assert!(h.query_by_label("Photo details").is_none());
     }
 
     #[test]

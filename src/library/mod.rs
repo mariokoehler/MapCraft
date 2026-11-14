@@ -8,7 +8,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+
+use crate::filter::{self, Facets, Filter, Where};
 
 use crate::import::scope::Scope;
 
@@ -416,26 +419,39 @@ impl Library {
 
     /// Positions of every photo that has one and isn't missing.
     pub fn positions(&self) -> Result<Vec<PhotoPoint>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, lat, lon, thumb_state,
+        self.positions_shown(&Filter::default())
+    }
+
+    /// Positions of the photos on the map that `filter` shows.
+    ///
+    /// `+lat` (here and in every query over all photos on the map) keeps SQLite from using the
+    /// partial index `photo_position`: it would fetch each row through the index, 8 times slower
+    /// than reading the table when most photos match (100,000 photos: 580 ms vs. 75 ms).
+    pub fn positions_shown(&self, filter: &Filter) -> Result<Vec<PhotoPoint>> {
+        let w = filter.sql("");
+        self.query_named(
+            &format!(
+                "SELECT id, lat, lon, thumb_state,
                         coalesce(CAST(replace(replace(replace(substr(taken_at, 1, 19),
                             '-', ''), 'T', ''), ':', '') AS INTEGER), 0)
-                 FROM photo WHERE lat IS NOT NULL AND state = 'ok'",
-        )?;
-        stmt.query_map([], |r| {
-            Ok(PhotoPoint {
-                id: r.get(0)?,
-                lat: r.get(1)?,
-                lon: r.get(2)?,
-                thumb: match r.get_ref(3)?.as_str()? {
-                    THUMB_OK => Thumb::Ok,
-                    THUMB_FAILED => Thumb::Failed,
-                    _ => Thumb::Pending,
-                },
-                taken: r.get(4)?,
-            })
-        })?
-        .collect()
+                 FROM photo WHERE +lat IS NOT NULL AND state = 'ok'{}",
+                w.sql
+            ),
+            &w.params,
+            |r| {
+                Ok(PhotoPoint {
+                    id: r.get(0)?,
+                    lat: r.get(1)?,
+                    lon: r.get(2)?,
+                    thumb: match r.get_ref(3)?.as_str()? {
+                        THUMB_OK => Thumb::Ok,
+                        THUMB_FAILED => Thumb::Failed,
+                        _ => Thumb::Pending,
+                    },
+                    taken: r.get(4)?,
+                })
+            },
+        )
     }
 }
 
@@ -573,7 +589,7 @@ impl Library {
             "SELECT p.id, s.root_path, s.unc_path, p.rel_dir, p.original_name, p.preview_name,
                     p.orientation
              FROM photo p JOIN source s ON s.id = p.source_id
-             WHERE p.lat IS NOT NULL AND p.state = 'ok' AND p.thumb_state = 'none'
+             WHERE +p.lat IS NOT NULL AND p.state = 'ok' AND p.thumb_state = 'none'
              ORDER BY p.id",
         )?;
         stmt.query_map([], |r| {
@@ -595,7 +611,7 @@ impl Library {
         self.conn.query_row(
             "SELECT count(*) FILTER (WHERE thumb_state <> 'none'),
                     count(*) FILTER (WHERE thumb_state = 'none')
-             FROM photo WHERE lat IS NOT NULL AND state = 'ok'",
+             FROM photo WHERE +lat IS NOT NULL AND state = 'ok'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -662,57 +678,79 @@ impl Library {
             .optional()
     }
 
-    /// Folders whose path contains `text` (lower case), with how many photos on the map they
-    /// hold and where; the fullest first.
-    pub fn search_folders(&self, text: &str, limit: usize) -> Result<Vec<FoundSet>> {
+    /// Folders whose path contains `text` (lower case), with how many photos on the map (those
+    /// `filter` shows) they hold and where; the fullest first.
+    pub fn search_folders(
+        &self,
+        text: &str,
+        limit: usize,
+        filter: &Filter,
+    ) -> Result<Vec<FoundSet>> {
+        let w = filter.sql("p.");
         self.found_sets(
-            "SELECT s.id || char(31) || p.rel_dir, p.rel_dir, count(*),
-                    min(p.lat), min(p.lon), max(p.lat), max(p.lon)
-             FROM photo p JOIN source s ON s.id = p.source_id
-             WHERE p.lat IS NOT NULL AND p.state = 'ok' AND p.rel_dir <> ''
-               AND p.rel_dir_key LIKE ?1 ESCAPE '\\'
-             GROUP BY p.source_id, p.rel_dir_key ORDER BY count(*) DESC LIMIT ?2",
-            &like(text),
+            &format!(
+                "SELECT s.id || char(31) || p.rel_dir, p.rel_dir, count(*),
+                        min(p.lat), min(p.lon), max(p.lat), max(p.lon)
+                 FROM photo p JOIN source s ON s.id = p.source_id
+                 WHERE +p.lat IS NOT NULL AND p.state = 'ok' AND p.rel_dir <> ''
+                   AND p.rel_dir_key LIKE :text ESCAPE '\\'{}
+                 GROUP BY p.source_id, p.rel_dir_key ORDER BY count(*) DESC LIMIT :limit",
+                w.sql
+            ),
+            &w,
+            Value::Text(like(text)),
             limit,
         )
     }
 
     /// Photos on the map taken in a period: `2019`, `2019-08` or `2019-08-14`.
-    pub fn search_period(&self, period: &str) -> Result<Vec<FoundSet>> {
+    pub fn search_period(&self, period: &str, filter: &Filter) -> Result<Vec<FoundSet>> {
+        let w = filter.sql("");
         let sets = self.found_sets(
-            "SELECT ?1, ?1, count(*), min(lat), min(lon), max(lat), max(lon)
-             FROM photo WHERE lat IS NOT NULL AND state = 'ok' AND taken_at LIKE ?1 || '%'",
-            period,
+            &format!(
+                "SELECT :text, :text, count(*), min(lat), min(lon), max(lat), max(lon)
+                 FROM photo WHERE +lat IS NOT NULL AND state = 'ok' AND taken_at LIKE :text || '%'{}
+                 LIMIT :limit",
+                w.sql
+            ),
+            &w,
+            Value::Text(period.to_owned()),
             1,
         )?;
         Ok(sets.into_iter().filter(|s| s.photos > 0).collect())
     }
 
     /// Cameras whose make or model contains `text`, with their photos on the map.
-    pub fn search_cameras(&self, text: &str, limit: usize) -> Result<Vec<FoundSet>> {
+    pub fn search_cameras(
+        &self,
+        text: &str,
+        limit: usize,
+        filter: &Filter,
+    ) -> Result<Vec<FoundSet>> {
+        let w = filter.sql("");
         self.found_sets(
-            "SELECT coalesce(camera_make, '') || char(31) || coalesce(camera_model, ''),
-                    trim(coalesce(camera_make, '') || ' ' || coalesce(camera_model, '')),
-                    count(*), min(lat), min(lon), max(lat), max(lon)
-             FROM photo
-             WHERE lat IS NOT NULL AND state = 'ok'
-               AND lower(coalesce(camera_make, '') || ' ' || coalesce(camera_model, ''))
-                   LIKE ?1 ESCAPE '\\'
-             GROUP BY camera_make, camera_model ORDER BY count(*) DESC LIMIT ?2",
-            &like(text),
+            &format!(
+                "SELECT coalesce(camera_make, '') || char(31) || coalesce(camera_model, ''),
+                        trim(coalesce(camera_make, '') || ' ' || coalesce(camera_model, '')),
+                        count(*), min(lat), min(lon), max(lat), max(lon)
+                 FROM photo
+                 WHERE +lat IS NOT NULL AND state = 'ok'
+                   AND lower(coalesce(camera_make, '') || ' ' || coalesce(camera_model, ''))
+                       LIKE :text ESCAPE '\\'{}
+                 GROUP BY camera_make, camera_model ORDER BY count(*) DESC LIMIT :limit",
+                w.sql
+            ),
+            &w,
+            Value::Text(like(text)),
             limit,
         )
     }
 
-    fn found_sets(&self, sql: &str, arg: &str, limit: usize) -> Result<Vec<FoundSet>> {
-        let mut stmt = self.conn.prepare_cached(sql)?;
-        let limit = limit as i64;
-        let bind: &[&dyn rusqlite::ToSql] = if sql.contains("?2") {
-            &[&arg, &limit]
-        } else {
-            &[&arg]
-        };
-        stmt.query_map(bind, |r| {
+    fn found_sets(&self, sql: &str, w: &Where, text: Value, limit: usize) -> Result<Vec<FoundSet>> {
+        let mut params = w.params.clone();
+        params.push((":text".into(), text));
+        params.push((":limit".into(), Value::Integer(limit as i64)));
+        self.query_named(sql, &params, |r| {
             Ok(FoundSet {
                 key: r.get(0)?,
                 label: r.get(1)?,
@@ -729,40 +767,125 @@ impl Library {
                     _ => None,
                 },
             })
-        })?
-        .collect()
+        })
     }
 
-    /// Photos on the map whose file name contains `text`, newest first.
-    pub fn search_files(&self, text: &str, limit: usize) -> Result<Vec<FoundPhoto>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT id, original_name, taken_at, lat, lon FROM photo
-             WHERE lat IS NOT NULL AND state = 'ok' AND stem_key LIKE ?1 ESCAPE '\\'
-             ORDER BY taken_at DESC, id LIMIT ?2",
+    /// Runs `sql` with named parameters (`:name`); ones the SQL doesn't use are skipped. Like
+    /// Spring's `NamedParameterJdbcTemplate`: the filter adds its own parameters to any query.
+    fn query_named<T>(
+        &self,
+        sql: &str,
+        params: &[(String, Value)],
+        mut map: impl FnMut(&rusqlite::Row<'_>) -> Result<T>,
+    ) -> Result<Vec<T>> {
+        let mut stmt = self.conn.prepare_cached(sql)?;
+        stmt.clear_bindings();
+        for (name, v) in params {
+            if let Some(i) = stmt.parameter_index(name)? {
+                stmt.raw_bind_parameter(i, v)?;
+            }
+        }
+        let mut rows = stmt.raw_query();
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            out.push(map(r)?);
+        }
+        Ok(out)
+    }
+
+    /// Photos on the map `filter` shows whose file name contains `text`, newest first.
+    pub fn search_files(
+        &self,
+        text: &str,
+        limit: usize,
+        filter: &Filter,
+    ) -> Result<Vec<FoundPhoto>> {
+        let w = filter.sql("");
+        let mut params = w.params.clone();
+        params.push((":text".into(), Value::Text(like(text))));
+        params.push((":limit".into(), Value::Integer(limit as i64)));
+        self.query_named(
+            &format!(
+                "SELECT id, original_name, taken_at, lat, lon FROM photo
+                 WHERE +lat IS NOT NULL AND state = 'ok' AND stem_key LIKE :text ESCAPE '\\'{}
+                 ORDER BY taken_at DESC, id LIMIT :limit",
+                w.sql
+            ),
+            &params,
+            |r| {
+                Ok(FoundPhoto {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    taken_at: r.get(2)?,
+                    lat: r.get(3)?,
+                    lon: r.get(4)?,
+                })
+            },
+        )
+    }
+
+    /// How many photos on the map `filter` shows lie within `b`.
+    pub fn count_in(&self, b: crate::import::Bounds, filter: &Filter) -> Result<usize> {
+        let w = filter.sql("");
+        let mut params = w.params.clone();
+        for (n, v) in [
+            (":min_lat", b.min_lat),
+            (":max_lat", b.max_lat),
+            (":min_lon", b.min_lon),
+            (":max_lon", b.max_lon),
+        ] {
+            params.push((n.into(), Value::Real(v)));
+        }
+        let n = self.query_named(
+            &format!(
+                "SELECT count(*) FROM photo
+                 WHERE lat BETWEEN :min_lat AND :max_lat AND lon BETWEEN :min_lon AND :max_lon
+                   AND state = 'ok'{}",
+                w.sql
+            ),
+            &params,
+            |r| r.get::<_, i64>(0),
         )?;
-        stmt.query_map(params![like(text), limit as i64], |r| {
-            Ok(FoundPhoto {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                taken_at: r.get(2)?,
-                lat: r.get(3)?,
-                lon: r.get(4)?,
-            })
-        })?
-        .collect()
+        Ok(n.first().copied().unwrap_or(0) as usize)
     }
 
-    /// How many photos on the map lie within `b`.
-    pub fn count_in(&self, b: crate::import::Bounds) -> Result<usize> {
-        self.conn
-            .prepare_cached(
-                "SELECT count(*) FROM photo WHERE lat BETWEEN ?1 AND ?2 AND lon BETWEEN ?3 AND ?4
-                 AND state = 'ok'",
-            )?
-            .query_row(params![b.min_lat, b.max_lat, b.min_lon, b.max_lon], |r| {
-                r.get::<_, i64>(0)
-            })
-            .map(|n| n as usize)
+    /// What the filter panel offers: photos on the map by month, source and camera (unfiltered).
+    pub fn facets(&self) -> Result<Facets> {
+        let mut f = Facets::default();
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT substr(taken_at, 1, 7), count(*) FROM photo
+             WHERE +lat IS NOT NULL AND state = 'ok' GROUP BY 1 ORDER BY 1",
+        )?;
+        let months = stmt.query_map([], |r| {
+            Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)? as usize))
+        })?;
+        for m in months {
+            let (month, n) = m?;
+            match month.as_deref().and_then(filter::parse_month) {
+                Some(m) => f.months.push((m, n)),
+                None => f.undated += n,
+            }
+        }
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT source_id, count(*) FROM photo
+             WHERE +lat IS NOT NULL AND state = 'ok' GROUP BY source_id",
+        )?;
+        for r in stmt.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as usize)))? {
+            let (id, n) = r?;
+            f.sources.insert(id, n);
+        }
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT camera_make, camera_model, count(*) FROM photo
+             WHERE +lat IS NOT NULL AND state = 'ok'
+             GROUP BY coalesce(camera_make, ''), coalesce(camera_model, '')",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as usize))
+            })?
+            .collect::<Result<Vec<_>>>()?;
+        f.cameras = Facets::cameras_from(rows);
+        Ok(f)
     }
 
     /// Every photo id, for removing the thumbnail files of deleted records.

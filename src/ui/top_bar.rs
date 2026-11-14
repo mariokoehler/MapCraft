@@ -1,11 +1,12 @@
 //! The top bar (36 px): app mark, search, counts, import progress, actions (canvas
-//! `MapCraft — Import`). Search and settings have no behaviour yet, so they are drawn disabled
-//! (search: `ui::search`).
+//! `MapCraft — Import`), and the Filters button (`ui::filters`). Settings have no behaviour
+//! yet, so they are drawn disabled (search: `ui::search`).
 
 use egui::{Align, Image, ImageSource, Layout, RichText, Sense, Stroke, Ui};
 
 use crate::library::Counts;
 use crate::theme::Palette;
+use crate::ui::filters::FilterPanel;
 use crate::ui::icons::Icon;
 use crate::ui::search::SearchBox;
 use crate::ui::widgets::{self, thousands};
@@ -33,6 +34,16 @@ pub enum TopBarAction {
     Sources,
     /// Cancel the running task.
     Cancel,
+    /// The Filters button opened or closed its panel.
+    Filters,
+}
+
+/// The filters as the top bar shows them: the panel's button, how many are set, and how many
+/// photos they leave on the map (`None` while none is set).
+pub struct BarFilters<'a> {
+    pub panel: &'a mut FilterPanel,
+    pub active: usize,
+    pub shown: Option<usize>,
 }
 
 pub fn show(
@@ -41,6 +52,7 @@ pub fn show(
     counts: Counts,
     running: Option<Running>,
     search: &mut SearchBox,
+    filters: BarFilters<'_>,
 ) -> Option<TopBarAction> {
     let mut action = None;
     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -55,6 +67,9 @@ pub fn show(
         .on_hover_text("MapCraft");
         ui.add_space(p.space_1);
         search.field(ui, p);
+        if counts.with_position > 0 && filters.panel.button(ui, p, filters.active) {
+            action = Some(TopBarAction::Filters);
+        }
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add_space(p.space_1);
@@ -79,7 +94,7 @@ pub fn show(
             }
             if counts.photos > 0 {
                 ui.label(
-                    RichText::new(counts_text(counts))
+                    RichText::new(counts_text(counts, filters.shown))
                         .small()
                         .color(p.text_weak),
                 );
@@ -89,10 +104,18 @@ pub fn show(
     action
 }
 
-/// "4,881 photos · 1,019 without a position" (design system: say it with the number).
-pub fn counts_text(c: Counts) -> String {
+/// "4,881 photos · 1,019 without a position" (design system: say it with the number). With
+/// filters set, "2,015 of 3,862 photos shown · …": of those on the map, the ones shown.
+pub fn counts_text(c: Counts, shown: Option<usize>) -> String {
     let present = (c.photos - c.missing).max(0) as usize;
-    let mut s = format!("{} photos", thousands(present));
+    let mut s = match shown {
+        Some(n) => format!(
+            "{} of {} photos shown",
+            thousands(n),
+            thousands(c.with_position.max(0) as usize)
+        ),
+        None => format!("{} photos", thousands(present)),
+    };
     let without = c.without_position().max(0) as usize;
     if without > 0 {
         s.push_str(&format!(" · {} without a position", thousands(without)));
@@ -165,7 +188,7 @@ mod tests {
             missing: 119,
         };
         assert_eq!(
-            counts_text(c),
+            counts_text(c, None),
             "4,881 photos · 1,019 without a position · 119 missing"
         );
         let all_placed = Counts {
@@ -173,6 +196,10 @@ mod tests {
             with_position: 10,
             missing: 0,
         };
-        assert_eq!(counts_text(all_placed), "10 photos");
+        assert_eq!(counts_text(all_placed, None), "10 photos");
+        assert_eq!(
+            counts_text(c, Some(2015)),
+            "2,015 of 3,862 photos shown · 1,019 without a position · 119 missing"
+        );
     }
 }
