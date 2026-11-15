@@ -696,7 +696,7 @@ The schema is `src/library/migrations/0001_init.sql`; in short:
 source(id, root_path, unc_path, label, added_at, last_scan_at)
 source_folder(source_id, rel_dir, included) -- folder decisions (§2.8(f)); none = everything
 photo(id, source_id, rel_dir, stem,        -- one photo = the files of one name in one folder
-      original_name, preview_name, sidecar_name,
+      original_name, original_ext /* lower case, §2.3 */, preview_name, sidecar_name,
       files_sig,                           -- hash of all members' names, sizes, times
       file_size, file_mtime, quick_hash,   -- of the original
       lat, lon, alt, gps_source /* exif | xmp; lrcat later, §2.8(g) */,

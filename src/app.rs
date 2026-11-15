@@ -1692,6 +1692,13 @@ mod tests {
         h.get_by_label("Filters").click();
         h.run_steps(3);
         h.get_by_label("File types");
+        h.get_by_label("Earlier…").click(); // all years, so every photo is in one
+        h.run_steps(3);
+        h.get_by_label("2019").click();
+        h.run_steps(3);
+        let in_2019 = shown(&h);
+        h.get_by_label("Any time").click();
+        h.run_steps(3);
         h.query_all_by_label("RAW").next().unwrap().click();
         h.run_steps(3);
         assert_eq!(shown(&h), 16);
@@ -1703,10 +1710,16 @@ mod tests {
         h.run_steps(2);
         h.get_by_label("DNG");
         // Removing the chip takes only the file types away.
+        h.get_by_label("Filters (1 set)").click();
+        h.run_steps(3);
+        h.get_by_label("2019").click();
+        h.run_steps(3);
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
         h.get_by_label("Remove the file type filter").click();
         h.run_steps(3);
-        assert_eq!(shown(&h), 21);
-        assert!(!h.state().as_ref().unwrap().filter.is_active());
+        assert_eq!(shown(&h), in_2019);
+        assert!(h.state().as_ref().unwrap().filter.dates.is_some());
     }
 
     /// A press and release at `pos`, moving by `by` in between (zero: a click).

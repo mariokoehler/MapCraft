@@ -95,7 +95,7 @@ impl Filter {
             .flat_map(|t| scan::exts_of(t))
             .collect();
         if !exts.is_empty() {
-            let names: Vec<String> = (0..exts.len()).map(|i| format!(":f_t{i}")).collect();
+            let names: Vec<String> = (0..exts.len()).map(|i| format!(":f_e{i}")).collect();
             w.sql.push_str(&format!(
                 " AND {} NOT IN ({})",
                 format_args!("{prefix}original_ext"),
@@ -411,7 +411,7 @@ mod tests {
         assert!(w.sql.contains("p.original_ext NOT IN"));
         assert!(
             w.params
-                .contains(&(":f_t0".into(), Value::Text("cr2".into())))
+                .contains(&(":f_e0".into(), Value::Text("cr2".into())))
         );
         assert!(
             !w.params
