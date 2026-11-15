@@ -988,6 +988,13 @@ egui.
   download size and that MapCraft restarts; buttons "Update and restart", "Not now", and a
   link to the release notes. It says when the exe's folder isn't writable (e.g. under
   `Program Files`) and offers the release page instead.
+- **As built:** the dialog's stages are in `src/ui/update_dialog.rs`; `src/update.rs` holds the
+  check, the download and an `Updater` running both on background threads. The verified
+  download is handed to `main`, which swaps it in after the window has closed and starts the
+  new version with the same options (`--data` included, `--open` left out). "Restart later"
+  keeps the download and installs it when MapCraft is closed, without a restart (unconfirmed).
+  Dev flag `--update-from <base url>` points the check at a pretend GitHub (`<base>/latest`,
+  assets under `<base>/dl/`) and turns the check at start on in debug builds too.
 - **The update:** download `mapcraft.exe` and `mapcraft.exe.sha256` beside the running exe,
   check the SHA-256 (`sha2`, 0.11.1, verified 2026-11-15, https://crates.io/crates/sha2),
   swap the exe with `self-replace` (1.5.1, verified 2026-11-15,
@@ -1128,9 +1135,10 @@ Milestones are rough and get refined as we go.
     move to Later.
   - The tile cache's size limit (§3.5(d)) was planned alongside the providers and now has no
     milestone.
-- **M7 — Packaging, releases and updates** (planned 2026-11-15; decided by the user that day:
+- **M7 — Packaging, releases and updates** (built 2026-11-15; decided by the user that day:
   one exe, tag-triggered releases as in LaunchWindow, update check on by default, one-click
-  update with a confirmation).
+  update with a confirmation). Not yet run on GitHub: the first push and tag need the user's
+  go-ahead.
   - **One exe, no installer:** `mapcraft.exe` is the release file, run from any folder. Fonts,
     icons and tokens are already compiled in, SQLite is bundled, TLS is rustls; the C runtime
     is linked statically (`+crt-static` in `.cargo/config.toml`), so no VC++ redistributable
@@ -1151,10 +1159,19 @@ Milestones are rough and get refined as we go.
   - **Updates** (§2.7, §3.8): see §3.10. The UI is on the canvas `MapCraft — Updates`
     (https://claude.ai/artifact/NBQN2QuFrxiTg7UiwdLb3o, made 2026-11-15, awaiting review):
     the Settings section, the toast and confirmation, and the dialog's six states.
-  - **Licence notices (unconfirmed):** the exe carries the IBM Plex fonts (OFL 1.1) and
-    MIT/Apache crates, whose licences ask for their notices to travel with copies. Proposal:
-    the workflow generates `THIRD-PARTY-NOTICES.txt` (with `cargo-about`, to be checked) and
-    attaches it to each release beside the exe.
+  - **Licence notices** (the user approved the proposal, 2026-11-15): the exe carries the IBM
+    Plex fonts (OFL 1.1), Lucide icons (ISC) and about 350 crates, whose licences ask for their
+    notices to travel with copies. The workflow writes `THIRD-PARTY-NOTICES.txt`
+    (`scripts/notices.ps1`: `cargo-about` 0.9.3, verified 2026-11-15,
+    https://crates.io/crates/cargo-about, with `about.toml` and `about.hbs`, then the fonts' and
+    icons' licences) and attaches it beside the exe. The accepted licences are listed in
+    `about.toml`; a crate under any other fails the release until it is checked.
+  - **Checked** by unit tests (versions, the checksum file as the workflow writes it, the
+    release's URLs, downloads that are good, wrong, short or cancelled, the restart's
+    options), headless UI tests (toast, confirmation, progress, checksum failure, cancel,
+    the Settings section), and a rehearsal on 2026-11-15: a copy of the release exe in the
+    scratchpad, a pretend GitHub on a local port (`--update-from`), the buttons pressed
+    through UI Automation. The exe was swapped and restarted with the same options.
 
 **Later:** a keyed tile provider and offline PMTiles (§3.5(b); walkers has a `pmtiles`
 feature, and its vector rendering needs the wgpu renderer, which eframe uses by default), the

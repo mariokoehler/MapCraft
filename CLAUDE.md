@@ -28,8 +28,8 @@ but the app isn't sold or advertised (user, 2026-11-14).
 
 ## Current status (2026-11-15)
 
-**M6 built (2026-11-15): the companion apps, awaiting the user's try.** M5 is done (tried by
-the user).
+**M7 built (2026-11-15): packaging, releases and self-update; not yet run on GitHub.** M6
+(companion apps) awaits the user's try. M5 is done (tried by the user).
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
   copies.
@@ -69,6 +69,10 @@ the user).
   (`src/filter.rs`), the panel, chips and no-match card (`src/ui/filters.rs`).
 - Companion apps: PhotoCraft launch and the LightCraft control-port client
   (`src/companions.rs`), the Settings dialog (`src/ui/settings_dialog.rs`), the panel's buttons.
+- Releases: the tag-triggered workflow (`.github/workflows/release.yml`), the exe's icon and
+  version (`build.rs`), the static C runtime (`.cargo/config.toml`), licence notices
+  (`scripts/notices.ps1`, `about.toml`); self-update (`src/update.rs`,
+  `src/ui/update_dialog.rs`).
 
 ## How we work
 
@@ -149,6 +153,11 @@ the user).
 
 One Cargo project (`Cargo.toml` is its `pom.xml`; `Cargo.lock` pins every version and is
 committed):
+- **A release:** bump `version` in `Cargo.toml`, build once (so `Cargo.lock` follows), commit
+  both, then tag `vX.Y.Z` and push the tag; the workflow checks the tag against `Cargo.toml`,
+  tests, builds and publishes `mapcraft.exe`, its `.sha256` and `THIRD-PARTY-NOTICES.txt`.
+  "Run workflow" in the Actions tab rehearses without publishing. Never push a tag without the
+  user's go-ahead. Release notes say when a version migrates the library (one-way).
 - `cargo run` builds a debug build and starts it. A console window shows the log, and
   `RUST_LOG=debug` makes it chattier. `cargo run --release` builds the optimised build, without
   a console window.
@@ -179,7 +188,14 @@ committed):
     the text searched (for comparing with the mockups);
   - `--perf` logs the frame time every 3 s;
   - `--make-demo <folder> [n]` writes generated photos;
-  - `--fill-library <scratch data> <n>` writes synthetic rows.
+  - `--fill-library <scratch data> <n>` writes synthetic rows;
+  - `--update-from <base url>` checks a pretend GitHub (`<base>/latest`, `<base>/dl/…`) instead
+    of the real one. Try the updater only on a copy of the exe in the scratchpad, with
+    `--data` scratch: it replaces the exe it runs from.
+- `pwsh scripts/notices.ps1 [out]` writes the third-party notices (needs
+  `cargo install cargo-about --features cli`).
+- Pitfall: never let a test reach `update::install`: it would replace the test binary. Tests
+  run with `launch` off, which records the install instead.
 - UI tests: `egui_kittest` drives the whole app headless (`src/app.rs` tests), finding widgets
   by their accessible names. Its accessibility check fails on unnamed icon buttons, so use
   `widgets::ghost` or `widgets::named`.

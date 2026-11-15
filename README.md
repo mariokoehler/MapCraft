@@ -10,10 +10,23 @@ in Lightroom Classic.
   [LightCraft](https://github.com/storytold/lightcraft) and
   [PhotoCraft](https://github.com/storytold/photocraft).
 
-**Status:** early development. Milestone 2 is done: add folders of photos (from local drives or
-network shares), and their positions appear on the map as dots; rescans pick up new, moved and
-missing photos. Thumbnails on the map come next. See [`design.md`](design.md) for the concept,
-features, architecture and roadmap.
+**Status:** early development. Folders of photos (local drives or network shares) show on the
+map as thumbnails that group and split as you zoom; search, filters and the companion apps work.
+See [`design.md`](design.md) for the concept, features, architecture and roadmap.
+
+## Download
+
+Each [release](https://github.com/mariokoehler/MapCraft/releases) has `mapcraft.exe`: one file,
+no installer. Put it in a folder of your own (for example `%LOCALAPPDATA%\Programs\MapCraft`)
+and run it. Settings and the library live in `%APPDATA%\MapCraft` and `%LOCALAPPDATA%\MapCraft`.
+
+- The exe isn't code-signed, so Windows SmartScreen warns the first time: choose
+  **More info → Run anyway**.
+- MapCraft checks for a newer release when it starts and offers to update itself (it can be
+  turned off in Settings). The check asks GitHub for the latest release; nothing about your
+  photos is sent. Updating needs a folder MapCraft can write to, so not `Program Files`.
+- `mapcraft.exe.sha256` is the exe's checksum; `THIRD-PARTY-NOTICES.txt` lists the licences of
+  everything built into it.
 
 ## Building
 

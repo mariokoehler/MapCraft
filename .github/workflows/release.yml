@@ -44,6 +44,16 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
+      - name: Install cargo-about
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
+
+      - name: Third-party notices
+        # The licences of everything built into the exe (about.toml, about.hbs), then the
+        # fonts' and icons'.
+        run: ./scripts/notices.ps1 target/release/THIRD-PARTY-NOTICES.txt
+
       - name: Checksum
         # ASCII, lower case, one line: "<hash>  mapcraft.exe" (src/update.rs reads it).
         run: |
@@ -58,6 +68,7 @@ jobs:
         run: |
           gh release create "$env:GITHUB_REF_NAME" `
             target\release\mapcraft.exe target\release\mapcraft.exe.sha256 `
+            target\release\THIRD-PARTY-NOTICES.txt `
             --title "MapCraft $env:GITHUB_REF_NAME" `
             --generate-notes
 
@@ -69,3 +80,4 @@ jobs:
           path: |
             target/release/mapcraft.exe
             target/release/mapcraft.exe.sha256
+            target/release/THIRD-PARTY-NOTICES.txt
