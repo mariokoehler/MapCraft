@@ -633,6 +633,11 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
     times. Tracks recorded by a GPS device or a phone app have them; routes planned on a
     website usually don't." (The user's first sample, from a tour portal, is one: 816 points,
     no times, checked 2026-11-15.)
+  - Times may carry fractions of a second (Komoot writes milliseconds).
+  - **The user's recorded sample** (a Komoot day hike, checked 2026-11-15, aggregates only): one
+    `trk` with one `trkseg`, 740 points with `ele` and `time`, 5.5 h, 8.4 km, a point every
+    10 s. Two pauses where recording stopped (73 and 11 minutes), each with both ends within
+    20 m of each other: Komoot keeps one segment across a pause.
   - Distance (along the track), duration, the first and last time, and the segments are shown
     in the panel.
 - **(c) The track on the map.** A polyline in the accent colour, 3 px with a dark halo, start
@@ -643,6 +648,9 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
 - **(d) Matching.** A photo's time in UTC = its capture time (`taken_at`, local) − the shift.
   - Between two track points: interpolated linearly, if the gap is at most the **max gap**
     (10 minutes by default, as LightCraft's `maxGap`) and both points are in the same segment.
+  - **A pause:** a gap longer than the max gap whose two ends are within 50 m of each other is
+    a break (lunch, a viewpoint), not a hole: photos in it get the break's spot (the earlier
+    point) **(unconfirmed)**. The user's sample has two (b).
   - Within **2 minutes** before the first or after the last point of a segment: that point
     **(unconfirmed)**.
   - Otherwise the photo is *outside the track*: not on the map, listed in the panel.
@@ -1216,7 +1224,7 @@ Unconfirmed defaults awaiting review:
   the library in use holds at least as many photos; Free up space ticks previews and map
   tiles, not thumbnails; place names aren't offered; `--data` runs don't offer Change….
 - §2.9 (M9, proposed): several GPX files as one timeline; a time without a zone is UTC; 2 min
-  past a segment's ends; a 10 min max gap; the shift's default from the photos' offsets, else
+  past a segment's ends; a 10 min max gap; a longer gap with ends within 50 m is a pause; the shift's default from the photos' offsets, else
   this PC's zone; own offsets plus only the fine correction; candidates within ±14 h of the
   track; filters off in tagging mode; ticks on by default; regrouping 200 ms after the shift
   settles; a new sidecar named `name.xmp`; the undo journal in the data folder.
