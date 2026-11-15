@@ -675,8 +675,17 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
   (its hover card or the strip), then a click on the track. The shift becomes photo time −
   track time at that spot, and every photo moves. The panel says which photo set it, with Undo.
 - **(g) The candidates.** Photos with no position (`lat IS NULL`), a capture time and
-  `state = 'ok'`, whose time is within the track's span ±14 h, read once when the track opens:
-  that covers every shift, so photos can slide in as it changes.
+  `state = 'ok'`, taken within a **margin** before and after the track, counted at the current
+  shift (the user, 2026-11-15: a fixed ±14 h would pull in a nearby event, the evening before
+  or the morning after).
+  - The margin is set in the panel: 1, 3, 6 or 12 h, **3 h** by default **(unconfirmed)**,
+    enough for a daylight-saving slip or a camera never set to the zone. A trip abroad with the
+    camera on home time is the time zone's job (e): the window moves with it.
+  - Photos within the margin but not on the track are listed as *outside the track*; those
+    further away are only counted ("2 more photos further than 3 h from the track"), so it's
+    clear that a wider margin would bring them in.
+  - The pool is read once when the track opens, for ±14 h plus the largest margin, and
+    filtered in memory, so changing the zone or the margin is instant.
   - Optional: *Also re-tag photos that already have a position* (off). They're shown with their
     current position faded and a line to the new one.
   - The filters don't apply in tagging mode **(unconfirmed)**: the time window already narrows
@@ -1230,8 +1239,8 @@ Unconfirmed defaults awaiting review:
   tiles, not thumbnails; place names aren't offered; `--data` runs don't offer Change….
 - §2.9 (M9, proposed): several GPX files as one timeline; a time without a zone is UTC; 2 min
   past a segment's ends; a 10 min max gap; a longer gap with ends within 50 m is a pause; the shift's default from the photos' offsets, else
-  this PC's zone; own offsets plus only the fine correction; candidates within ±14 h of the
-  track; filters off in tagging mode; ticks on by default; regrouping 200 ms after the shift
+  this PC's zone; own offsets plus only the fine correction; candidates within a 3 h margin of the
+  track at the current shift (1, 3, 6 or 12 h in the panel); filters off in tagging mode; ticks on by default; regrouping 200 ms after the shift
   settles; a new sidecar named `name.xmp`; the undo journal in the data folder.
 - §3.2: the planned crates.
 - §2.8(f): the tree starts all ticked; leaving a folder out later removes its records; a folder
