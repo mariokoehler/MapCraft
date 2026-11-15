@@ -1034,6 +1034,43 @@ M6, with the other providers). Until then the cache grows with every new area vi
 for a photo library is close to where the user has been. That is accepted as not an issue (user,
 2026-11-14).
 
+**(f) Map styles (M10, proposed 2026-11-15).** The user asked whether the disabled *Map
+style* control could offer satellite imagery. OpenStreetMap is map data without imagery, and
+its tile server serves only the Standard style, so every other style is another provider.
+Checked 2026-11-15:
+
+- **OpenTopoMap** (https://opentopomap.org/about): free, "solange stets Namensnennung
+  erfolgt" (as long as it's credited), CC-BY-SA, commercial use allowed, no fees. Tiles at
+  `https://{a|b|c}.tile.opentopomap.org/{z}/{x}/{y}.png`. Embedding is fine as long as the
+  server isn't overloaded (no bulk downloads); no availability is guaranteed, and the server
+  moved to a smaller machine in January 2026. They ask users to tell them how they use the
+  tiles. Required credit: "Kartendaten: © OpenStreetMap-Mitwirkende, SRTM |
+  Kartendarstellung: © OpenTopoMap (CC-BY-SA)". The maximum zoom isn't stated there (17 by
+  common knowledge, unverified).
+- **MapTiler Cloud** (pricing https://www.maptiler.com/cloud/pricing/, terms
+  https://www.maptiler.com/terms/cloud/):
+  - The free plan is "limited to non-commercial use and research & development"; 100k API
+    requests and 5k sessions a month, 1 API key, no billing details. When used up, "service
+    will pause until the next month".
+  - The free plan shows a MapTiler logo on the map; the terms require MapTiler attribution.
+  - Satellite imagery is "available to all free and paying users" (globally 1–2 m/px,
+    locally up to 8 cm/px; https://maptiler.com/news/2023/10/global-high-resolution-satellite-map).
+  - Raster tiles: `https://api.maptiler.com/maps/{mapId}/256/{z}/{x}/{y}{@2x}.{png|jpg|webp}?key=…`
+    for a map style, `https://api.maptiler.com/tiles/{tilesId}/{z}/{x}/{y}?key=…` for a tileset
+    (the docs' example is `satellite-v4`). The style ids for hybrid and outdoor aren't on the
+    docs pages read (to check when building, in MapTiler's map list).
+  - Caching: "Results of requests can be stored in a temporary personal cache (browser
+    cache, mobile app cache, etc.) for use by a single end-user only." No bulk downloading;
+    "must be always used with your own API key(s)".
+  - Each tile is one request: 100k a month is a few hundred screens of new area; cached
+    tiles don't count.
+- **Esri World Imagery**: the old keyless `server.arcgisonline.com` tiles are a legacy
+  service; Esri moved users to a basemap service that needs an API key or token, and Esri
+  staff say the legacy service needs an ArcGIS licence (https://www.esri.com/arcgis-blog/?p=1401712,
+  https://community.esri.com/t5/arcgis-online-questions/current-terms-of-use-for-http-services/td-p/173432).
+  So there's no keyless satellite option; MapTiler is the simpler keyed one.
+- **Google**: as in (a), billing required; not pursued.
+
 ### 3.6 Companion apps (checked 2026-11-14)
 
 Installed: **PhotoCraft 0.22.0** and **LightCraft 0.20.0** (since updated to 0.23.1 and 0.21.1; see (d)), both pure Rust, egui, MIT/Apache-2.0,
@@ -1264,6 +1301,8 @@ Unconfirmed defaults awaiting review:
   this PC's zone; own offsets plus only the fine correction; candidates within a 3 h margin of the
   track at the current shift (1, 3, 6 or 12 h in the panel); filters off in tagging mode; ticks on by default; regrouping 200 ms after the shift
   settles; a new sidecar named `name.xmp`; the undo journal in the data folder.
+- M10 (proposed): the four styles, the key in Settings, a cache per style, the fallback to
+  Standard on a refused key, the choice remembered.
 - §3.2: the planned crates.
 - §2.8(f): the tree starts all ticked; leaving a folder out later removes its records; a folder
   that is, lies inside, or contains an existing source can't be added (it would duplicate
@@ -1467,6 +1506,24 @@ Milestones are rough and get refined as we go.
     written form is the one in the user's Lightroom sidecars and reads back through our
     reader); whether LightCraft reads `name.xmp` for a JPEG; the `map-track` token in the
     design system and the theme.
+
+- **M10 — Map styles** (proposed 2026-11-15, the user's question; §3.5(f), canvas
+  `MapCraft — Map style`). The *Map style* control becomes a menu:
+  - **Standard** (OpenStreetMap, as today) and **Topographic** (OpenTopoMap), no key.
+  - **Satellite** and **Hybrid** (satellite with roads and names) from MapTiler, once the user
+    pastes their own free MapTiler key in *Settings → Map*. Without a key they're listed,
+    with *Add a key…*. The key is stored in `settings.toml`, never in the repo or the log.
+  - Each style has its own tile cache folder (`tiles/<style>/`), its own credit in the
+    attribution, and the MapTiler logo where MapTiler's tiles show. The choice is remembered.
+  - A key that's refused or a quota used up shows once as a toast, with *Settings…*; the
+    map falls back to Standard.
+  - Settings gets a *Map* section: the key with *Test*, a link to MapTiler's sign-up, and
+    one line on the free plan (non-commercial, 100k tiles a month).
+  - **Defaults (unconfirmed):** Standard first; a style past its maximum zoom shows the
+    deepest tiles enlarged (walkers does that); the existing tiles of today's cache become
+    Standard's; the menu also lists *Topographic* even though OpenTopoMap guarantees no
+    availability (a failing tile server shows as missing tiles, as for OSM).
+  - Not in M10: other keyed providers, offline PMTiles, the cache's size limit (§3.5(d)).
 
 **Later:** a keyed tile provider and offline PMTiles (§3.5(b); walkers has a `pmtiles`
 feature, and its vector rendering needs the wgpu renderer, which eframe uses by default), the
