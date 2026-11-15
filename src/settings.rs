@@ -21,6 +21,21 @@ pub struct Settings {
     pub data_folder: Option<PathBuf>,
     pub window: WindowSettings,
     pub companions: CompanionSettings,
+    pub updates: UpdateSettings,
+}
+
+/// Updates (design.md §3.10): whether to ask GitHub for a newer release at each start.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    pub check: bool,
+}
+
+impl Default for UpdateSettings {
+    /// On by default (user, 2026-11-15).
+    fn default() -> Self {
+        Self { check: true }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,6 +177,7 @@ mod tests {
         assert_eq!(s.window.width, 1500.0);
         assert_eq!(s.window.height, WindowSettings::default().height);
         assert_eq!(s.data_folder, None);
+        assert!(s.updates.check, "the update check is on unless turned off");
     }
 
     #[test]

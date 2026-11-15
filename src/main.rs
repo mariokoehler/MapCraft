@@ -48,6 +48,8 @@ fn main() -> eframe::Result {
         _ => None,
     };
     let perf = args.iter().any(|a| a == "--perf");
+    // `--update-from <base url>`: a pretend GitHub for trying the updater (design.md §3.10).
+    let update_from = flag("--update-from").cloned();
     if open.is_some() {
         info!("start dialog: {open:?}");
     }
@@ -84,7 +86,15 @@ fn main() -> eframe::Result {
             .with_min_inner_size([960.0, 600.0]),
         ..Default::default()
     };
-    eframe::run_native(
+    // The update check at start: on in release builds (or with `--update-from`), unless the
+    // user turned it off in Settings.
+    let check_updates =
+        settings.updates.check && (!cfg!(debug_assertions) || update_from.is_some());
+    let update_endpoint = update_from.as_deref().map_or_else(
+        mapcraft::update::Endpoint::github,
+        mapcraft::update::Endpoint::at,
+    );
+    let result = eframe::run_native(
         "MapCraft",
         options,
         Box::new(move |cc| {
@@ -98,10 +108,36 @@ fn main() -> eframe::Result {
                 network: true,
                 settings,
                 settings_file: writable.then_some(locations.settings_file),
+                check_updates,
+                update_endpoint,
             };
             Ok(Box::new(app::MapCraftApp::new(&cc.egui_ctx, config)))
         }),
-    )
+    );
+    install_pending_update(&args);
+    result
+}
+
+/// Swaps in an update the app downloaded and checked (design.md §3.10), now that the window
+/// has closed, and starts the new version when the user chose to restart. The new version gets
+/// the same options, `--data` included, so it opens the same library.
+fn install_pending_update(args: &[String]) {
+    let Some((file, restart)) = mapcraft::update::take_pending() else {
+        return;
+    };
+    // The path before the swap: afterwards it holds the new version.
+    let exe = std::env::current_exe();
+    if let Err(e) = mapcraft::update::install(&file) {
+        error!("{e}");
+        return;
+    }
+    info!("update installed");
+    if restart
+        && let Ok(exe) = exe
+        && let Err(e) = mapcraft::update::restart(&exe, &mapcraft::update::restart_args(&args[1..]))
+    {
+        error!("{e}");
+    }
 }
 
 /// Dev command: `mapcraft --fill-library <data folder> <count>` writes `count` synthetic photo

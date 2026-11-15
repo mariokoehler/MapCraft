@@ -8,6 +8,9 @@
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -17,10 +20,12 @@ use sha2::{Digest, Sha256};
 pub const EXE_ASSET: &str = "mapcraft.exe";
 pub const SHA_ASSET: &str = "mapcraft.exe.sha256";
 
-/// Where releases are asked for, and the prefix every asset URL must start with.
-#[derive(Debug, Clone)]
+/// Where releases are asked for, and the prefixes the release page and every asset URL must
+/// start with.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endpoint {
     pub latest_url: String,
+    pub page_prefix: String,
     pub download_prefix: String,
 }
 
@@ -28,7 +33,19 @@ impl Endpoint {
     pub fn github() -> Self {
         Self {
             latest_url: "https://api.github.com/repos/mariokoehler/MapCraft/releases/latest".into(),
+            page_prefix: "https://github.com/mariokoehler/MapCraft/releases/".into(),
             download_prefix: "https://github.com/mariokoehler/MapCraft/releases/download/".into(),
+        }
+    }
+
+    /// A pretend GitHub at `base` (tests, and the dev flag `--update-from`): `base/latest`
+    /// answers, the page is under `base/`, the assets under `base/dl/`.
+    pub fn at(base: &str) -> Self {
+        let base = base.trim_end_matches('/');
+        Self {
+            latest_url: format!("{base}/latest"),
+            page_prefix: format!("{base}/"),
+            download_prefix: format!("{base}/dl/"),
         }
     }
 }
@@ -114,21 +131,29 @@ pub fn latest(
         .error_for_status()
         .and_then(|r| r.text())
         .map_err(|e| format!("can't ask for the latest release: {e}"))?;
-    parse_release(&text, &at.download_prefix).map(Some)
+    parse_release(&text, at).map(Some)
 }
 
-/// Reads a release from GitHub's JSON. Its tag must be a version, and it must carry both
-/// assets, from under `download_prefix`.
-pub fn parse_release(json: &str, download_prefix: &str) -> Result<Release, String> {
+/// Reads a release from GitHub's JSON. Its tag must be a version, its page must be the repo's,
+/// and it must carry both assets, from under the endpoint's download prefix. The URLs end up
+/// in a browser and a download, so they may hold no quote or space.
+pub fn parse_release(json: &str, at: &Endpoint) -> Result<Release, String> {
     let r: ReleaseJson =
         serde_json::from_str(json).map_err(|e| format!("unexpected release data: {e}"))?;
     let version = Version::parse(&r.tag_name)
         .ok_or_else(|| format!("the release tag {:?} isn't a version", r.tag_name))?;
+    let plain = |u: &str| !u.contains(['"', ' ', '\'']);
+    if !r.html_url.starts_with(&at.page_prefix) || !plain(&r.html_url) {
+        return Err(format!("release {version} has an unexpected page"));
+    }
     let asset = |name: &str| {
         r.assets
             .iter()
             .find(|a| a.name == name)
-            .filter(|a| a.browser_download_url.starts_with(download_prefix))
+            .filter(|a| {
+                a.browser_download_url.starts_with(&at.download_prefix)
+                    && plain(&a.browser_download_url)
+            })
             .ok_or_else(|| format!("release {version} has no usable {name}"))
     };
     let exe = asset(EXE_ASSET)?;
@@ -159,22 +184,45 @@ pub fn parse_sha256(text: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+/// Why a download didn't give a verified exe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DownloadError {
+    /// The file isn't the one the release names (deleted, never run).
+    Checksum,
+    Cancelled,
+    /// No connection, an HTTP error, a broken-off transfer or a write error.
+    Failed(String),
+}
+
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Checksum => write!(f, "the download doesn't match its checksum"),
+            Self::Cancelled => write!(f, "cancelled"),
+            Self::Failed(e) => write!(f, "{e}"),
+        }
+    }
+}
+
 /// Downloads the release's exe into `dir` (beside the running exe, so the swap is a rename on
 /// one drive) and checks its SHA-256. Returns the downloaded file; on any failure nothing is
-/// left behind. `progress` gets the bytes so far and the total.
+/// left behind. `progress` gets the bytes so far and the total, and returns `false` to cancel.
 pub fn download(
     client: &reqwest::blocking::Client,
     release: &Release,
     dir: &Path,
-    progress: &dyn Fn(u64, u64),
-) -> Result<PathBuf, String> {
+    progress: &dyn Fn(u64, u64) -> bool,
+) -> Result<PathBuf, DownloadError> {
+    let failed =
+        |what: &str, e: &dyn std::fmt::Display| DownloadError::Failed(format!("{what}: {e}"));
     let sha_text = client
         .get(&release.sha_url)
         .send()
         .and_then(|r| r.error_for_status())
         .and_then(|r| r.text())
-        .map_err(|e| format!("can't download the checksum: {e}"))?;
-    let want = parse_sha256(&sha_text).ok_or("the checksum file isn't valid")?;
+        .map_err(|e| failed("can't download the checksum", &e))?;
+    let want = parse_sha256(&sha_text)
+        .ok_or_else(|| DownloadError::Failed("the checksum file isn't valid".into()))?;
     let path = dir.join("mapcraft.exe.download");
     let result = fetch_checked(client, release, &path, &want, progress);
     if result.is_err() {
@@ -188,37 +236,148 @@ fn fetch_checked(
     release: &Release,
     path: &Path,
     want: &[u8; 32],
-    progress: &dyn Fn(u64, u64),
-) -> Result<(), String> {
+    progress: &dyn Fn(u64, u64) -> bool,
+) -> Result<(), DownloadError> {
+    let failed =
+        |what: &str, e: &dyn std::fmt::Display| DownloadError::Failed(format!("{what}: {e}"));
     let mut resp = client
         .get(&release.exe_url)
         .send()
         .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("can't download the update: {e}"))?;
+        .map_err(|e| failed("can't download the update", &e))?;
     let total = resp.content_length().unwrap_or(release.exe_size);
-    let mut out = File::create(path).map_err(|e| format!("can't write the update: {e}"))?;
+    let mut out = File::create(path).map_err(|e| failed("can't write the update", &e))?;
     let mut hash = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     let mut done = 0u64;
     loop {
         let n = resp
             .read(&mut buf)
-            .map_err(|e| format!("the download broke off: {e}"))?;
+            .map_err(|e| failed("the download broke off", &e))?;
         if n == 0 {
             break;
         }
         hash.update(&buf[..n]);
         out.write_all(&buf[..n])
-            .map_err(|e| format!("can't write the update: {e}"))?;
+            .map_err(|e| failed("can't write the update", &e))?;
         done += n as u64;
-        progress(done, total);
+        if !progress(done, total) {
+            return Err(DownloadError::Cancelled);
+        }
     }
     out.sync_all()
-        .map_err(|e| format!("can't write the update: {e}"))?;
+        .map_err(|e| failed("can't write the update", &e))?;
     if hash.finalize().as_slice() != want {
-        return Err("the download doesn't match its checksum".into());
+        return Err(DownloadError::Checksum);
     }
     Ok(())
+}
+
+/// What the last check found, for Settings (canvas artboard 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CheckStatus {
+    /// Not checked in this session.
+    #[default]
+    Idle,
+    Checking,
+    Latest,
+    Available(Version),
+    Failed,
+}
+
+/// What the background work reports, in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    /// The latest release (`None`: there's none yet), or why asking failed.
+    Checked(Result<Option<Release>, String>),
+    Progress(u64, u64),
+    Downloaded(Result<PathBuf, DownloadError>),
+}
+
+/// Runs the check and the download on background threads; the UI polls [`Updater::events`].
+/// With `network` off (tests) nothing is started.
+pub struct Updater {
+    endpoint: Endpoint,
+    network: bool,
+    events: (Sender<Event>, Receiver<Event>),
+    cancel: Arc<AtomicBool>,
+}
+
+impl Updater {
+    pub fn new(endpoint: Endpoint, network: bool) -> Self {
+        Self {
+            endpoint,
+            network,
+            events: mpsc::channel(),
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn check(&self, ctx: &egui::Context) {
+        if !self.network {
+            return;
+        }
+        let (tx, at, ctx) = (self.events.0.clone(), self.endpoint.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let r = client().and_then(|c| latest(&c, &at));
+            if let Err(e) = &r {
+                tracing::warn!("update check: {e}");
+            }
+            let _ = tx.send(Event::Checked(r));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn download(&self, release: &Release, dir: &Path, ctx: &egui::Context) {
+        if !self.network {
+            return;
+        }
+        self.cancel.store(false, Ordering::Relaxed);
+        let (tx, ctx) = (self.events.0.clone(), ctx.clone());
+        let (release, dir, cancel) = (release.clone(), dir.to_path_buf(), self.cancel.clone());
+        std::thread::spawn(move || {
+            let progress = |done, total| {
+                let _ = tx.send(Event::Progress(done, total));
+                ctx.request_repaint();
+                !cancel.load(Ordering::Relaxed)
+            };
+            let r = client()
+                .map_err(DownloadError::Failed)
+                .and_then(|c| download(&c, &release, &dir, &progress));
+            if let Err(e) = &r {
+                tracing::warn!("update download: {e}");
+            }
+            let _ = tx.send(Event::Downloaded(r));
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    pub fn events(&self) -> Vec<Event> {
+        self.events.1.try_iter().collect()
+    }
+
+    /// Feeds an event as if the background work sent it (tests).
+    pub fn inject(&self, e: Event) {
+        let _ = self.events.0.send(e);
+    }
+}
+
+/// A verified download waiting to be swapped in once the window has closed, and whether to
+/// start the new version then. `main` takes it after `run_native` returns.
+static PENDING: Mutex<Option<(PathBuf, bool)>> = Mutex::new(None);
+
+pub fn set_pending(downloaded: PathBuf, restart: bool) {
+    if let Ok(mut p) = PENDING.lock() {
+        *p = Some((downloaded, restart));
+    }
+}
+
+pub fn take_pending() -> Option<(PathBuf, bool)> {
+    PENDING.lock().ok()?.take()
 }
 
 /// Whether the update can be written into `dir`: tried with a scratch file (a folder under
@@ -326,10 +485,7 @@ mod tests {
     }
 
     fn endpoint(base: &str) -> Endpoint {
-        Endpoint {
-            latest_url: format!("{base}/latest"),
-            download_prefix: format!("{base}/dl/"),
-        }
+        Endpoint::at(base)
     }
 
     /// The checksum file exactly as the release workflow writes it.
@@ -370,17 +526,19 @@ mod tests {
     #[test]
     fn a_release_needs_both_assets_from_the_repo() {
         let ok = String::from_utf8(release_json("https://x", "v0.2.0")).unwrap();
-        let r = parse_release(&ok, "https://x/dl/").unwrap();
+        let r = parse_release(&ok, &Endpoint::at("https://x")).unwrap();
         assert_eq!(r.version, Version(0, 2, 0));
         assert_eq!(r.exe_size, 11);
         assert!(
-            parse_release(&ok, "https://elsewhere/").is_err(),
+            parse_release(&ok, &Endpoint::at("https://elsewhere")).is_err(),
             "foreign URLs"
         );
         let bad_tag = ok.replace("v0.2.0", "latest");
-        assert!(parse_release(&bad_tag, "https://x/dl/").is_err());
+        assert!(parse_release(&bad_tag, &Endpoint::at("https://x")).is_err());
         let no_sha = ok.replace("\"mapcraft.exe.sha256\"", "\"other.txt\"");
-        assert!(parse_release(&no_sha, "https://x/dl/").is_err());
+        assert!(parse_release(&no_sha, &Endpoint::at("https://x")).is_err());
+        let odd_page = ok.replace("https://x/page", "https://evil.example/page");
+        assert!(parse_release(&odd_page, &Endpoint::at("https://x")).is_err());
     }
 
     #[test]
@@ -389,25 +547,45 @@ mod tests {
         assert_eq!(latest(&client().unwrap(), &endpoint(&base)), Ok(None));
     }
 
+    /// (case, checksum file, exe body, cancel at the first chunk, what comes back)
+    type Case = (
+        &'static str,
+        Vec<u8>,
+        Vec<u8>,
+        bool,
+        Result<(), &'static str>,
+    );
+
     #[test]
     fn a_good_download_is_kept_and_a_bad_one_removed() {
         let exe = b"new version".to_vec();
-        for (name, sha, body, ok) in [
-            ("good", sha_file(&exe), exe.clone(), true),
+        let wrong = sha_file(b"something else");
+        let cases: [Case; 5] = [
+            ("good", sha_file(&exe), exe.clone(), false, Ok(())),
+            ("wrong hash", wrong, exe.clone(), false, Err("checksum")),
             (
-                "wrong hash",
-                sha_file(b"something else"),
-                exe.clone(),
+                "truncated",
+                sha_file(&exe),
+                exe[..4].to_vec(),
                 false,
+                Err("checksum"),
             ),
-            ("truncated", sha_file(&exe), exe[..4].to_vec(), false),
             (
                 "bad checksum file",
                 b"not a hash".to_vec(),
                 exe.clone(),
                 false,
+                Err("failed"),
             ),
-        ] {
+            (
+                "cancelled",
+                sha_file(&exe),
+                exe.clone(),
+                true,
+                Err("cancelled"),
+            ),
+        ];
+        for (name, sha, body, cancel, want) in cases {
             let served = serve(|base| {
                 vec![
                     ("/latest", 200, release_json(base, "v9.0.0")),
@@ -419,8 +597,13 @@ mod tests {
             let r = latest(&c, &endpoint(&served)).unwrap().unwrap();
             assert_eq!(r.version, Version(9, 0, 0));
             let dir = tempfile::tempdir().unwrap();
-            let got = download(&c, &r, dir.path(), &|_, _| {});
-            assert_eq!(got.is_ok(), ok, "{name}: {got:?}");
+            let got = download(&c, &r, dir.path(), &|_, _| !cancel);
+            let kind = got.as_ref().map(|_| ()).map_err(|e| match e {
+                DownloadError::Checksum => "checksum",
+                DownloadError::Cancelled => "cancelled",
+                DownloadError::Failed(_) => "failed",
+            });
+            assert_eq!(kind, want, "{name}: {got:?}");
             match got {
                 Ok(p) => assert_eq!(fs::read(p).unwrap(), exe),
                 Err(_) => assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0, "{name}"),

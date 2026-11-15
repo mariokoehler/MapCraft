@@ -16,6 +16,10 @@ pub enum ToastAction {
     /// Show the photo in LightCraft again.
     RetryLightCraft,
     OpenSettings,
+    /// Open the update dialog for the release on offer.
+    Update,
+    /// Show the release notes of the release on offer.
+    ReleaseNotes,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -24,6 +28,8 @@ pub struct Toast {
     pub title: String,
     pub text: String,
     pub action: Option<(String, ToastAction)>,
+    /// A second, quieter button beside the action.
+    pub second: Option<(String, ToastAction)>,
 }
 
 #[derive(Default)]
@@ -34,6 +40,12 @@ pub struct Toasts {
 impl Toasts {
     pub fn replace(&mut self, toasts: Vec<Toast>) {
         self.list = toasts;
+    }
+
+    /// Adds a toast beside the others, in place of one with the same title.
+    pub fn push(&mut self, toast: Toast) {
+        self.remove_titled(&toast.title.clone());
+        self.list.push(toast);
     }
 
     pub fn remove_titled(&mut self, title: &str) {
@@ -72,11 +84,19 @@ impl Toasts {
                                 ui.vertical(|ui| {
                                     ui.label(RichText::new(&t.title).strong().color(p.text_strong));
                                     ui.label(RichText::new(&t.text).color(p.text_normal));
-                                    if let Some((label, a)) = &t.action
-                                        && widgets::secondary(ui, p, None, label, true).clicked()
-                                    {
-                                        action = Some(*a);
-                                    }
+                                    ui.horizontal(|ui| {
+                                        if let Some((label, a)) = &t.action
+                                            && widgets::secondary(ui, p, None, label, true)
+                                                .clicked()
+                                        {
+                                            action = Some(*a);
+                                        }
+                                        if let Some((label, a)) = &t.second
+                                            && ui.link(label.as_str()).clicked()
+                                        {
+                                            action = Some(*a);
+                                        }
+                                    });
                                 });
                                 if widgets::ghost(ui, p, Icon::X, "Dismiss", true).clicked() {
                                     dismiss = Some(i);
@@ -125,6 +145,7 @@ pub fn for_summary(s: &Summary, first: bool, took: Duration) -> Vec<Toast> {
                 thousands(written)
             ),
             action: zoom("Zoom to new photos"),
+            second: None,
         });
     } else if first {
         out.push(Toast {
@@ -137,6 +158,7 @@ pub fn for_summary(s: &Summary, first: bool, took: Duration) -> Vec<Toast> {
                 duration(took)
             ),
             action: zoom("Zoom to new photos"),
+            second: None,
         });
     } else {
         let mut parts = vec![format!("{} new", thousands(s.new))];
@@ -156,6 +178,7 @@ pub fn for_summary(s: &Summary, first: bool, took: Duration) -> Vec<Toast> {
             title: "Rescan finished".into(),
             text: format!("{} · {}", parts.join(" · "), duration(took)),
             action: zoom("Zoom to new photos"),
+            second: None,
         });
     }
 
@@ -187,6 +210,7 @@ pub fn for_summary(s: &Summary, first: bool, took: Duration) -> Vec<Toast> {
                 .collect::<Vec<_>>()
                 .join(" "),
             action: None,
+            second: None,
         });
     } else if !notes.is_empty() {
         out.push(Toast {
@@ -194,6 +218,7 @@ pub fn for_summary(s: &Summary, first: bool, took: Duration) -> Vec<Toast> {
             title: "Some files were skipped".into(),
             text: notes.join(" "),
             action: None,
+            second: None,
         });
     }
     out
@@ -206,6 +231,7 @@ pub fn for_failure(message: &str) -> Toast {
         title: "Import failed".into(),
         text: format!("{message}. Nothing was lost; try again when the folder is reachable."),
         action: None,
+        second: None,
     }
 }
 
@@ -216,6 +242,7 @@ pub fn note(tone: Tone, title: &str, text: &str, action: Option<(&str, ToastActi
         title: title.to_owned(),
         text: text.to_owned(),
         action: action.map(|(l, a)| (l.to_owned(), a)),
+        second: None,
     }
 }
 

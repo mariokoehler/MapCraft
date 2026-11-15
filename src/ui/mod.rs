@@ -13,4 +13,5 @@ pub mod sources_dialog;
 pub mod strip;
 pub mod toasts;
 pub mod top_bar;
+pub mod update_dialog;
 pub mod widgets;

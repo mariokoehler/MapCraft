@@ -1,5 +1,5 @@
 //! The Settings dialog: where the companion apps are (canvas `MapCraft — Companion apps`,
-//! artboard 1; design.md §2.7).
+//! artboard 1) and updates (canvas `MapCraft — Updates`, artboard 1); design.md §2.7.
 //!
 //! Whether each path leads to a file is checked as it's typed (a local `stat`). Versions come
 //! from each app's command-line tool on a background thread, when the dialog opens and on Test.
@@ -11,10 +11,12 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use egui::{Align, Layout, RichText, TextEdit, Ui};
 
 use crate::companions::{self, Companion};
+use crate::import::scope::Check;
 use crate::settings::CompanionSettings;
 use crate::theme::Palette;
 use crate::ui::icons::Icon;
 use crate::ui::widgets;
+use crate::update::{self, CheckStatus};
 
 const APPS: [Companion; 2] = [Companion::PhotoCraft, Companion::LightCraft];
 
@@ -24,8 +26,13 @@ pub enum SettingsAction {
     Save {
         photocraft: PathBuf,
         lightcraft: PathBuf,
+        check_updates: bool,
     },
     Close,
+    /// Ask GitHub now (the dialog stays open and shows the answer).
+    CheckNow,
+    /// Open the update dialog for the release found.
+    Update,
 }
 
 /// A version read in the background: which app, for which path, and the version.
@@ -48,10 +55,16 @@ pub struct SettingsDialog {
     picker: Option<(usize, Receiver<Option<PathBuf>>)>,
     /// Whether the version tools may be run (off in tests).
     run_tools: bool,
+    check_updates: bool,
 }
 
 impl SettingsDialog {
-    pub fn open(c: &CompanionSettings, run_tools: bool, ctx: &egui::Context) -> Self {
+    pub fn open(
+        c: &CompanionSettings,
+        check_updates: bool,
+        run_tools: bool,
+        ctx: &egui::Context,
+    ) -> Self {
         let mut d = Self {
             paths: [
                 c.photocraft.display().to_string(),
@@ -62,6 +75,7 @@ impl SettingsDialog {
             versions: mpsc::channel(),
             picker: None,
             run_tools,
+            check_updates,
         };
         d.test(ctx);
         d
@@ -92,7 +106,12 @@ impl SettingsDialog {
         };
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, p: &Palette) -> Option<SettingsAction> {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        p: &Palette,
+        status: CheckStatus,
+    ) -> Option<SettingsAction> {
         for (i, path, v) in self.versions.1.try_iter() {
             if self.paths[i].trim() == path {
                 self.status[i] = Status::Found(v);
@@ -115,6 +134,7 @@ impl SettingsDialog {
         }
 
         let (mut save, mut test, mut cancel, mut browse) = (false, false, false, None);
+        let mut update_action = None;
         let close = widgets::dialog(
             ctx,
             p,
@@ -154,6 +174,7 @@ impl SettingsDialog {
                     }
                     ui.add_space(p.space_2);
                 }
+                update_action = self.updates(ui, p, status);
             },
             |ui| {
                 save = widgets::primary(ui, p, None, "Save", true).clicked();
@@ -185,12 +206,104 @@ impl SettingsDialog {
             Some(SettingsAction::Save {
                 photocraft: PathBuf::from(self.paths[0].trim()),
                 lightcraft: PathBuf::from(self.paths[1].trim()),
+                check_updates: self.check_updates,
             })
+        } else if update_action.is_some() {
+            update_action
         } else if close || cancel {
             Some(SettingsAction::Close)
         } else {
             None
         }
+    }
+
+    /// The Updates section: the version, the checkbox, Check now and what the check found.
+    fn updates(&mut self, ui: &mut Ui, p: &Palette, status: CheckStatus) -> Option<SettingsAction> {
+        let mut action = None;
+        let (r, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), p.stroke_hairline),
+            egui::Sense::hover(),
+        );
+        ui.painter().rect_filled(r, 0.0, p.border_subtle);
+        ui.add_space(p.space_2);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Updates").strong().color(p.text_strong));
+            ui.label(
+                RichText::new(format!("MapCraft {}", update::Version::current()))
+                    .small()
+                    .color(p.text_weak),
+            );
+        });
+        let label = "Check for updates when MapCraft starts";
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = p.space_2;
+            let state = if self.check_updates {
+                Check::On
+            } else {
+                Check::Off
+            };
+            let mut clicked = widgets::tri_check(ui, p, state, true, label).clicked();
+            clicked |= ui
+                .add(
+                    egui::Label::new(RichText::new(label).color(p.text_normal))
+                        .sense(egui::Sense::click()),
+                )
+                .clicked();
+            if clicked {
+                self.check_updates = !self.check_updates;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.set_min_height(24.0);
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let busy = status == CheckStatus::Checking;
+            if widgets::secondary(ui, p, None, "Check now", !busy).clicked() {
+                action = Some(SettingsAction::CheckNow);
+            }
+            ui.add_space(p.space_1);
+            match status {
+                CheckStatus::Idle => {}
+                CheckStatus::Checking => {
+                    ui.add(egui::Spinner::new().size(14.0).color(p.text_weak));
+                    ui.label(RichText::new("Asking GitHub…").small().color(p.text_weak));
+                }
+                CheckStatus::Latest => {
+                    ui.add(Icon::CircleCheck.image(14.0, p.status_success));
+                    ui.label(
+                        RichText::new("You have the latest version.")
+                            .small()
+                            .color(p.text_weak),
+                    );
+                }
+                CheckStatus::Available(v) => {
+                    ui.add(Icon::Download.image(14.0, p.accent));
+                    ui.label(
+                        RichText::new(format!("MapCraft {v} is available."))
+                            .small()
+                            .color(p.text_normal),
+                    );
+                    if widgets::primary(ui, p, None, "Update…", true).clicked() {
+                        action = Some(SettingsAction::Update);
+                    }
+                }
+                CheckStatus::Failed => {
+                    ui.add(Icon::CircleAlert.image(14.0, p.status_error));
+                    ui.label(
+                        RichText::new("Couldn’t reach GitHub. Try again later.")
+                            .small()
+                            .color(p.status_error),
+                    );
+                }
+            }
+        });
+        ui.label(
+            RichText::new(
+                "MapCraft asks GitHub for its latest release. GitHub sees your IP address and                  that MapCraft runs; nothing about your photos is sent.",
+            )
+            .small()
+            .color(p.text_weak),
+        );
+        action
     }
 
     /// One app: its path, Browse…, and what was found. Returns whether Browse… was clicked.

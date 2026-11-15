@@ -39,6 +39,26 @@ pub fn spawn(kind: Launch, path: &Path) -> io::Result<()> {
     cmd.spawn().map(|_| ())
 }
 
+/// Opens a web page in the default browser. Only for plain https URLs without a quote or
+/// space (`update::parse_release` checks them), so the quoted argument stays one.
+pub fn open_url(url: &str) -> io::Result<()> {
+    if !url.starts_with("https://") || url.contains(['"', ' ']) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a plain https URL",
+        ));
+    }
+    let mut cmd = std::process::Command::new("explorer.exe");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.raw_arg(format!("\"{url}\""));
+    }
+    #[cfg(not(windows))]
+    cmd.arg(url);
+    cmd.spawn().map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

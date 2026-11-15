@@ -30,7 +30,9 @@ use crate::ui::settings_dialog::{SettingsAction, SettingsDialog};
 use crate::ui::sources_dialog::{SourcesAction, SourcesDialog};
 use crate::ui::toasts::{self, Toast, ToastAction, Toasts};
 use crate::ui::top_bar::{self, BarFilters, Running, Task, TopBarAction};
+use crate::ui::update_dialog::{Stage, UpdateAction, UpdateDialog};
 use crate::ui::widgets::{self, Tone, thousands};
+use crate::update::{self, CheckStatus, DownloadError, Release, Updater, Version};
 
 /// Parallel metadata readers per import (design.md §3.4, user-confirmed).
 const READERS: usize = 4;
@@ -50,6 +52,11 @@ fn unreachable(d: &PhotoDetail) -> Toast {
         "Its drive or share isn't answering. Try again when it's reachable.",
         None,
     )
+}
+
+/// The folder of the running exe, where an update is downloaded and swapped in.
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok()?.parent().map(PathBuf::from)
 }
 
 /// A dialog to open at start (dev flag `--open`), for comparing screens with the mockups.
@@ -83,6 +90,10 @@ pub struct Config {
     /// The settings as loaded, and where to save them when they change (`None`: not saved).
     pub settings: Settings,
     pub settings_file: Option<PathBuf>,
+    /// Ask for a newer release at start (design.md §3.10; off in tests and debug builds).
+    pub check_updates: bool,
+    /// Where releases come from (GitHub, or a pretend one for trials).
+    pub update_endpoint: update::Endpoint,
 }
 
 /// A change to the library that waits until the thumbnail job has stopped. The job writes
@@ -156,6 +167,17 @@ pub struct MapCraftApp {
     filters: FilterPanel,
     /// Photos on the map the filter shows.
     shown: usize,
+    /// Updates (design.md §3.10): the background work, what the last check found, the release
+    /// on offer, the dialog, the verified download, and whether the running check was the one
+    /// at start (which announces itself with a toast).
+    updater: Updater,
+    update_status: CheckStatus,
+    offer: Option<Release>,
+    update_dialog: Option<UpdateDialog>,
+    downloaded: Option<PathBuf>,
+    auto_check: bool,
+    /// What the update steps asked for, when `launch` is off (for the tests).
+    update_calls: Vec<String>,
 }
 
 impl MapCraftApp {
@@ -227,7 +249,18 @@ impl MapCraftApp {
             facets: Facets::default(),
             filters: FilterPanel::default(),
             shown: 0,
+            updater: Updater::new(config.update_endpoint, config.network),
+            update_status: CheckStatus::Idle,
+            offer: None,
+            update_dialog: None,
+            downloaded: None,
+            auto_check: false,
+            update_calls: Vec::new(),
         };
+        if config.check_updates {
+            app.auto_check = true;
+            app.check_updates(ctx);
+        }
         app.refresh();
         app.find_companions();
         // Thumbnails left over from the last session (or never made) are made now.
@@ -575,6 +608,7 @@ impl MapCraftApp {
     fn open_settings(&mut self, ctx: &egui::Context) {
         self.settings_dialog = Some(SettingsDialog::open(
             &self.settings.companions,
+            self.settings.updates.check,
             self.launch,
             ctx,
         ));
@@ -584,11 +618,13 @@ impl MapCraftApp {
         let Some(dialog) = &mut self.settings_dialog else {
             return;
         };
-        match dialog.show(ctx, &self.palette) {
+        match dialog.show(ctx, &self.palette, self.update_status) {
             Some(SettingsAction::Save {
                 photocraft,
                 lightcraft,
+                check_updates,
             }) => {
+                self.settings.updates.check = check_updates;
                 let c = &mut self.settings.companions;
                 if c.lightcraft != lightcraft {
                     c.lightcraft_port = None;
@@ -600,7 +636,185 @@ impl MapCraftApp {
                 self.settings_dialog = None;
             }
             Some(SettingsAction::Close) => self.settings_dialog = None,
+            Some(SettingsAction::CheckNow) => {
+                self.auto_check = false;
+                self.check_updates(ctx);
+            }
+            Some(SettingsAction::Update) => {
+                self.settings_dialog = None;
+                self.open_update();
+            }
             None => {}
+        }
+    }
+
+    fn check_updates(&mut self, ctx: &egui::Context) {
+        self.update_status = CheckStatus::Checking;
+        self.updater.check(ctx);
+    }
+
+    /// The work a restart waits for, if any runs (canvas `MapCraft — Updates`, artboard 3).
+    fn update_waits_for(&self) -> Option<String> {
+        if self.job.is_some() {
+            Some("An import is running".into())
+        } else if self.thumbs.is_some() {
+            Some("Thumbnails are being made".into())
+        } else {
+            None
+        }
+    }
+
+    /// Takes the updater's news: a check's answer, the download's progress and outcome.
+    fn poll_updates(&mut self, ctx: &egui::Context) {
+        for e in self.updater.events() {
+            match e {
+                update::Event::Checked(Ok(Some(r))) if r.version > Version::current() => {
+                    self.update_status = CheckStatus::Available(r.version);
+                    if self.auto_check && self.update_dialog.is_none() {
+                        self.toasts.push(Toast {
+                            tone: Tone::Info,
+                            title: format!("MapCraft {} is available", r.version),
+                            text: format!("You have {}.", Version::current()),
+                            action: Some(("Update…".into(), ToastAction::Update)),
+                            second: Some(("What’s new".into(), ToastAction::ReleaseNotes)),
+                        });
+                    }
+                    self.offer = Some(r);
+                }
+                update::Event::Checked(Ok(_)) => self.update_status = CheckStatus::Latest,
+                update::Event::Checked(Err(_)) => self.update_status = CheckStatus::Failed,
+                update::Event::Progress(done, total) => {
+                    if let Some(d) = &mut self.update_dialog
+                        && matches!(d.stage, Stage::Downloading { .. })
+                    {
+                        d.stage = Stage::Downloading { done, total };
+                    }
+                }
+                update::Event::Downloaded(r) => {
+                    let Some(d) = &mut self.update_dialog else {
+                        // Cancelled meanwhile: a finished file isn't wanted.
+                        if let Ok(f) = r {
+                            let _ = std::fs::remove_file(f);
+                        }
+                        continue;
+                    };
+                    match r {
+                        Ok(f) => {
+                            self.downloaded = Some(f);
+                            d.stage = Stage::Ready { waiting: None };
+                        }
+                        Err(DownloadError::Cancelled) => self.update_dialog = None,
+                        Err(DownloadError::Checksum) => d.stage = Stage::Failed { checksum: true },
+                        Err(DownloadError::Failed(_)) => {
+                            d.stage = Stage::Failed { checksum: false }
+                        }
+                    }
+                }
+            }
+        }
+        // Ready: restart now, or once the running work is done.
+        let waits = self.update_waits_for();
+        let mut restart = false;
+        if let Some(d) = &mut self.update_dialog
+            && let Stage::Ready { waiting } = &mut d.stage
+        {
+            if waits.is_none() {
+                restart = true;
+            } else {
+                *waiting = waits;
+            }
+        }
+        if restart {
+            if let Some(d) = &mut self.update_dialog {
+                d.stage = Stage::Ready { waiting: None };
+            }
+            self.finish_update(true, ctx);
+        }
+    }
+
+    /// Opens the update dialog for the release on offer: its confirmation, or why MapCraft
+    /// can't update itself where it is.
+    fn open_update(&mut self) {
+        let Some(r) = self.offer.clone() else { return };
+        self.toasts
+            .remove_titled(&format!("MapCraft {} is available", r.version));
+        let dir = exe_dir();
+        let stage = match &dir {
+            Some(d) if update::folder_writable(d) => Stage::Confirm,
+            _ => Stage::NotWritable {
+                folder: dir.map_or_else(|| "its folder".into(), |d| d.display().to_string()),
+            },
+        };
+        self.update_dialog = Some(UpdateDialog::new(r, stage));
+    }
+
+    fn update_dialog(&mut self, ctx: &egui::Context) {
+        let Some(d) = &self.update_dialog else { return };
+        let Some(action) = d.show(ctx, &self.palette) else {
+            return;
+        };
+        let release = d.release.clone();
+        match action {
+            UpdateAction::Start => {
+                let Some(dir) = exe_dir() else { return };
+                self.updater.download(&release, &dir, ctx);
+                if let Some(d) = &mut self.update_dialog {
+                    d.stage = Stage::Downloading {
+                        done: 0,
+                        total: release.exe_size,
+                    };
+                }
+            }
+            UpdateAction::Cancel => {
+                self.updater.cancel();
+                self.update_dialog = None;
+            }
+            UpdateAction::Close => self.update_dialog = None,
+            UpdateAction::RestartNow => self.finish_update(true, ctx),
+            UpdateAction::RestartLater => {
+                self.finish_update(false, ctx);
+                self.toasts.push(toasts::note(
+                    Tone::Info,
+                    "Update ready",
+                    &format!(
+                        "MapCraft {} is installed when you close MapCraft.",
+                        release.version
+                    ),
+                    None,
+                ));
+            }
+            UpdateAction::ReleasePage => self.release_notes(),
+        }
+    }
+
+    /// Hands the verified download to `main`, which swaps it in once the window has closed,
+    /// and closes the window when `restart`.
+    fn finish_update(&mut self, restart: bool, ctx: &egui::Context) {
+        let Some(f) = self.downloaded.take() else {
+            return;
+        };
+        if !restart {
+            self.update_dialog = None;
+        }
+        if self.launch {
+            update::set_pending(f, restart);
+            if restart {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        } else {
+            self.update_calls
+                .push(format!("install, restart: {restart}"));
+        }
+    }
+
+    fn release_notes(&mut self) {
+        let Some(r) = &self.offer else { return };
+        if self.launch {
+            if let Err(e) = launch::open_url(&r.page_url) {
+                error!("can't open the release page: {e}");
+            }
+        } else {
+            self.update_calls.push(format!("open {}", r.page_url));
         }
     }
 
@@ -967,6 +1181,7 @@ impl MapCraftApp {
         let ctx = ui.ctx().clone();
         self.poll_job();
         self.poll_thumbs();
+        self.poll_updates(&ctx);
 
         let p = self.palette.clone();
         let running = self.running();
@@ -1032,6 +1247,7 @@ impl MapCraftApp {
             || self.sources_dialog.is_some()
             || self.narrow.is_some()
             || self.settings_dialog.is_some()
+            || self.update_dialog.is_some()
             || self.lc_add.is_some();
 
         // Keys: Ctrl+I shows or hides the panel, Esc closes the strip or clears the selection.
@@ -1176,6 +1392,8 @@ impl MapCraftApp {
                 let d = self.lc_photo.clone();
                 self.show_in_lightcraft(d, false);
             }
+            Some(ToastAction::Update) => self.open_update(),
+            Some(ToastAction::ReleaseNotes) => self.release_notes(),
             Some(ToastAction::OpenSettings) => {
                 self.toasts.replace(Vec::new());
                 self.open_settings(&ctx);
@@ -1187,6 +1405,7 @@ impl MapCraftApp {
         self.sources_dialog(&ctx);
         self.narrow_dialog(&ctx);
         self.settings_dialog(&ctx);
+        self.update_dialog(&ctx);
         self.add_dialog(&ctx);
 
         if let Some((since, total, frames)) = &mut self.perf {
@@ -1246,6 +1465,8 @@ mod tests {
                                 network: false,
                                 settings: no_apps(),
                                 settings_file: None,
+                                check_updates: false,
+                                update_endpoint: crate::update::Endpoint::github(),
                             },
                         )
                     });
@@ -1943,6 +2164,8 @@ mod tests {
                                 network: false,
                                 settings: no_apps(),
                                 settings_file: None,
+                                check_updates: false,
+                                update_endpoint: crate::update::Endpoint::github(),
                             },
                         )
                     });
@@ -2207,5 +2430,142 @@ owhere\lightcraft.exe",
         assert_eq!(app.found, [false, true]);
         let saved = Settings::load_from(&settings_file).unwrap();
         assert_eq!(saved.companions, app.settings.companions);
+    }
+
+    fn release() -> Release {
+        let base = "https://github.com/mariokoehler/MapCraft/releases";
+        Release {
+            version: Version(99, 0, 0),
+            page_url: format!("{base}/tag/v99.0.0"),
+            exe_url: format!("{base}/download/v99.0.0/mapcraft.exe"),
+            exe_size: 27_500_000,
+            sha_url: format!("{base}/download/v99.0.0/mapcraft.exe.sha256"),
+        }
+    }
+
+    /// Feeds the app what the background updater would report.
+    fn inject(h: &mut Harness<'static, Option<MapCraftApp>>, e: update::Event) {
+        h.state_mut().as_mut().unwrap().updater.inject(e);
+        h.run_steps(3);
+    }
+
+    #[test]
+    fn an_update_is_offered_confirmed_downloaded_and_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = harness(dir.path());
+        h.run_steps(2);
+        // The check at start finds a newer release: a toast offers it.
+        h.state_mut().as_mut().unwrap().auto_check = true;
+        inject(&mut h, update::Event::Checked(Ok(Some(release()))));
+        h.get_by_label("MapCraft 99.0.0 is available");
+        h.get_by_label("What’s new").click();
+        h.run_steps(2);
+        assert_eq!(
+            h.state().as_ref().unwrap().update_calls,
+            ["open https://github.com/mariokoehler/MapCraft/releases/tag/v99.0.0"]
+        );
+
+        // Update… asks first, with both versions and the size.
+        h.get_by_label("Update…").click();
+        h.run_steps(3);
+        assert!(
+            h.query_by_label("MapCraft 99.0.0 is available").is_none(),
+            "the toast gives way to the dialog"
+        );
+        h.get_by_label("Update MapCraft");
+        h.get_by_label("27.5 MB from GitHub");
+        h.get_by_label("Not now").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Update MapCraft").is_none());
+
+        // Settings can open it again; this time it downloads, fails its checksum, then works.
+        h.state_mut().as_mut().unwrap().open_update();
+        h.run_steps(3);
+        h.get_by_label("Update and restart").click();
+        h.run_steps(3);
+        h.get_by_label("Downloading MapCraft 99.0.0…");
+        inject(&mut h, update::Event::Progress(12_400_000, 27_500_000));
+        h.get_by_label("12.4 of 27.5 MB");
+        inject(
+            &mut h,
+            update::Event::Downloaded(Err(DownloadError::Checksum)),
+        );
+        h.get_by_label_contains("doesn’t match its checksum");
+        h.get_by_label("Try again").click();
+        h.run_steps(3);
+        let file = dir.path().join("mapcraft.exe.download");
+        std::fs::write(&file, b"new").unwrap();
+        inject(&mut h, update::Event::Downloaded(Ok(file)));
+        // Nothing runs, so it installs and restarts at once.
+        assert_eq!(
+            h.state().as_ref().unwrap().update_calls.last().unwrap(),
+            "install, restart: true"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_download_closes_the_dialog() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = harness(dir.path());
+        h.run_steps(2);
+        inject(&mut h, update::Event::Checked(Ok(Some(release()))));
+        assert!(
+            h.query_by_label("MapCraft 99.0.0 is available").is_none(),
+            "only the check at start announces itself"
+        );
+        h.state_mut().as_mut().unwrap().open_update();
+        h.run_steps(3);
+        h.get_by_label("Update and restart").click();
+        h.run_steps(3);
+        h.get_by_label("Cancel").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Update MapCraft").is_none());
+        // A download that finishes anyway is thrown away.
+        let file = dir.path().join("mapcraft.exe.download");
+        std::fs::write(&file, b"new").unwrap();
+        inject(&mut h, update::Event::Downloaded(Ok(file.clone())));
+        assert!(!file.exists());
+        assert!(h.state().as_ref().unwrap().update_calls.is_empty());
+    }
+
+    #[test]
+    fn settings_check_for_updates_and_turn_the_check_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = harness_with(dir.path(), Some(StartDialog::Settings));
+        h.run_steps(2);
+        h.get_by_label(&format!("MapCraft {}", env!("CARGO_PKG_VERSION")));
+        h.get_by_label("Check now").click();
+        h.run_steps(2);
+        h.get_by_label("Asking GitHub…");
+        inject(&mut h, update::Event::Checked(Ok(None)));
+        h.get_by_label("You have the latest version.");
+        h.get_by_label("Check now").click();
+        h.run_steps(2);
+        inject(&mut h, update::Event::Checked(Err("offline".into())));
+        h.get_by_label("Couldn’t reach GitHub. Try again later.");
+        h.get_by_label("Check now").click();
+        h.run_steps(2);
+        inject(&mut h, update::Event::Checked(Ok(Some(release()))));
+        h.get_by_label("MapCraft 99.0.0 is available.");
+
+        h.query_all_by_label("Check for updates when MapCraft starts")
+            .next()
+            .unwrap()
+            .click();
+        h.run_steps(2);
+        h.get_by_label("Save").click();
+        h.run_steps(3);
+        assert!(!h.state().as_ref().unwrap().settings.updates.check);
+
+        // Update… in Settings opens the update dialog.
+        h.state_mut()
+            .as_mut()
+            .unwrap()
+            .open_settings(&egui::Context::default());
+        h.run_steps(3);
+        h.get_by_label("Update…").click();
+        h.run_steps(3);
+        h.get_by_label("Update MapCraft");
+        assert!(h.query_by_label("Companion apps").is_none());
     }
 }
