@@ -689,6 +689,9 @@ Thumbnail jobs use plain `std::thread` workers, not `rayon`.
   - `logs/`.
 - A data folder on a NAS works but is slow, and SQLite over SMB risks corruption if two machines
   open it at once. The app warns and doesn't forbid it **(user, 2026-11-14)**.
+- **What MapCraft owns in it** (M8): `library.sqlite` (with `-wal`, `-shm`), `thumbs/`,
+  `previews/`, `tiles/`, `geonames/`. Usage, moving, freeing space and removing an old copy act
+  on these entries only, never on the folder as a whole: the user may pick `D:\`.
 
 ### 3.4 Data model (M2, unconfirmed)
 
@@ -1175,6 +1178,32 @@ Milestones are rough and get refined as we go.
     the Settings section), and a rehearsal on 2026-11-15: a copy of the release exe in the
     scratchpad, a pretend GitHub on a local port (`--update-from`), the buttons pressed
     through UI Automation. The exe was swapped and restarted with the same options.
+
+- **M8 — Data folder** (asked for by the user, 2026-11-15; released as v0.2.0, which is also
+  the user's first update test). In Settings:
+  - **Where it is,** with **Change…**: pick a folder, then either *move the data there* or
+    *start empty there*; a folder that already holds a MapCraft library can be *used as it is*.
+    The settings file stays in `%APPDATA%\MapCraft` (it records where the data folder is).
+  - **How much space it uses,** by kind: library, thumbnails, detail previews, map tiles,
+    place names; counted on a background thread.
+  - **Free up space…**: delete thumbnails, detail previews and map tiles, which MapCraft makes
+    again (thumbnails by re-reading every photo from its drive; previews when a photo is
+    opened; tiles as the map is browsed). Place names aren't offered: they need a download.
+  - **Defaults (unconfirmed):**
+    - Switching = copy, save the setting, restart; the running app is never re-pointed. The
+      library is copied with SQLite's own snapshot (`VACUUM INTO`), never as an open file.
+    - Not while an import or the place-name download runs; the thumbnail job is stopped first.
+    - The picked folder: the same or one inside the current data folder is refused; a folder
+      with other files gets a `MapCraft` subfolder; one with a MapCraft library is never
+      overwritten (only *use it*); a network path gets the §3.3 warning.
+    - A failed or cancelled copy removes only what it wrote, and nothing switches.
+    - The old copy stays after the switch; the restarted app offers to remove it (its
+      MapCraft entries only).
+    - A run with `--data` shows usage and frees space but doesn't offer Change….
+    - Freeing thumbnails resets their state in the library first, then deletes the files.
+    - Dev flag `--settings <file>`: a scratch settings file for trials, kept across a restart.
+  - The look per the canvas `MapCraft — Data folder` (made 2026-11-15, awaiting review): the Settings dialog no longer
+    fits in one column, so it gets sections.
 
 **Later:** a keyed tile provider and offline PMTiles (§3.5(b); walkers has a `pmtiles`
 feature, and its vector rendering needs the wgpu renderer, which eframe uses by default), the
