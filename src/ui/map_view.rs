@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use egui::{
-    Align2, Area, Button, CornerRadius, Frame, Id, Margin, Order, Rect, RichText, Sense, Stroke,
-    Ui, text::LayoutJob,
+    Align2, Area, Button, CornerRadius, Frame, Id, Margin, Order, Rect, RichText, Sense, Shape,
+    Stroke, Ui, text::LayoutJob,
 };
 use walkers::{
     HttpTiles, Map, MapMemory, MercatorProjection, Plugin, Position, Projection, Projector, lat_lon,
@@ -21,6 +21,7 @@ use walkers::{
 
 use crate::cluster::{self, Clusters, MAX_LEVEL};
 use crate::import::Bounds;
+use crate::import::scope::Check;
 use crate::library::{PhotoPoint, Thumb};
 use crate::provider::Provider;
 use crate::theme::Palette;
@@ -33,11 +34,33 @@ use crate::ui::widgets;
 const HOME: (f64, f64, f64) = (50.0, 10.0, 4.0); // lat, lon, zoom
 
 /// What the map asks of the app this frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MapAction {
     AddFolder,
     /// A marker was clicked (`Some`), or the map's background (`None`).
     Select(Option<i64>),
+    /// Tagging mode: a tick was clicked; these photos' ticks flip together (design.md §2.9(h)).
+    Toggle(Vec<i64>),
+    /// Tagging mode, while picking: this spot on the track was clicked (design.md §2.9(f)).
+    Picked(f64, f64),
+}
+
+/// The colour of a track (the token `map-track` proposed on the canvas `MapCraft — Geotagging`).
+pub const TRACK: egui::Color32 = egui::Color32::from_rgb(0x1f, 0x6f, 0xd0);
+/// A track without times: paler, and dashed.
+const TRACK_UNTIMED: egui::Color32 = egui::Color32::from_rgb(0x6b, 0x8f, 0xb8);
+
+/// What tagging mode draws besides its photos (design.md §2.9(c)): the track, its pauses, the
+/// library's placed photos as dim dots, which candidates are unticked, and whether a click on
+/// the track picks a spot.
+#[derive(Debug, Clone, Default)]
+pub struct TagLayer {
+    pub lines: Vec<Vec<(f64, f64)>>,
+    pub timed: bool,
+    pub pauses: Vec<(f64, f64)>,
+    pub background: Vec<(f64, f64)>,
+    pub off: HashSet<i64>,
+    pub picking: bool,
 }
 
 pub struct MapView {
@@ -73,6 +96,10 @@ pub struct MapView {
     keys: bool,
     /// Filters are set: the points are the photos they show.
     filtered: bool,
+    /// Tagging mode's layer, while it's on (design.md §2.9).
+    tag: Option<TagLayer>,
+    /// The spot on the track under the pointer (and its screen position), in tagging mode.
+    track_hover: Option<((f64, f64), egui::Pos2)>,
 }
 
 impl MapView {
@@ -107,7 +134,26 @@ impl MapView {
             last_rect: Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 760.0)),
             keys: true,
             filtered: false,
+            tag: None,
+            track_hover: None,
         }
+    }
+
+    /// Turns tagging mode's layer on (`Some`) or off.
+    pub fn set_tag(&mut self, tag: Option<TagLayer>) {
+        if tag.is_none() || self.tag.is_none() {
+            self.strip = None;
+        }
+        self.tag = tag;
+    }
+
+    pub fn tag_mut(&mut self) -> Option<&mut TagLayer> {
+        self.tag.as_mut()
+    }
+
+    /// The spot on the track under the pointer, and where it is on screen.
+    pub fn track_hover(&self) -> Option<((f64, f64), egui::Pos2)> {
+        self.track_hover
     }
 
     /// Whether filters narrow the points (the zoom-to-all control says so).
@@ -241,8 +287,13 @@ impl MapView {
         let _ = self.memory.set_zoom(fit_zoom(b, self.last_rect.size()));
     }
 
-    /// The area of every photo on the map, if there are any.
+    /// The area of every photo on the map, if there are any; in tagging mode, the track's.
     pub fn all_bounds(&self) -> Option<Bounds> {
+        if let Some(t) = &self.tag {
+            let mut it = t.lines.iter().flatten();
+            let first = it.next()?;
+            return Some(it.fold(Bounds::around(first.0, first.1), |b, p| b.include(p.0, p.1)));
+        }
         let mut it = self.points.iter();
         let first = it.next()?;
         Some(it.fold(Bounds::around(first.lat, first.lon), |b, p| {
@@ -277,6 +328,12 @@ impl MapView {
         self.textures.begin_frame(ui.ctx());
         let selected_node = self.selected_node();
         let mut out = PhotosOut::default();
+        let mut track_out = TrackOut::default();
+        let track = self.tag.as_ref().map(|tag| TrackLayer {
+            tag,
+            palette: p,
+            out: &mut track_out,
+        });
         let photos = Photos {
             clusters: self.clusters.as_deref(),
             points: &self.points,
@@ -287,14 +344,20 @@ impl MapView {
             selected: self.selected,
             selected_node,
             strip: self.strip.as_ref(),
+            off: self.tag.as_ref().map(|t| &t.off),
+            picking: self.tag.as_ref().is_some_and(|t| t.picking),
             out: &mut out,
         };
         let tiles = self.tiles.as_mut().map(|t| t as &mut dyn walkers::Tiles);
-        let map = Map::new(tiles, &mut self.memory, self.home)
+        let mut map = Map::new(tiles, &mut self.memory, self.home)
             .zoom_with_ctrl(false) // the wheel zooms (design.md §2.3)
-            .double_click_to_zoom(true)
-            .with_plugin(photos);
+            .double_click_to_zoom(true);
+        if let Some(t) = track {
+            map = map.with_plugin(t); // under the photos
+        }
+        let map = map.with_plugin(photos);
         let rect = ui.add(map).rect;
+        self.track_hover = track_out.hover;
         self.hovered = out.hovered;
         self.last_rect = rect;
         // The strip belongs to one zoom level's group.
@@ -305,7 +368,10 @@ impl MapView {
         {
             self.strip = None;
         }
+        let picking = self.tag.as_ref().is_some_and(|t| t.picking);
         let mut action = match out.clicked {
+            _ if picking => track_out.picked.map(|(a, o)| MapAction::Picked(a, o)),
+            _ if out.toggle.is_some() => out.toggle.take().map(MapAction::Toggle),
             Some(Clicked::Photo(id)) => Some(MapAction::Select(Some(id))),
             Some(Clicked::Group(z, i)) => {
                 self.open_group(z, i);
@@ -328,10 +394,12 @@ impl MapView {
                 &self.names,
                 &mut self.wanted_names,
                 self.selected,
+                self.tag.as_ref().map(|t| &t.off),
             );
             match a {
                 Some(StripAction::Close) => self.strip = None,
                 Some(StripAction::Select(id)) => action = Some(MapAction::Select(Some(id))),
+                Some(StripAction::Toggle(id)) => action = Some(MapAction::Toggle(vec![id])),
                 None => {}
             }
         }
@@ -603,6 +671,10 @@ struct Photos<'a> {
     selected: Option<i64>,
     selected_node: Option<(usize, usize)>,
     strip: Option<&'a Strip>,
+    /// Tagging mode: the unticked photos (every marker gets a tick).
+    off: Option<&'a HashSet<i64>>,
+    /// Tagging mode, picking a spot: markers take no clicks.
+    picking: bool,
     out: &'a mut PhotosOut,
 }
 
@@ -622,6 +694,8 @@ struct PhotosOut {
     level: Option<usize>,
     /// Where the open strip points: just above its group's marker.
     strip_tip: Option<egui::Pos2>,
+    /// A tick was clicked: the photos it stands for.
+    toggle: Option<Vec<i64>>,
 }
 
 /// Dots closer than this many pixels are drawn once: a dot is 12 px wide, so closer neighbours
@@ -639,6 +713,8 @@ struct Shown {
     reach: f32,
     /// Stable across rebuilds while the group is the same (its centre), for egui's hit ids.
     key: (u64, u64),
+    /// A single photo still without its thumbnail: drawn as a dot (tagging mode lists it).
+    dot: bool,
 }
 
 impl Plugin for Photos<'_> {
@@ -702,7 +778,8 @@ impl Plugin for Photos<'_> {
                 continue;
             }
             let rep = pts[n.rep as usize];
-            if n.count == 1 && rep.thumb == Thumb::Pending {
+            let is_dot = n.count == 1 && rep.thumb == Thumb::Pending;
+            if is_dot && self.off.is_none() {
                 dot(ui, pos);
                 continue;
             }
@@ -727,6 +804,7 @@ impl Plugin for Photos<'_> {
                 rep,
                 reach,
                 key: (n.x.to_bits(), n.y.to_bits()),
+                dot: is_dot,
             });
         }
         // Southern markers in front (they're nearer the viewer's eye line).
@@ -736,6 +814,9 @@ impl Plugin for Photos<'_> {
         // registration is the stacking order), then painting with the hover known.
         let mut hovered = None;
         for m in &shown {
+            if m.dot || self.picking {
+                continue; // a dot takes no clicks; while picking, the track does
+            }
             let rect = markers::frame_rect(p, m.pos, false);
             let hit = rect.union(Rect::from_center_size(m.pos, egui::vec2(10.0, 12.0)));
             let id = if m.count > 1 {
@@ -775,6 +856,10 @@ impl Plugin for Photos<'_> {
         };
         let mut last = Vec::new();
         for m in &shown {
+            if m.dot {
+                dot(ui, m.pos);
+                continue;
+            }
             let (hover, sel) = (hovered == Some(m.level_index), is_selected(m));
             if sel && self.strip.is_some() {
                 self.out.strip_tip = Some(egui::pos2(
@@ -801,6 +886,191 @@ impl Plugin for Photos<'_> {
             }
             let face = face(self.textures, &m.rep);
             markers::paint(ui, p, m.pos, face, m.count, hover, sel);
+        }
+
+        // Tagging mode: each marker's tick, over everything (registered last, so on top).
+        if let Some(off) = self.off {
+            for m in &shown {
+                let ids: Vec<i64> = if m.count > 1 {
+                    c.members(level, m.level_index)
+                        .iter()
+                        .map(|&i| pts[i as usize].id)
+                        .collect()
+                } else {
+                    vec![m.rep.id]
+                };
+                let unticked = ids.iter().filter(|id| off.contains(id)).count();
+                let state = match unticked {
+                    0 => Check::On,
+                    u if u == ids.len() => Check::Off,
+                    _ => Check::Mixed,
+                };
+                if state == Check::Off && !m.dot {
+                    markers::fade(ui, p, m.pos);
+                }
+                let center = if m.dot {
+                    m.pos + egui::vec2(-9.0, -9.0)
+                } else {
+                    markers::frame_rect(p, m.pos, false).left_top() + egui::vec2(1.0, 1.0)
+                };
+                let what = if m.count > 1 {
+                    format!("{} photos", m.count)
+                } else {
+                    match self.names.get(&m.rep.id) {
+                        Some(n) => n.clone(),
+                        None => "photo".to_owned(),
+                    }
+                };
+                let name = match state {
+                    Check::On | Check::Mixed => format!("Untick {what}"),
+                    Check::Off => format!("Tick {what}"),
+                };
+                let id = if m.count > 1 {
+                    Id::unique(("photo-group-tick", level, m.key))
+                } else {
+                    Id::unique(("photo-tick", m.rep.id))
+                };
+                if markers::tick(ui, p, center, state, &name, id).clicked() && !self.picking {
+                    // Mixed or on: all off; off: all on.
+                    let on = state == Check::Off;
+                    self.out.toggle = Some(
+                        ids.into_iter()
+                            .filter(|id| off.contains(id) == on)
+                            .collect(),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Tagging mode's track under the photos (design.md §2.9(c)): the library's placed photos as
+/// dim dots, each line with a white halo, start and end, the pauses; and the spot on the track
+/// nearest the pointer (for its time, and for picking).
+struct TrackLayer<'a> {
+    tag: &'a TagLayer,
+    palette: &'a Palette,
+    out: &'a mut TrackOut,
+}
+
+#[derive(Default)]
+struct TrackOut {
+    hover: Option<((f64, f64), egui::Pos2)>,
+    picked: Option<(f64, f64)>,
+}
+
+/// How close (px) the pointer must be to the track for its time to show, or a pick to count.
+const TRACK_REACH: f32 = 14.0;
+
+impl Plugin for TrackLayer<'_> {
+    fn run(
+        self: Box<Self>,
+        ui: &mut Ui,
+        response: &egui::Response,
+        projector: &Projector,
+        _memory: &MapMemory,
+    ) {
+        let p = self.palette;
+        let clip = ui.clip_rect();
+        let painter = ui.painter().clone();
+        let screen = |lat: f64, lon: f64| {
+            let v = projector.project(lat_lon(lat, lon));
+            egui::pos2(v.x, v.y)
+        };
+        let dim = p.map_pin.gamma_multiply(0.35);
+        let ring = p.map_marker_frame.gamma_multiply(0.35);
+        for &(lat, lon) in &self.tag.background {
+            let pos = screen(lat, lon);
+            if clip.contains(pos) {
+                painter.circle(pos, 3.5, dim, Stroke::new(1.0, ring));
+            }
+        }
+        let color = if self.tag.timed { TRACK } else { TRACK_UNTIMED };
+        let pointer = response.hover_pos();
+        let mut best: Option<(f32, egui::Pos2)> = None;
+        let mut drawn: Vec<Vec<egui::Pos2>> = Vec::new();
+        for line in &self.tag.lines {
+            let mut pts: Vec<egui::Pos2> = Vec::with_capacity(line.len());
+            for &(lat, lon) in line {
+                let s = screen(lat, lon);
+                if pts.last().is_none_or(|l| l.distance(s) >= 1.5) {
+                    pts.push(s);
+                }
+            }
+            if let Some(ptr) = pointer {
+                for w in pts.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    let ab = b - a;
+                    let f = if ab.length_sq() > 0.0 {
+                        ((ptr - a).dot(ab) / ab.length_sq()).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let q = a + ab * f;
+                    let d = q.distance(ptr);
+                    if best.is_none_or(|b| d < b.0) {
+                        best = Some((d, q));
+                    }
+                }
+            }
+            drawn.push(pts);
+        }
+        for pts in &drawn {
+            if pts.len() < 2 {
+                continue;
+            }
+            painter.add(Shape::line(
+                pts.clone(),
+                Stroke::new(7.0, p.map_marker_frame),
+            ));
+            if self.tag.timed {
+                painter.add(Shape::line(pts.clone(), Stroke::new(3.5, color)));
+            } else {
+                painter.extend(Shape::dashed_line(pts, Stroke::new(3.5, color), 7.0, 6.0));
+            }
+        }
+        let first = drawn.iter().find(|l| !l.is_empty()).and_then(|l| l.first());
+        let last = drawn
+            .iter()
+            .rev()
+            .find(|l| !l.is_empty())
+            .and_then(|l| l.last());
+        for (pos, fill) in [(first, p.status_success), (last, p.status_error)] {
+            if let Some(&pos) = pos {
+                painter.circle(pos, 6.0, fill, Stroke::new(2.5, p.map_marker_frame));
+            }
+        }
+        for &(lat, lon) in &self.tag.pauses {
+            let pos = screen(lat, lon) + egui::vec2(14.0, -14.0);
+            painter.circle(pos, 9.0, p.map_marker_frame, Stroke::new(1.5, color));
+            for dx in [-2.5, 2.5] {
+                painter.line_segment(
+                    [pos + egui::vec2(dx, -3.5), pos + egui::vec2(dx, 3.5)],
+                    Stroke::new(2.0, color),
+                );
+            }
+        }
+        if let Some((d, q)) = best
+            && d <= TRACK_REACH
+        {
+            let g = projector.unproject(egui::vec2(q.x, q.y));
+            self.out.hover = Some(((g.y(), g.x()), q));
+            if self.tag.picking {
+                painter.circle(
+                    q,
+                    12.0,
+                    p.map_marker_frame.gamma_multiply(0.35),
+                    Stroke::new(2.0, p.accent),
+                );
+                if response.clicked() {
+                    self.out.picked = Some((g.y(), g.x()));
+                }
+            } else {
+                painter.circle(q, 4.0, p.map_marker_frame, Stroke::new(2.0, color));
+            }
+        }
+        if self.tag.picking {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
     }
 }

@@ -36,6 +36,15 @@ pub enum TopBarAction {
     /// The Filters button opened or closed its panel.
     Filters,
     Settings,
+    /// Tag photos from a GPX track (design.md §2.9).
+    Geotag,
+}
+
+/// Tagging mode as the top bar sees it: on (everything else waits), or why it can't start.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Tagging {
+    pub on: bool,
+    pub blocked: Option<&'static str>,
 }
 
 /// The filters as the top bar shows them: the panel's button, how many are set, and how many
@@ -53,7 +62,9 @@ pub fn show(
     running: Option<Running>,
     search: &mut SearchBox,
     filters: BarFilters<'_>,
+    tagging: Tagging,
 ) -> Option<TopBarAction> {
+    let free = !tagging.on; // in tagging mode the rest of the bar waits
     let mut action = None;
     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
         ui.add_space(p.space_2);
@@ -66,19 +77,21 @@ pub fn show(
         )
         .on_hover_text("MapCraft");
         ui.add_space(p.space_1);
-        search.field(ui, p);
-        if counts.with_position > 0 && filters.panel.button(ui, p, filters.active) {
-            action = Some(TopBarAction::Filters);
-        }
+        ui.add_enabled_ui(free, |ui| {
+            search.field(ui, p);
+            if counts.with_position > 0 && filters.panel.button(ui, p, filters.active) {
+                action = Some(TopBarAction::Filters);
+            }
+        });
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.add_space(p.space_1);
-            if widgets::ghost(ui, p, Icon::Settings, "Settings", true).clicked() {
+            if widgets::ghost(ui, p, Icon::Settings, "Settings", free).clicked() {
                 action = Some(TopBarAction::Settings);
             }
             // Folders can be added while thumbnails are made: the import waits for them to stop.
             let busy = running.is_some_and(|r| r.task == Task::Import);
-            if widgets::ghost(ui, p, Icon::Folders, "Sources", true).clicked() {
+            if widgets::ghost(ui, p, Icon::Folders, "Sources", free).clicked() {
                 action = Some(TopBarAction::Sources);
             }
             let add_hint = if busy {
@@ -86,8 +99,19 @@ pub fn show(
             } else {
                 "Add folder…"
             };
-            if widgets::ghost(ui, p, Icon::FolderPlus, add_hint, !busy).clicked() {
+            if widgets::ghost(ui, p, Icon::FolderPlus, add_hint, !busy && free).clicked() {
                 action = Some(TopBarAction::AddFolder);
+            }
+            if counts.photos > 0 {
+                let hint = match (tagging.on, tagging.blocked) {
+                    (true, _) => "Tag photos from a GPX track…: tagging is open",
+                    (false, Some(why)) => why,
+                    (false, None) => "Tag photos from a GPX track…",
+                };
+                let ok = !tagging.on && tagging.blocked.is_none();
+                if widgets::ghost(ui, p, Icon::Route, hint, ok).clicked() {
+                    action = Some(TopBarAction::Geotag);
+                }
             }
             if let Some(r) = running
                 && progress_chip(ui, p, r)

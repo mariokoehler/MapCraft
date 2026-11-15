@@ -5,6 +5,7 @@ pub mod data_dialogs;
 pub mod details;
 pub mod filters;
 pub mod folder_dialog;
+pub mod geotag_panel;
 pub mod icons;
 pub mod map_view;
 pub mod markers;

@@ -56,6 +56,8 @@ impl Kind {
                 "library.sqlite-wal",
                 "library.sqlite-shm",
                 "backups",
+                // The undo journals of geotagging (geotag::journal, design.md §2.9(i)).
+                "geotag",
             ],
             Kind::Places => &["geonames"],
         }
@@ -349,15 +351,18 @@ fn copy_all(
                         done.add(size_of(&from.join(e)));
                     }
                 }
-                // The backups are databases too: each goes through a snapshot.
-                copy_tree(
-                    &from.join("backups"),
-                    &to.join("backups"),
-                    kind,
-                    &mut done,
-                    total,
-                    progress,
-                )?;
+                // The backups are databases too: each goes through a snapshot. The geotag
+                // journals are plain files.
+                for dir in ["backups", "geotag"] {
+                    copy_tree(
+                        &from.join(dir),
+                        &to.join(dir),
+                        kind,
+                        &mut done,
+                        total,
+                        progress,
+                    )?;
+                }
             }
             _ => {
                 for e in kind.entries() {

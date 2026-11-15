@@ -39,6 +39,9 @@ fn main() -> eframe::Result {
         Some("filters") => Some(app::StartDialog::Filters(None)),
         Some("settings") => Some(app::StartDialog::Settings),
         Some("data") => Some(app::StartDialog::DataFolder),
+        Some(s) if s.starts_with("geotag=") => Some(app::StartDialog::Geotag(
+            std::path::PathBuf::from(&s["geotag=".len()..]),
+        )),
         Some(s) if s.starts_with("change-data=") => Some(app::StartDialog::ChangeData(
             std::path::PathBuf::from(&s["change-data=".len()..]),
         )),

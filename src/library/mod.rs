@@ -120,6 +120,25 @@ impl Counts {
     }
 }
 
+/// A photo geotagging may place (design.md §2.9(g)).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeoPhoto {
+    pub id: i64,
+    pub taken_at: String,
+    pub offset: Option<String>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub alt: Option<f64>,
+    pub gps_source: Option<String>,
+    pub thumb: Thumb,
+    pub root: PathBuf,
+    pub unc: Option<String>,
+    pub rel_dir: String,
+    pub stem: String,
+    pub sidecar_name: Option<String>,
+    pub original_name: String,
+}
+
 /// A photo's position, for drawing it on the map.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PhotoPoint {
@@ -675,6 +694,106 @@ impl Library {
             })
         })?
         .collect()
+    }
+
+    /// Like `thumb_tasks`, plus photos without a position among `extra` (geotagging's
+    /// candidates, design.md §2.9(g)), which come first.
+    pub fn thumb_tasks_with(&self, extra: &[i64]) -> Result<Vec<ThumbTask>> {
+        if extra.is_empty() {
+            return self.thumb_tasks();
+        }
+        let ids = serde_json::to_string(extra).unwrap_or_else(|_| "[]".into());
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id, s.root_path, s.unc_path, p.rel_dir, p.original_name, p.preview_name,
+                    p.orientation
+             FROM photo p JOIN source s ON s.id = p.source_id
+             WHERE p.state = 'ok' AND p.thumb_state = 'none'
+               AND (+p.lat IS NOT NULL OR p.id IN (SELECT value FROM json_each(?1)))
+             ORDER BY p.id IN (SELECT value FROM json_each(?1)) DESC, p.id",
+        )?;
+        stmt.query_map([ids], |r| {
+            Ok(ThumbTask {
+                id: r.get(0)?,
+                root: PathBuf::from(r.get::<_, String>(1)?),
+                unc: r.get(2)?,
+                rel_dir: r.get(3)?,
+                original: r.get(4)?,
+                preview: r.get(5)?,
+                orientation: r.get(6)?,
+            })
+        })?
+        .collect()
+    }
+
+    /// Photos that may be tagged from a track (design.md §2.9(g)): present, with a capture time
+    /// from `from` to `to` (`YYYY-MM-DDTHH:MM:SS`, the camera's clock), and without a position
+    /// unless `retag`.
+    pub fn geotag_candidates(&self, from: &str, to: &str, retag: bool) -> Result<Vec<GeoPhoto>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id, p.taken_at, p.taken_at_offset, p.lat, p.lon, p.alt, p.gps_source,
+                    p.thumb_state, s.root_path, s.unc_path, p.rel_dir, p.stem, p.sidecar_name,
+                    p.original_name
+             FROM photo p JOIN source s ON s.id = p.source_id
+             WHERE p.state = 'ok' AND p.taken_at >= ?1 AND p.taken_at <= ?2
+               AND (?3 OR +p.lat IS NULL)
+             ORDER BY p.taken_at, p.id",
+        )?;
+        stmt.query_map(rusqlite::params![from, to, retag], |r| {
+            Ok(GeoPhoto {
+                id: r.get(0)?,
+                taken_at: r.get(1)?,
+                offset: r.get(2)?,
+                lat: r.get(3)?,
+                lon: r.get(4)?,
+                alt: r.get(5)?,
+                gps_source: r.get(6)?,
+                thumb: match r.get_ref(7)?.as_str()? {
+                    THUMB_OK => Thumb::Ok,
+                    THUMB_FAILED => Thumb::Failed,
+                    _ => Thumb::Pending,
+                },
+                root: PathBuf::from(r.get::<_, String>(8)?),
+                unc: r.get(9)?,
+                rel_dir: r.get(10)?,
+                stem: r.get(11)?,
+                sidecar_name: r.get(12)?,
+                original_name: r.get(13)?,
+            })
+        })?
+        .collect()
+    }
+
+    /// Present photos without a position and without a capture time: no track can place them.
+    pub fn undated_without_position(&self) -> Result<i64> {
+        self.conn.query_row(
+            "SELECT count(*) FROM photo WHERE state = 'ok' AND +lat IS NULL AND taken_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+    }
+
+    /// Records a position written to a photo's sidecar, or puts the earlier one back (undo).
+    pub fn set_gps(
+        &self,
+        id: i64,
+        pos: Option<(f64, f64)>,
+        alt: Option<f64>,
+        gps_source: Option<&str>,
+        sidecar_name: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE photo SET lat = ?2, lon = ?3, alt = ?4, gps_source = ?5, sidecar_name = ?6
+             WHERE id = ?1",
+            rusqlite::params![
+                id,
+                pos.map(|p| p.0),
+                pos.map(|p| p.1),
+                alt,
+                gps_source,
+                sidecar_name
+            ],
+        )?;
+        Ok(())
     }
 
     /// (made, still to make) among the photos on the map.

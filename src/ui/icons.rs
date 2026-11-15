@@ -63,6 +63,8 @@ icons! {
     Download => "download",
     Filter => "list-filter",
     Info => "info",
+    Route => "route",
+    Crosshair => "crosshair",
 }
 
 impl Icon {

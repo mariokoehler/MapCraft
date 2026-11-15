@@ -40,6 +40,8 @@ use crate::ui::update_dialog::{Stage, UpdateAction, UpdateDialog};
 use crate::ui::widgets::{self, Tone, thousands};
 use crate::update::{self, CheckStatus, DownloadError, Release, Updater, Version};
 
+mod geotag;
+
 /// Parallel metadata readers per import (design.md §3.4, user-confirmed).
 const READERS: usize = 4;
 /// Parallel thumbnail renderers (design.md §2.2(b): 4 workers on the NAS).
@@ -94,6 +96,8 @@ pub enum StartDialog {
     DataFolder,
     /// The Change data folder dialog, as if this folder had been picked.
     ChangeData(PathBuf),
+    /// Tagging mode with this GPX file (design.md §2.9).
+    Geotag(PathBuf),
 }
 
 pub struct Config {
@@ -234,6 +238,17 @@ pub struct MapCraftApp {
     free_dialog: Option<FreeSpaceDialog>,
     remove_old_open: bool,
     data_waiting: Option<DataTask>,
+    /// Geotagging (design.md §2.9): the session while tagging mode is on, its dialogs, the
+    /// write or undo running, the last write's journal (for Undo), and the candidates whose
+    /// thumbnails the thumbnail job makes first.
+    geotag: Option<crate::geotag::session::Session>,
+    geo_confirm: bool,
+    geo_leave: bool,
+    geo_work: Option<geotag::GeoWork>,
+    geo_journal: Option<PathBuf>,
+    thumbs_for: Vec<i64>,
+    /// The thumbnail job was stopped to start again with `thumbs_for` first.
+    restart_thumbs: bool,
 }
 
 impl MapCraftApp {
@@ -334,6 +349,13 @@ impl MapCraftApp {
             free_dialog: None,
             remove_old_open: false,
             data_waiting: None,
+            geotag: None,
+            geo_confirm: false,
+            geo_leave: false,
+            geo_work: None,
+            geo_journal: None,
+            thumbs_for: Vec::new(),
+            restart_thumbs: false,
         };
         if config.check_updates {
             app.auto_check = true;
@@ -384,6 +406,7 @@ impl MapCraftApp {
                 app.count_usage();
                 app.pick_data_folder(&folder);
             }
+            Some(StartDialog::Geotag(file)) => app.start_geotag(vec![file]),
             None => {}
         }
         app
@@ -414,6 +437,8 @@ impl MapCraftApp {
                 self.counts = counts;
                 self.facets = facets;
                 match lib.positions_shown(&self.filter) {
+                    // In tagging mode the map shows the session's photos (design.md §2.9).
+                    Ok(points) if self.geotag.is_some() => self.shown = points.len(),
                     Ok(points) => {
                         self.shown = points.len();
                         self.map.set_filtered(self.filter.is_active());
@@ -439,6 +464,9 @@ impl MapCraftApp {
             self.detail = fresh;
         }
         self.last_reload = Instant::now();
+        if self.geotag.is_some() {
+            self.geotag_reload();
+        }
     }
 
     /// The filter changed: the map, the counts and search follow it.
@@ -779,6 +807,8 @@ impl MapCraftApp {
     fn data_blocked(&self) -> Option<&'static str> {
         if self.data_override {
             Some("This run uses --data, so the data folder can’t be changed here.")
+        } else if self.geotag.is_some() || self.geo_work.is_some() {
+            Some("Geotagging is open. Change the data folder when it’s done.")
         } else if self.job.is_some() {
             Some("An import is running. Change the data folder when it’s done.")
         } else if self.search.downloading() {
@@ -1159,6 +1189,10 @@ impl MapCraftApp {
     fn update_waits_for(&self) -> Option<String> {
         if self.job.is_some() {
             Some("An import is running".into())
+        } else if self.geo_work.is_some() {
+            Some("Positions are being written".into())
+        } else if self.geotag.is_some() {
+            Some("Geotagging is open".into())
         } else if self.thumbs.is_some() {
             Some("Thumbnails are being made".into())
         } else {
@@ -1444,6 +1478,7 @@ impl MapCraftApp {
             self.db_path.clone(),
             self.data_folder.clone(),
             THUMB_WORKERS,
+            self.thumbs_for.clone(),
             self.ctx.clone(),
         ));
     }
@@ -1475,6 +1510,8 @@ impl MapCraftApp {
             self.refresh();
             if !self.waiting.is_empty() {
                 self.resume();
+            } else if std::mem::take(&mut self.restart_thumbs) {
+                self.start_thumbs(); // again, the geotag candidates first
             }
         } else if self.job.is_none() && self.last_reload.elapsed() >= RELOAD_EVERY {
             self.refresh(); // new thumbnails show as they're made
@@ -1683,11 +1720,16 @@ impl MapCraftApp {
         self.poll_thumbs();
         self.poll_updates(&ctx);
         self.poll_data(&ctx);
+        self.poll_geotag();
 
         let p = self.palette.clone();
         let running = self.running();
         let counts = self.counts;
         let mut bar_action = None;
+        let tagging = top_bar::Tagging {
+            on: self.geotag.is_some(),
+            blocked: self.geotag_blocked(),
+        };
         let bar = Panel::top("top-bar")
             .exact_size(p.size_topbar)
             .frame(Frame::NONE.fill(p.bg_panel))
@@ -1697,7 +1739,8 @@ impl MapCraftApp {
                     active: self.filter.active_count(),
                     shown: self.filter.is_active().then_some(self.shown),
                 };
-                bar_action = top_bar::show(ui, &p, counts, running, &mut self.search, filters)
+                bar_action =
+                    top_bar::show(ui, &p, counts, running, &mut self.search, filters, tagging)
             });
         let r = bar.response.rect;
         ui.painter().hline(
@@ -1719,6 +1762,11 @@ impl MapCraftApp {
             }
             Some(TopBarAction::Filters) => self.search.close(),
             Some(TopBarAction::Settings) => self.open_settings(&ctx),
+            Some(TopBarAction::Geotag) => {
+                if let Some(files) = self.pick_gpx() {
+                    self.start_geotag(files);
+                }
+            }
             None => {}
         }
         // The search dropdown and the panel would overlap: the newer one stays.
@@ -1726,15 +1774,17 @@ impl MapCraftApp {
             self.filters.open = false;
         }
         // The filter panel takes Esc first while open, before the strip and the selection.
-        if self.filters.panel(
-            &ctx,
-            &p,
-            &mut self.filter,
-            &self.facets,
-            &self.sources,
-            self.shown,
-            self.counts.with_position.max(0) as usize,
-        ) {
+        if self.geotag.is_none()
+            && self.filters.panel(
+                &ctx,
+                &p,
+                &mut self.filter,
+                &self.facets,
+                &self.sources,
+                self.shown,
+                self.counts.with_position.max(0) as usize,
+            )
+        {
             self.filter_changed();
         }
 
@@ -1752,7 +1802,9 @@ impl MapCraftApp {
             || self.change_dialog.is_some()
             || self.free_dialog.is_some()
             || self.remove_old_open
-            || self.lc_add.is_some();
+            || self.lc_add.is_some()
+            || self.geo_confirm
+            || self.geo_leave;
 
         // Keys: Ctrl+I shows or hides the panel, Esc closes the strip or clears the selection.
         if !dialog_open && !ctx.egui_wants_keyboard_input() {
@@ -1762,12 +1814,18 @@ impl MapCraftApp {
                     i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
                 )
             });
-            if ctrl_i && self.detail.is_some() {
-                self.panel_open = !self.panel_open;
-            }
-            // Esc closes the strip first, then clears the selection.
-            if esc && !self.map.close_strip() && self.detail.is_some() {
-                self.select(None);
+            if self.geotag.is_some() {
+                if esc && self.geo_work.is_none() {
+                    self.geotag_escape();
+                }
+            } else {
+                if ctrl_i && self.detail.is_some() {
+                    self.panel_open = !self.panel_open;
+                }
+                // Esc closes the strip first, then clears the selection.
+                if esc && !self.map.close_strip() && self.detail.is_some() {
+                    self.select(None);
+                }
             }
         }
 
@@ -1778,7 +1836,34 @@ impl MapCraftApp {
             .as_ref()
             .map(|d| self.companion_buttons(d))
             .unwrap_or_default();
-        if self.panel_open
+        // Tagging mode's panel takes the detail panel's place (design.md §2.9).
+        let mut geo_action = None;
+        if let Some(s) = &self.geotag {
+            let writing = self
+                .geo_work
+                .as_ref()
+                .filter(|w| !w.undo)
+                .map(|w| w.progress.unwrap_or((0, 0)));
+            let shown = Panel::right("geotag")
+                .exact_size(p.size_panel)
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(Frame::NONE.fill(p.bg_panel))
+                .show(ui, |ui| {
+                    geo_action = crate::ui::geotag_panel::show(ui, &p, s, writing);
+                });
+            let r = shown.response.rect;
+            ui.painter().vline(
+                r.left() + p.stroke_hairline / 2.0,
+                r.y_range(),
+                Stroke::new(p.stroke_hairline, p.border_subtle),
+            );
+        }
+        if let Some(a) = geo_action {
+            self.geotag_action(a);
+        }
+        if self.geotag.is_none()
+            && self.panel_open
             && let Some(d) = &self.detail
         {
             let shown = Panel::right("details")
@@ -1820,15 +1905,22 @@ impl MapCraftApp {
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(p.map_ref_land))
             .show(ui, |ui| {
-                let (rect, action) = self.map.show(ui, &p, empty, !dialog_open);
+                let keys = !dialog_open && self.geo_work.is_none();
+                let (rect, action) = self.map.show(ui, &p, empty && self.geotag.is_none(), keys);
                 map_rect = rect;
                 map_action = action;
             });
         match map_action {
+            Some(a) if self.geotag.is_some() => {
+                if self.geo_work.is_none() {
+                    self.geotag_map(a);
+                }
+            }
             Some(MapAction::AddFolder) => self.folder_dialog = Some(FolderDialog::add()),
             Some(MapAction::Select(id)) => self.select(id),
-            None => {}
+            Some(MapAction::Toggle(_) | MapAction::Picked(..)) | None => {}
         }
+        self.geotag_track_tip(&ctx);
         // File names for the markers' accessible names, looked up once each.
         let wanted = self.map.wanted_names();
         if !wanted.is_empty()
@@ -1854,15 +1946,20 @@ impl MapCraftApp {
         }
         // The active filters over the map, and the card when they hide everything.
         let on_map = self.counts.with_position.max(0) as usize;
-        let mut filter_action = filters::chips(
-            &ctx,
-            &p,
-            map_rect,
-            &mut self.filter,
-            &self.facets,
-            &self.sources,
-        );
-        if self.filter.is_active() && self.shown == 0 && on_map > 0 && !dialog_open {
+        let tagging = self.geotag.is_some();
+        let mut filter_action = if tagging {
+            None
+        } else {
+            filters::chips(
+                &ctx,
+                &p,
+                map_rect,
+                &mut self.filter,
+                &self.facets,
+                &self.sources,
+            )
+        };
+        if !tagging && self.filter.is_active() && self.shown == 0 && on_map > 0 && !dialog_open {
             filter_action = filter_action.or(filters::no_match(
                 &ctx,
                 &p,
@@ -1902,6 +1999,10 @@ impl MapCraftApp {
                 self.toasts.replace(Vec::new());
                 self.open_settings(&ctx);
             }
+            Some(ToastAction::UndoGeotag) => {
+                self.toasts.replace(Vec::new());
+                self.undo_geotag();
+            }
             None => {}
         }
 
@@ -1914,6 +2015,8 @@ impl MapCraftApp {
         self.remove_old_dialog(&ctx);
         self.update_dialog(&ctx);
         self.add_dialog(&ctx);
+        self.geotag_confirm_dialog(&ctx);
+        self.geotag_leave_dialog(&ctx);
 
         if let Some((since, total, frames)) = &mut self.perf {
             *total += started.elapsed();
@@ -3266,5 +3369,227 @@ owhere\lightcraft.exe",
             h.state().as_ref().unwrap().old_photos == Some(2)
         });
         h.get_by_label("Remove old data…");
+    }
+
+    /// A generated track: an hour north from (47, 8), a point a minute, from 08:00Z; `times`
+    /// off makes it a planned route.
+    fn gpx_file(dir: &Path, times: bool) -> PathBuf {
+        let mut pts = String::new();
+        for i in 0..=60 {
+            let time = if times {
+                format!("<time>2025-06-12T08:{:02}:00Z</time>", i.min(59))
+            } else {
+                String::new()
+            };
+            let (i, t) = if i == 60 {
+                (60, time.replace("08:59", "09:00"))
+            } else {
+                (i, time)
+            };
+            pts.push_str(&format!(
+                "<trkpt lat=\"{}\" lon=\"8.0\"><ele>500</ele>{t}</trkpt>\n",
+                47.0 + f64::from(i) * 0.0005
+            ));
+        }
+        let path = dir.join(if times { "walk.gpx" } else { "route.gpx" });
+        std::fs::write(
+            &path,
+            format!(
+                "<gpx version=\"1.1\"><metadata><name>Test walk</name></metadata>\
+                 <trk><trkseg>\n{pts}</trkseg></trk></gpx>"
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    /// Six photos without a position taken during the walk (camera on UTC+2), one the evening
+    /// before, one with a position (it stays dim), and a sidecar of Lightroom's for TAG_01.
+    fn tagging_library(dir: &Path) -> PathBuf {
+        let photos = dir.join("photos");
+        std::fs::create_dir_all(&photos).unwrap();
+        for i in 0..6 {
+            let date = format!("2025:06:12 10:{:02}:00", 5 + i * 8);
+            let jpeg = crate::demo::photo_with(0.0, 0.0, &date, i as f64 / 6.0, None);
+            std::fs::write(photos.join(format!("TAG_{i:02}.jpg")), jpeg).unwrap();
+        }
+        let evening = crate::demo::photo_with(0.0, 0.0, "2025:06:11 20:00:00", 0.5, None);
+        std::fs::write(photos.join("EVE_00.jpg"), evening).unwrap();
+        let placed = crate::demo::photo_with_gps(47.1, 8.2, "2025:06:12 09:00:00", 0.3);
+        std::fs::write(photos.join("PLACED.jpg"), placed).unwrap();
+        std::fs::write(
+            photos.join("TAG_01.xmp"),
+            "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF \
+             xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description \
+             rdf:about=\"\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" xmp:Rating=\"4\"/>\
+             </rdf:RDF></x:xmpmeta>",
+        )
+        .unwrap();
+        let mut lib = Library::open(&dir.join("library.sqlite")).unwrap();
+        let src = lib
+            .add_source(&photos, None, "Walk", &Scope::all())
+            .unwrap();
+        crate::import::run(&mut lib, src, &Default::default(), 2, |_| {}).unwrap();
+        photos
+    }
+
+    fn session<'a>(
+        h: &'a mut Harness<'static, Option<MapCraftApp>>,
+    ) -> &'a mut crate::geotag::session::Session {
+        h.state_mut().as_mut().unwrap().geotag.as_mut().unwrap()
+    }
+
+    /// The camera's zone, set as the panel would (the PC's zone differs between machines).
+    fn utc_plus_2(h: &mut Harness<'static, Option<MapCraftApp>>) {
+        let app = h.state_mut().as_mut().unwrap();
+        app.geotag_action(crate::ui::geotag_panel::GeoAction::Zone(7200));
+        app.geotag_action(crate::ui::geotag_panel::GeoAction::Correction(0));
+        h.run_steps(3);
+    }
+
+    #[test]
+    fn tagging_from_a_track_writes_sidecars_and_undo_restores_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let photos = tagging_library(dir.path());
+        let gpx = gpx_file(dir.path(), true);
+        let mut h = harness_with(dir.path(), Some(StartDialog::Geotag(gpx)));
+        h.run_steps(3);
+        h.get_by_label("Tag from a GPX track");
+        h.get_by_label("Test walk");
+        utc_plus_2(&mut h);
+        h.get_by_label("UTC+2:00");
+        h.get_by_label("6 on the track, 6 ticked");
+        h.get_by_label("1 more photo is further than 3 h from the track.");
+        // The thumbnails of the candidates are made, then each marker has its tick.
+        step_until(&mut h, "the candidates' thumbnails", |h| {
+            let app = h.state().as_ref().unwrap();
+            app.thumbs.is_none() && app.map.grouped()
+        });
+        let s = session(&mut h);
+        assert!(
+            s.photos
+                .iter()
+                .all(|p| p.thumb != crate::library::Thumb::Pending),
+            "the candidates got thumbnails though they have no position"
+        );
+        // Zoomed in, the photos are apart; untick TAG_03.
+        h.state_mut().as_mut().unwrap().map.set_zoom(17.0);
+        h.run_steps(3);
+        let wanted = |h: &Harness<'static, Option<MapCraftApp>>| {
+            h.query_by_label("Untick TAG_03.jpg").is_some()
+        };
+        if !wanted(&h) {
+            // The names come a frame later.
+            step_until(&mut h, "the ticks' names", wanted);
+        }
+        h.get_by_label("Untick TAG_03.jpg").click();
+        h.run_steps(3);
+        h.get_by_label("6 on the track, 5 ticked");
+        h.get_by_label("Tick TAG_03.jpg");
+
+        // A clock correction moves the photos along the track (a point a minute, 0.0005°).
+        let before = session(&mut h).points()[0].lat;
+        h.state_mut()
+            .as_mut()
+            .unwrap()
+            .geotag_action(crate::ui::geotag_panel::GeoAction::Correction(120));
+        h.run_steps(2);
+        let after = session(&mut h).points()[0].lat;
+        assert!((before - after - 0.001).abs() < 1e-9, "{before} → {after}");
+        h.state_mut()
+            .as_mut()
+            .unwrap()
+            .geotag_action(crate::ui::geotag_panel::GeoAction::Correction(0));
+        h.run_steps(2);
+
+        // Write: the confirmation, then the sidecars.
+        h.get_by_label("Write positions to 5 photos…").click();
+        h.run_steps(3);
+        h.get_by_label("Write positions to 5 photos?");
+        h.get_by_label("Write positions").click();
+        step_until(&mut h, "the write", |h| {
+            let app = h.state().as_ref().unwrap();
+            app.geo_work.is_none() && app.geotag.is_none()
+        });
+        h.get_by_label("Positions written to 5 photos");
+        let read = |n: &str| std::fs::read_to_string(photos.join(n)).ok();
+        let tag01 = read("TAG_01.xmp").unwrap();
+        assert!(tag01.contains("xmp:Rating=\"4\"") && tag01.contains("exif:GPSLatitude"));
+        assert!(
+            read("TAG_00.xmp")
+                .unwrap()
+                .contains("exif:GPSLongitude=\"8,0.000000E\"")
+        );
+        assert!(read("TAG_03.xmp").is_none(), "unticked");
+        assert!(read("EVE_00.xmp").is_none(), "not on the track");
+        // The library places them; a rescan reads the same positions.
+        let lib = Library::open(&dir.path().join("library.sqlite")).unwrap();
+        assert_eq!(lib.counts().unwrap().with_position, 6);
+        let pos = |lib: &Library| {
+            let mut p: Vec<_> = lib
+                .positions()
+                .unwrap()
+                .iter()
+                .map(|p| (p.id, (p.lat * 1e6).round() as i64))
+                .collect();
+            p.sort();
+            p
+        };
+        let written = pos(&lib);
+        let mut lib = lib;
+        let src = lib.sources().unwrap()[0].id;
+        crate::import::run(&mut lib, src, &Default::default(), 2, |_| {}).unwrap();
+        assert_eq!(pos(&lib), written, "a rescan reads what was written");
+
+        // Undo restores the sidecars and the library.
+        h.get_by_label("Undo").click();
+        step_until(&mut h, "the undo", |h| {
+            h.state().as_ref().unwrap().geo_work.is_none()
+                && h.query_by_label("Geotagging undone").is_some()
+        });
+        assert!(read("TAG_00.xmp").is_none(), "a created sidecar is removed");
+        let tag01 = read("TAG_01.xmp").unwrap();
+        assert!(!tag01.contains("GPSLatitude") && tag01.contains("xmp:Rating=\"4\""));
+        assert_eq!(lib.counts().unwrap().with_position, 1);
+    }
+
+    #[test]
+    fn a_route_without_times_says_why_and_leaving_asks_after_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        tagging_library(dir.path());
+        let route = gpx_file(dir.path(), false);
+        let mut h = harness_with(dir.path(), Some(StartDialog::Geotag(route)));
+        h.run_steps(3);
+        assert!(
+            h.query_by_label_contains("This track has no times")
+                .is_some(),
+            "the reason shows"
+        );
+        assert!(h.query_by_label("Time zone").is_none(), "nothing to shift");
+        // Esc without changes leaves at once.
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(h.state().as_ref().unwrap().geotag.is_none());
+
+        // With a track and a change, leaving asks first.
+        let walk = gpx_file(dir.path(), true);
+        h.state_mut().as_mut().unwrap().start_geotag(vec![walk]);
+        h.state_mut()
+            .as_mut()
+            .unwrap()
+            .geotag_action(crate::ui::geotag_panel::GeoAction::MaxGap(15));
+        h.run_steps(2);
+        h.get_by_label("Cancel").click();
+        h.run_steps(3);
+        h.get_by_label("Leave tagging?");
+        h.get_by_label("Stay").click();
+        h.run_steps(3);
+        assert!(h.state().as_ref().unwrap().geotag.is_some());
+        h.get_by_label("Leave tagging (Esc)").click();
+        h.run_steps(3);
+        h.get_by_label("Leave").click();
+        h.run_steps(3);
+        assert!(h.state().as_ref().unwrap().geotag.is_none());
+        h.get_by_label("Tag photos from a GPX track…");
     }
 }

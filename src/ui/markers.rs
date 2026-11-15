@@ -12,6 +12,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use egui::{Color32, ColorImage, Pos2, Rect, Shape, Stroke, TextureHandle, TextureOptions, Ui};
 
+use crate::import::scope::Check;
 use crate::theme::Palette;
 use crate::thumbs::{self, THUMB};
 use crate::ui::icons::Icon;
@@ -278,6 +279,58 @@ pub fn paint(
         painter.rect_filled(badge, round, p.map_badge_bg);
         painter.galley(badge.center() - text.size() / 2.0, text, p.map_badge_text);
     }
+}
+
+/// The tick on a marker or a strip thumbnail in tagging mode (design.md §2.9(h), canvas
+/// `MapCraft — Geotagging`): a 20 px round button, accent with a check when on, a dash when
+/// mixed, white when off. Returns its click; `name` is its accessible name.
+pub fn tick(
+    ui: &Ui,
+    p: &Palette,
+    center: Pos2,
+    state: Check,
+    name: &str,
+    id: egui::Id,
+) -> egui::Response {
+    let rect = Rect::from_center_size(center, egui::vec2(20.0, 20.0));
+    let r = ui.interact(rect, id, egui::Sense::click());
+    r.widget_info(|| {
+        egui::WidgetInfo::selected(egui::Role::CheckBox, true, state == Check::On, name)
+    });
+    let painter = ui.painter();
+    let hover = r.hovered();
+    painter.circle_filled(center, 11.0, p.map_marker_edge);
+    let fill = match state {
+        Check::Off => p.map_marker_frame,
+        _ if hover => p.accent_hover,
+        _ => p.accent,
+    };
+    painter.circle(
+        center,
+        9.5,
+        fill,
+        egui::Stroke::new(1.5, p.map_marker_frame),
+    );
+    if state == Check::Off {
+        painter.circle_stroke(center, 9.0, egui::Stroke::new(1.0, p.border_normal));
+    }
+    let mark = match state {
+        Check::On => Some(Icon::Check),
+        Check::Mixed => Some(Icon::Minus),
+        Check::Off => None,
+    };
+    if let Some(icon) = mark {
+        icon.image(12.0, p.text_on_accent)
+            .paint_at(ui, Rect::from_center_size(center, egui::vec2(12.0, 12.0)));
+    }
+    r
+}
+
+/// Washes out a marker whose photos are all unticked: what won't be tagged reads as faded.
+pub fn fade(ui: &Ui, p: &Palette, pos: Pos2) {
+    let rect = frame_rect(p, pos, false);
+    ui.painter()
+        .rect_filled(rect, p.radius_sm, p.map_marker_frame.gamma_multiply(0.55));
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@
 
 use egui::{Align2, Area, Color32, Frame, Margin, Order, Pos2, Rect, RichText, Sense, Shape, Ui};
 
+use crate::import::scope::Check;
 use crate::theme::Palette;
 use crate::ui::icons::Icon;
 use crate::ui::markers::{Look, Textures};
@@ -18,6 +19,8 @@ pub const PAGE: usize = 8;
 pub enum StripAction {
     Close,
     Select(i64),
+    /// A photo's tick in tagging mode (design.md §2.9(h)).
+    Toggle(i64),
 }
 
 pub struct Strip {
@@ -72,6 +75,7 @@ impl Strip {
         names: &std::collections::HashMap<i64, String>,
         wanted: &mut Vec<i64>,
         selected: Option<i64>,
+        off: Option<&std::collections::HashSet<i64>>,
     ) -> Option<StripAction> {
         let mut action = None;
         let pages = self.photos.len().div_ceil(PAGE).max(1);
@@ -129,8 +133,37 @@ impl Strip {
                             let end = (start + PAGE).min(self.photos.len());
                             for &(id, _) in &self.photos[start..end] {
                                 let tex = made.contains(&id).then_some(&mut *textures);
-                                if thumb(ui, p, id, tex, names, wanted, selected == Some(id)) {
+                                let r = thumb(ui, p, id, tex, names, wanted, selected == Some(id));
+                                if r.clicked() {
                                     action = Some(StripAction::Select(id));
+                                }
+                                if let Some(off) = off {
+                                    let unticked = off.contains(&id);
+                                    if unticked {
+                                        ui.painter().rect_filled(
+                                            r.rect,
+                                            2,
+                                            p.map_marker_frame.gamma_multiply(0.55),
+                                        );
+                                    }
+                                    let state = if unticked { Check::Off } else { Check::On };
+                                    let name = if unticked {
+                                        "Tick this photo"
+                                    } else {
+                                        "Untick this photo"
+                                    };
+                                    if crate::ui::markers::tick(
+                                        ui,
+                                        p,
+                                        r.rect.left_top() + egui::vec2(4.0, 4.0),
+                                        state,
+                                        name,
+                                        egui::Id::unique(("strip-tick", id)),
+                                    )
+                                    .clicked()
+                                    {
+                                        action = Some(StripAction::Toggle(id));
+                                    }
                                 }
                             }
                             if nav(
@@ -231,7 +264,7 @@ fn thumb(
     names: &std::collections::HashMap<i64, String>,
     wanted: &mut Vec<i64>,
     selected: bool,
-) -> bool {
+) -> egui::Response {
     let s = p.size_strip_thumb;
     let (rect, r) = ui.allocate_exact_size(egui::vec2(s, s), Sense::click());
     let name = match names.get(&id) {
@@ -270,7 +303,7 @@ fn thumb(
                 .paint_at(ui, icon);
         }
     }
-    r.clicked()
+    r
 }
 
 #[cfg(test)]

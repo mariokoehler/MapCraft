@@ -147,7 +147,15 @@ pub struct ThumbJob {
 const THUMB_BATCH: usize = 50;
 
 impl ThumbJob {
-    pub fn start(db: PathBuf, data: PathBuf, workers: usize, ctx: egui::Context) -> Self {
+    /// `extra`: photos without a position to make thumbnails for too, first (geotagging's
+    /// candidates, design.md §2.9(g)).
+    pub fn start(
+        db: PathBuf,
+        data: PathBuf,
+        workers: usize,
+        extra: Vec<i64>,
+        ctx: egui::Context,
+    ) -> Self {
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
@@ -158,7 +166,7 @@ impl ThumbJob {
                     let _ = tx.send(e);
                     ctx.request_repaint();
                 };
-                let result = run_thumbs(&db, &data, workers, &flag, &send);
+                let result = run_thumbs(&db, &data, workers, &extra, &flag, &send);
                 send(match result {
                     Ok(s) => ThumbEvent::Done(s),
                     Err(e) => ThumbEvent::Failed(e),
@@ -223,6 +231,7 @@ fn run_thumbs(
     db: &std::path::Path,
     data: &std::path::Path,
     workers: usize,
+    extra: &[i64],
     cancel: &AtomicBool,
     send: &dyn Fn(ThumbEvent),
 ) -> Result<ThumbSummary, String> {
@@ -235,7 +244,7 @@ fn run_thumbs(
     let mut lib = Library::open(db).map_err(|e| e.to_string())?;
     // First, remove the files of photos deleted since the last run (they're the user's images).
     thumbs::sweep(data, &lib.all_ids().map_err(|e| e.to_string())?);
-    let tasks = lib.thumb_tasks().map_err(|e| e.to_string())?;
+    let tasks = lib.thumb_tasks_with(extra).map_err(|e| e.to_string())?;
     let total = tasks.len();
     let mut summary = ThumbSummary::default();
     send(ThumbEvent::Progress { done: 0, total });
@@ -391,7 +400,13 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
         };
-        let mut job = ThumbJob::start(db.clone(), data.clone(), 2, egui::Context::default());
+        let mut job = ThumbJob::start(
+            db.clone(),
+            data.clone(),
+            2,
+            Vec::new(),
+            egui::Context::default(),
+        );
         let summary = wait(&mut job);
         assert_eq!(
             (summary.made, summary.placeholders, summary.skipped),
@@ -407,7 +422,7 @@ mod tests {
 
         // Removing the source removes the thumbnail file on the next run (the sweep).
         lib.remove_source(src).unwrap();
-        let mut job = ThumbJob::start(db, data.clone(), 1, egui::Context::default());
+        let mut job = ThumbJob::start(db, data.clone(), 1, Vec::new(), egui::Context::default());
         wait(&mut job);
         assert!(!thumbs::path(&data, id, THUMB).exists());
     }

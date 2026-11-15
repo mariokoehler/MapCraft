@@ -20,6 +20,8 @@ pub enum ToastAction {
     Update,
     /// Show the release notes of the release on offer.
     ReleaseNotes,
+    /// Undo the last geotagging (design.md §2.9(i)).
+    UndoGeotag,
 }
 
 #[derive(Debug, Clone, PartialEq)]
