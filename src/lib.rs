@@ -7,6 +7,7 @@ pub mod companions;
 pub mod datafolder;
 pub mod demo;
 pub mod filter;
+pub mod geotag;
 pub mod import;
 pub mod jobs;
 pub mod launch;
