@@ -1040,7 +1040,9 @@ Unconfirmed defaults awaiting review:
   RAW), all camera RAWs as one "RAW", in a fixed order, the section shown with 2 or more.
 - §3.10 / M7 (packaging): check once per start (no "skip this version"); a dismissed toast
   returns at the next start; no check in debug builds; HTTPS plus checksum without signing;
-  the confirmation is a plain dialog, no mockup (it reuses `widgets::dialog`).
+  while an import or thumbnails run, the update downloads but the restart waits for them
+  ("Restart now" overrides); the UI per the canvas `MapCraft — Updates` (awaiting review);
+  a third-party notices file shipped with each release.
 - §3.2: the planned crates.
 - §2.8(f): the tree starts all ticked; leaving a folder out later removes its records; a folder
   that is, lies inside, or contains an existing source can't be added (it would duplicate
@@ -1142,7 +1144,13 @@ Milestones are rough and get refined as we go.
     the release exe and publishes it with `mapcraft.exe.sha256` as a GitHub Release
     (`gh release create --generate-notes`). `Cargo.toml` is the one place for the version.
     Never push a tag without the user's go-ahead.
-  - **Updates** (§2.7, §3.8): see §3.10.
+  - **Updates** (§2.7, §3.8): see §3.10. The UI is on the canvas `MapCraft — Updates`
+    (https://claude.ai/artifact/NBQN2QuFrxiTg7UiwdLb3o, made 2026-11-15, awaiting review):
+    the Settings section, the toast and confirmation, and the dialog's six states.
+  - **Licence notices (unconfirmed):** the exe carries the IBM Plex fonts (OFL 1.1) and
+    MIT/Apache crates, whose licences ask for their notices to travel with copies. Proposal:
+    the workflow generates `THIRD-PARTY-NOTICES.txt` (with `cargo-about`, to be checked) and
+    attaches it to each release beside the exe.
 
 **Later:** a keyed tile provider and offline PMTiles (§3.5(b); walkers has a `pmtiles`
 feature, and its vector rendering needs the wgpu renderer, which eframe uses by default), the
