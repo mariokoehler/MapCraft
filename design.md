@@ -44,7 +44,9 @@ in Adobe Lightroom Classic, as a standalone Windows desktop app (user, 2026-11-1
 - **No editing.** The app doesn't develop, retouch or rate photos; the companion apps do that.
 - **Originals are read-only.** The app never writes to an original or creates a sidecar next to
   it, not even an XMP file **(user, 2026-11-14)**. Writing GPS back (for example after manual
-  placement or GPX tagging) would be a later, explicit feature.
+  placement or GPX tagging) would be a later, explicit feature. M9 proposes that feature
+  (2026-11-15, §2.9): GPS written into XMP sidecars when the user confirms it, never into the
+  originals, with an undo journal.
 - **Single user, single machine, one library** **(user, 2026-11-14)**. There is no sync and no
   server.
 
@@ -602,6 +604,122 @@ What follows for the design (all **(user, 2026-11-14)**):
   - *Fill Location from GPS* (`metadata.reverseGeocode`) fills city, state and country from GPS,
     offline. LightCraft's README marks a Map view as not built yet.
 
+### 2.9 Geotagging from a GPX track (M9, proposed 2026-11-15)
+
+The user's idea (2026-11-15): pick a `.gpx` file, see the track on the map with the photos that
+have no position but were taken while it was recorded, tick which ones get a position, adjust
+the time shift until they sit where they were taken, then write the positions to XMP sidecars.
+It replaces today's detour through Lightroom (§2.8) or LightCraft (§2.8(i)), and it's the first
+feature that writes next to the user's photos (§1.1). The look is on the canvas
+`MapCraft — Geotagging`. Points marked **(unconfirmed)** are defaults proposed here.
+
+- **(a) Starting it.** *Tag photos from a GPX track…* (a button in the top bar, beside Add
+  folder) opens a file picker for one or more `.gpx` files. Several files are one timeline, for
+  example a hike recorded one file per day.
+  - Not while an import runs (it changes the photos being matched), as in M8.
+  - The map switches to **tagging mode**: the library's photos with a position are dimmed
+    (drawn at 35 % with no thumbnails), the filter chips and the detail panel step aside, and a
+    panel on the right holds the track, the time shift and the result. Esc or *Cancel* leaves;
+    with ticks changed, it asks first.
+- **(b) Reading GPX.** GPX 1.0 and 1.1 (https://www.topografix.com/GPX/1/1/): track points
+  (`trk/trkseg/trkpt`) with `lat`, `lon`, optional `ele` and `time`. Our own reader on
+  `quick-xml`, which the XMP reader already uses; extensions (heart rate, Garmin's) are skipped.
+  - Times are UTC (`…Z`, as the GPX schema requires). A time with an offset is converted; one
+    with neither is taken as UTC **(unconfirmed)**.
+  - Points are sorted by time; a point without a time in a track that has times is dropped and
+    counted.
+  - **A track without times** (a route planned on a website, or `rte` route points) can't match
+    anything. It's still drawn, and the panel says why nothing matches: "This track has no
+    times. Tracks recorded by a GPS device or a phone app have them; routes planned on a
+    website usually don't." (The user's first sample, from a tour portal, is one: 816 points,
+    no times, checked 2026-11-15.)
+  - Distance (along the track), duration, the first and last time, and the segments are shown
+    in the panel.
+- **(c) The track on the map.** A polyline in the accent colour, 3 px with a dark halo, start
+  and end marked. A break between `trkseg`s, or a gap longer than the max gap (d), is dashed.
+  Hovering the track shows the time there, in the photos' time (the shift applied), which helps
+  with (f). Drawn with a walkers `Plugin` through its `Projector`, simplified per zoom level so
+  a 100,000-point track stays fast.
+- **(d) Matching.** A photo's time in UTC = its capture time (`taken_at`, local) − the shift.
+  - Between two track points: interpolated linearly, if the gap is at most the **max gap**
+    (10 minutes by default, as LightCraft's `maxGap`) and both points are in the same segment.
+  - Within **2 minutes** before the first or after the last point of a segment: that point
+    **(unconfirmed)**.
+  - Otherwise the photo is *outside the track*: not on the map, listed in the panel.
+  - The altitude comes from `ele`, interpolated the same way.
+- **(e) The time shift.** One value for the session, in hours and minutes with a fine
+  correction in seconds (camera clocks drift). Range ±14 h.
+  - Default: the photos' own UTC offset when those that have one agree
+    (`taken_at_offset`, from EXIF `OffsetTimeOriginal`); else the time zone of this PC on the
+    track's first day, which covers a trip at home **(unconfirmed)**.
+  - A photo with its own `taken_at_offset` uses it, plus only the fine correction
+    **(unconfirmed)**: its clock zone is known, its drift isn't. A checkbox
+    *Ignore the photos' own time zones* lets the shift apply to all.
+  - Changing the shift moves the photos along the track as the value changes (dragging the
+    slider or the arrow keys), and photos move in and out of *outside the track*. Matching is a
+    binary search per photo, so a few thousand candidates rematch within a frame.
+- **(f) Setting the shift from a known place.** The user's case "the exact time shift is not
+  known but the location where the image was taken is": *This photo was taken here* on a photo
+  (its hover card or the strip), then a click on the track. The shift becomes photo time −
+  track time at that spot, and every photo moves. The panel says which photo set it, with Undo.
+- **(g) The candidates.** Photos with no position (`lat IS NULL`), a capture time and
+  `state = 'ok'`, whose time is within the track's span ±14 h, read once when the track opens:
+  that covers every shift, so photos can slide in as it changes.
+  - Optional: *Also re-tag photos that already have a position* (off). They're shown with their
+    current position faded and a line to the new one.
+  - The filters don't apply in tagging mode **(unconfirmed)**: the time window already narrows
+    it, and a hidden source would surprise. The panel can limit it to one source.
+  - Not counted as candidates, but shown in the panel: photos with no capture time, and photos
+    whose files are missing.
+  - **Thumbnails:** the thumbnail job today only makes thumbnails for photos with a position
+    (`+p.lat IS NOT NULL`). Tagging mode starts it for the candidates first; until theirs exist
+    they show as dots, as during an import.
+- **(h) Ticks.** Each photo has a tick, on by default. Stored per photo id, so it survives
+  regrouping, zooming and shifting.
+  - Candidates group like the map's photos (`cluster::Clusters::build` takes any points, a
+    separate set for tagging mode), rebuilt when the shift settles (200 ms after the last
+    change) and while it moves shown with the previous grouping moved along.
+  - A group's tick is on, off or mixed (some members). Clicking it sets all its members; the
+    strip shows the members with their own ticks.
+  - The panel counts: "142 photos on the track, 137 ticked · 12 outside · 4 without a capture
+    time".
+- **(i) Writing.** *Write positions…* opens a confirmation: how many sidecars are created and how
+  many updated, the folders they're in, and that originals aren't changed. Then, in the
+  background with progress and Cancel:
+  - **Which file:** the sidecar the scan already found for the photo (`sidecar_name`, either
+    `name.ext.xmp` or `name.xmp`), updated in place; else a new `name.xmp`, the name Lightroom and
+    LightCraft use for RAW files and the name MapCraft reads.
+  - **What's written:** `exif:GPSLatitude` and `exif:GPSLongitude` as degrees and decimal
+    minutes (`64,8.12345N`, the form in the user's sidecars and in CIPA DC-010, the XMP Exif
+    schema), `exif:GPSAltitude` (a rational) and `exif:GPSAltitudeRef`, `exif:GPSVersionID`
+    `2.2.0.0`, and `exif:GPSTimeStamp` (the matched UTC time). Namespace
+    `http://ns.adobe.com/exif/1.0/`.
+  - **Merging into an existing sidecar:** only those properties change, in whichever form (an
+    attribute or an element) the file uses; everything else stays byte for byte, including
+    Lightroom's develop settings. A sidecar we can't parse is left alone and reported.
+  - **Safely:** written to a temporary file in the same folder, then renamed over the old one.
+    The file's size and time are compared with the scan's first: if another app changed it
+    since, it's re-read and merged again. Each failure (read-only share, file locked, offline
+    NAS) is counted and listed; the others go on.
+  - **Undo:** before writing, each sidecar's earlier content (or "didn't exist") goes into a
+    journal in the data folder (`geotag/<date>.json`). *Undo* in the result toast, and later
+    Settings, restores them, if the sidecars haven't changed since.
+  - **The library** is updated only for the files actually written: the position,
+    `gps_source = 'xmp'`, and the sidecar's signature, so the next rescan doesn't read them
+    again.
+- **(j) Other apps.** Lightroom Classic notices changed sidecars (a "metadata changed" badge)
+  and needs *Read Metadata from Files*; for JPEG, TIFF, PSD and DNG it reads the file's
+  embedded XMP, not `name.xmp`, so it won't see these positions (§2.8). LightCraft with
+  *Automatically Write Changes into XMP* may write its own sidecar over ours. The confirmation
+  says so in one line. Whether LightCraft reads `name.xmp` for a JPEG is still to be checked
+  (a scratch `--library`, at build time).
+- **(k) Privacy.** Positions are personal data (§3.8): the log has counts only, never the GPX
+  path, names or coordinates; the GPX file isn't copied into the data folder. Trials and tests
+  use generated tracks and photos in scratch folders, never the user's library (CLAUDE.md).
+- **(l) Not in M9.** Placing photos by hand (dragging one onto the map), matching against a
+  track without times (for example by walking speed), more track formats (FIT, KML, TCX), and a
+  shift that changes during the track (a trip across a time zone: tag it in two passes).
+
 ## 3. Architecture
 
 ### 3.1 High-level shape
@@ -1097,6 +1215,11 @@ Unconfirmed defaults awaiting review:
   folder gets a warning; the old copy stays until removed from Settings, offered only when
   the library in use holds at least as many photos; Free up space ticks previews and map
   tiles, not thumbnails; place names aren't offered; `--data` runs don't offer Change….
+- §2.9 (M9, proposed): several GPX files as one timeline; a time without a zone is UTC; 2 min
+  past a segment's ends; a 10 min max gap; the shift's default from the photos' offsets, else
+  this PC's zone; own offsets plus only the fine correction; candidates within ±14 h of the
+  track; filters off in tagging mode; ticks on by default; regrouping 200 ms after the shift
+  settles; a new sidecar named `name.xmp`; the undo journal in the data folder.
 - §3.2: the planned crates.
 - §2.8(f): the tree starts all ticked; leaving a folder out later removes its records; a folder
   that is, lies inside, or contains an existing source can't be added (it would duplicate
@@ -1263,10 +1386,28 @@ Milestones are rough and get refined as we go.
     on 2026-11-15 with a scratch settings file and data: move, restart, the old-data banner,
     removing it, and deleting map tiles under the running map (harmless: it keeps what it
     has in memory).
+- **M9 — Geotagging from GPX tracks** (proposed 2026-11-15 by the user; §2.9, canvas
+  `MapCraft — Geotagging`). The first feature that writes next to the photos, so §1.1 changes:
+  MapCraft may write GPS into XMP sidecars when the user confirms it, never the originals.
+  - **Steps:**
+    1. The GPX reader with unit tests on generated tracks (segments, no times, offsets,
+       sorting).
+    2. Matching and the shift as pure functions: interpolation, max gap, segment breaks, the
+       ends, own offsets, the shift from a known place.
+    3. The sidecar writer: create, merge (attributes and elements), temp file and rename, the
+       journal and undo. Round-trip tests through `xmp::read_gps`, and a merge test that every
+       byte outside the GPS properties survives.
+    4. Tagging mode: the track plugin, the candidates and their grouping, ticks, the panel, the
+       anchor, then writing with progress and the result toast.
+    5. A trial on a scratch copy of generated photos with a recorded GPX, then the user's try.
+  - **At release:** the README's "never adds sidecar files" line and its Limitations change, and
+    the release notes say what's written where.
+  - Checks to make while building: the XMP Exif schema's coordinate grammar in CIPA DC-010
+    (https://exiftool.org/TagNames/XMP.html names it as the spec, checked 2026-11-15);
+    LightCraft reading `name.xmp` for a JPEG.
 
 **Later:** a keyed tile provider and offline PMTiles (§3.5(b); walkers has a `pmtiles`
 feature, and its vector rendering needs the wgpu renderer, which eframe uses by default), the
-LightCraft thumbnail fallback (§2.2(d)), the tile cache's size limit (§3.5(d)), manual placement of photos without GPS (and optionally writing GPS back), GPX track
-tagging (maybe via LightCraft's `photo.autoTagTracklog`), "make a LightCraft album from this group or
+LightCraft thumbnail fallback (§2.2(d)), the tile cache's size limit (§3.5(d)), manual placement of photos without GPS (writing it as M9 does), "make a LightCraft album from this group or
 selection" (`album.create`, §3.6(a)), watched folders, a timeline/date slider, heatmap
 mode, multiple libraries, travel routes drawn between photos in time order.
