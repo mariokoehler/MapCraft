@@ -434,15 +434,19 @@ impl MapCraftApp {
                         ui.add(egui::Label::new(v).truncate());
                     });
                 };
-                row(ui, "New sidecars", thousands(n - updated));
-                row(
-                    ui,
-                    "Updated sidecars",
-                    format!(
-                        "{}: only their GPS changes, the rest is kept",
-                        thousands(updated)
-                    ),
-                );
+                if n > updated {
+                    row(ui, "New sidecars", thousands(n - updated));
+                }
+                if updated > 0 {
+                    row(
+                        ui,
+                        "Updated sidecars",
+                        format!(
+                            "{}: only their GPS changes, the rest is kept",
+                            thousands(updated)
+                        ),
+                    );
+                }
                 let f = match folders.as_slice() {
                     [one] => one.clone(),
                     [first, ..] => format!("{first} and {} more", folders.len() - 1),
@@ -647,12 +651,22 @@ impl MapCraftApp {
                 thousands(total)
             )
         };
-        let mut text = format!(
-            "{} sidecar{} created, {} updated.",
-            thousands(created),
-            if created == 1 { "" } else { "s" },
-            thousands(n - created)
-        );
+        let mut parts = Vec::new();
+        if created > 0 {
+            parts.push(format!(
+                "{} sidecar{} created",
+                thousands(created),
+                if created == 1 { "" } else { "s" }
+            ));
+        }
+        if n > created {
+            parts.push(format!("{} updated", thousands(n - created)));
+        }
+        let mut text = if parts.is_empty() {
+            String::new()
+        } else {
+            format!("{}.", parts.join(", "))
+        };
         if let Some((_, why)) = r.failed.first() {
             text.push_str(&format!(
                 " {} couldn’t be written: {why}{}.",

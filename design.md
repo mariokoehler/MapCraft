@@ -726,9 +726,10 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
   - **Undo:** before writing, each sidecar's earlier content (or "didn't exist") goes into a
     journal in the data folder (`geotag/<date>.json`). *Undo* in the result toast, and later
     Settings, restores them, if the sidecars haven't changed since.
-  - **The library** is updated only for the files actually written: the position,
-    `gps_source = 'xmp'`, and the sidecar's signature, so the next rescan doesn't read them
-    again.
+  - **The library** is updated only for the files actually written: the position as it reads
+    back from the written sidecar, `gps_source = 'xmp'` and the sidecar's name. The photo's
+    file signature isn't recomputed, so the next rescan reads these photos again and finds the
+    same position (checked by a test).
 - **(j) Other apps.** Lightroom Classic notices changed sidecars (a "metadata changed" badge)
   and needs *Read Metadata from Files*; for JPEG, TIFF, PSD and DNG it reads the file's
   embedded XMP, not `name.xmp`, so it won't see these positions (§2.8). LightCraft with
@@ -1409,7 +1410,7 @@ Milestones are rough and get refined as we go.
     removing it, and deleting map tiles under the running map (harmless: it keeps what it
     has in memory).
 - **M9 — Geotagging from GPX tracks** (proposed 2026-11-15 by the user; §2.9, canvas
-  `MapCraft — Geotagging`). The first feature that writes next to the photos, so §1.1 changes:
+  `MapCraft — Geotagging`; built 2026-11-15, awaiting the user's try). The first feature that writes next to the photos, so §1.1 changes:
   MapCraft may write GPS into XMP sidecars when the user confirms it, never the originals.
   - **Steps:**
     1. The GPX reader with unit tests on generated tracks (segments, no times, offsets,
@@ -1425,6 +1426,21 @@ Milestones are rough and get refined as we go.
     5. A trial on a scratch copy of generated photos with a recorded GPX, then the user's try.
   - **At release:** the README's "never adds sidecar files" line and its Limitations change, and
     the release notes say what's written where.
+  - **As built:** `src/geotag/` (`gpx`, `time`, matching in `mod.rs`, `sidecar`, `journal`,
+    `session`), `src/ui/geotag_panel.rs`, tagging mode in `src/ui/map_view.rs` (the track
+    layer, ticks on markers and in the strip, picking), `src/app/geotag.rs` (entering,
+    syncing the map, the dialogs, the writer thread, Undo). The thumbnail job takes the
+    candidates first (`ThumbJob::start`'s `extra`); the journals live in the data folder's
+    `geotag/` and move with it. Dev flag `--open geotag=<file.gpx>`; probes
+    `examples/gpx_probe.rs` (aggregates of a GPX file) and `examples/geotag_demo.rs` (photos
+    without a position at given times).
+  - **Checked** by unit tests (GPX, times and zones, matching, pauses, the margin, the anchor,
+    coordinates, creating and merging sidecars byte for byte, safe replacing, the journal and
+    undo), headless UI tests (a whole session: candidates' thumbnails, ticks, the correction,
+    the confirmation, writing, a rescan reading the same positions, Undo; a route without
+    times; leaving), and a trial on 2026-11-15: the debug build on scratch data with 22
+    generated photos and a copy of the user's Komoot track, buttons pressed through UI
+    Automation: a group unticked, 12 sidecars written, then undone.
   - Checks to make while building: the XMP Exif schema's coordinate grammar in CIPA DC-010
     (https://exiftool.org/TagNames/XMP.html names it as the spec, checked 2026-11-15);
     LightCraft reading `name.xmp` for a JPEG.

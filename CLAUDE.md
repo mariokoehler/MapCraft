@@ -32,8 +32,9 @@ but the app isn't sold or advertised (user, 2026-11-14).
 from GitHub was checked with a 0.0.9 copy. The user runs the release from `E:\MapCraft` and
 tests the update 0.1.0 → 0.2.0. M6
 (companion apps) awaits the user's try. M5 is done (tried by the user).
-**M9 (geotagging from GPX, `design.md` §2.9) is proposed (2026-11-15)** with the canvas
-`MapCraft — Geotagging`; it awaits the user's review before any code.
+**M9 (geotagging from GPX, `design.md` §2.9) is built (2026-11-15)**, from the canvas
+`MapCraft — Geotagging`; it awaits the user's try. It's the first feature that writes next to
+photos (XMP sidecars only, after a confirmation, with undo): trials only on scratch folders.
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
   copies.
@@ -75,6 +76,8 @@ tests the update 0.1.0 → 0.2.0. M6
   (`src/companions.rs`), the Settings dialog (`src/ui/settings_dialog.rs`), the panel's buttons.
 - The data folder: usage, change with move, free up space, remove old data
   (`src/datafolder.rs`, `src/ui/data_dialogs.rs`, the Data folder section of Settings).
+- Geotagging from GPX tracks: `src/geotag/` (reader, matching, sidecar writer, journal,
+  session), `src/ui/geotag_panel.rs`, tagging mode in `src/ui/map_view.rs`, `src/app/geotag.rs`.
 - Releases: the tag-triggered workflow (`.github/workflows/release.yml`), the exe's icon and
   version (`build.rs`), the static C runtime (`.cargo/config.toml`), licence notices
   (`scripts/notices.ps1`, `about.toml`); self-update (`src/update.rs`,
@@ -204,6 +207,11 @@ committed):
   - `--settings <file>` uses another settings file (kept across a restart). Trials of the
     data folder use a scratch one whose `data_folder` is scratch: Change… rewrites the
     settings file and the old data's removal deletes MapCraft's files from the old folder.
+  - `--open geotag=<file.gpx>` starts tagging mode with that track. Try it only with
+    `--data` scratch and photos made by `cargo run --example geotag_demo -- <folder> "<first
+    YYYY:MM:DD HH:MM:SS>" <minutes apart> <n>` (imported with `--import`): Write positions
+    writes sidecars into the photo folders. `gpx_probe -- <file.gpx>` prints a track's
+    aggregates.
   - `--open data` opens Settings on the Data folder section; `--open change-data=<folder>`
     opens the Change dialog as if that folder had been picked (no system picker needed).
   - `--update-from <base url>` checks a pretend GitHub (`<base>/latest`, `<base>/dl/…`) instead

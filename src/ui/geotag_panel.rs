@@ -311,6 +311,7 @@ fn shift_section(ui: &mut Ui, p: &Palette, s: &Session, action: &mut Option<GeoA
             });
         });
         let mut c = s.shift.correction;
+        ui.spacing_mut().slider_width = ui.available_width();
         let r = ui.add(
             egui::Slider::new(&mut c, -1800..=1800)
                 .step_by(5.0)
