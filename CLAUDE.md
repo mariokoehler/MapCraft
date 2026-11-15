@@ -32,6 +32,8 @@ but the app isn't sold or advertised (user, 2026-11-14).
 from GitHub was checked with a 0.0.9 copy. The user runs the release from `E:\MapCraft` and
 tests the update 0.1.0 → 0.2.0. M6
 (companion apps) awaits the user's try. M5 is done (tried by the user).
+**M9 (geotagging from GPX, `design.md` §2.9) is proposed (2026-11-15)** with the canvas
+`MapCraft — Geotagging`; it awaits the user's review before any code.
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
   copies.

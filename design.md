@@ -664,7 +664,7 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
   - Default: the photos' own UTC offset when those that have one agree
     (`taken_at_offset`, from EXIF `OffsetTimeOriginal`); else the time zone of this PC on the
     track's first day, which covers a trip at home **(unconfirmed)**.
-  - A photo with its own `taken_at_offset` uses it, plus only the fine correction
+  - A photo with its own `taken_at_offset` uses it, plus only the clock correction
     **(unconfirmed)**: its clock zone is known, its drift isn't. A checkbox
     *Ignore the photos' own time zones* lets the shift apply to all.
   - Changing the shift moves the photos along the track as the value changes (dragging the
@@ -702,8 +702,9 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
     `name.ext.xmp` or `name.xmp`), updated in place; else a new `name.xmp`, the name Lightroom and
     LightCraft use for RAW files and the name MapCraft reads.
   - **What's written:** `exif:GPSLatitude` and `exif:GPSLongitude` as degrees and decimal
-    minutes (`64,8.12345N`, the form in the user's sidecars and in CIPA DC-010, the XMP Exif
-    schema), `exif:GPSAltitude` (a rational) and `exif:GPSAltitudeRef`, `exif:GPSVersionID`
+    minutes (`64,8.12345N`, the form in the user's sidecars, surveyed 2026-11-14; the grammar
+    in CIPA DC-010 is still to be checked, M9), `exif:GPSAltitude` (a rational) and `exif:GPSAltitudeRef` (with *Write the altitude too*, on
+    by default **(unconfirmed)**), `exif:GPSVersionID`
     `2.2.0.0`, and `exif:GPSTimeStamp` (the matched UTC time). Namespace
     `http://ns.adobe.com/exif/1.0/`.
   - **Merging into an existing sidecar:** only those properties change, in whichever form (an
@@ -1409,7 +1410,8 @@ Milestones are rough and get refined as we go.
     3. The sidecar writer: create, merge (attributes and elements), temp file and rename, the
        journal and undo. Round-trip tests through `xmp::read_gps`, and a merge test that every
        byte outside the GPS properties survives.
-    4. Tagging mode: the track plugin, the candidates and their grouping, ticks, the panel, the
+    4. The `map-track` token in the design system and the egui theme (lockstep rule). Tagging
+       mode: the track plugin, the candidates and their grouping, ticks, the panel, the
        anchor, then writing with progress and the result toast.
     5. A trial on a scratch copy of generated photos with a recorded GPX, then the user's try.
   - **At release:** the README's "never adds sidecar files" line and its Limitations change, and
