@@ -640,8 +640,9 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
     20 m of each other: Komoot keeps one segment across a pause.
   - Distance (along the track), duration, the first and last time, and the segments are shown
     in the panel.
-- **(c) The track on the map.** A polyline in the accent colour, 3 px with a dark halo, start
-  and end marked. A break between `trkseg`s, or a gap longer than the max gap (d), is dashed.
+- **(c) The track on the map.** A polyline, 3.5 px in a new token `map-track` (a blue,
+  `#1f6fd0`, proposed: the accent orange clashes with OSM's roads and the selection) with a
+  white halo; start (green) and end (red) dots, and pause marks (d). A break between `trkseg`s, or a gap longer than the max gap (d), is dashed.
   Hovering the track shows the time there, in the photos' time (the shift applied), which helps
   with (f). Drawn with a walkers `Plugin` through its `Projector`, simplified per zoom level so
   a 100,000-point track stays fast.
@@ -655,8 +656,11 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
     **(unconfirmed)**.
   - Otherwise the photo is *outside the track*: not on the map, listed in the panel.
   - The altitude comes from `ele`, interpolated the same way.
-- **(e) The time shift.** One value for the session, in hours and minutes with a fine
-  correction in seconds (camera clocks drift). Range ±14 h.
+- **(e) The time shift.** One value for the session, what the photos' clocks read relative to
+  UTC, set in two parts: the **time zone** (UTC−12:00 to UTC+14:00, in hours with ±1 h buttons;
+  the 30- and 45-minute zones by typing) and a **camera clock correction** (a slider of ±30
+  minutes in 5 s steps, typed for more), since camera clocks drift. The panel shows the sum
+  (`UTC+2:03:40`).
   - Default: the photos' own UTC offset when those that have one agree
     (`taken_at_offset`, from EXIF `OffsetTimeOriginal`); else the time zone of this PC on the
     track's first day, which covers a trip at home **(unconfirmed)**.
