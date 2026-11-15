@@ -458,6 +458,8 @@ date, camera, lens, coordinates, and actions **(user, 2026-11-14)**:
     from the `-cli.exe` beside each, read when the dialog opens and on Test **(unconfirmed)**.
     Whether a typed path leads to a file is checked as it's typed.
   - The other sections below aren't built.
+- **Updates** (M7): "Check for updates" (on by default, user 2026-11-15), the running version,
+  and "Check now".
 - **Map:** the provider, its API key if one is needed, and the tile cache's size limit.
 - **Sources:** add, remove, re-point a root (§2.1(a)), rescan.
 
@@ -927,7 +929,9 @@ library and settings folder, generated photos, no scripted input):
 - GPS coordinates and file paths are personal data. Nothing leaves the machine except tile requests
   (and online geocoding if the user enables it) (§3.5(e)). The one other connection is the
   place-name download, which runs only when the user clicks it and sends nothing about them
-  (§2.5, M5, unconfirmed). Logs don't contain coordinates
+  (§2.5, M5, unconfirmed). The update check (§3.10, M7) asks GitHub for the latest release:
+  GitHub learns the IP address and that MapCraft runs (the User-Agent is `MapCraft/<version>`),
+  nothing more. It can be turned off in Settings. Logs don't contain coordinates
   **(user, 2026-11-14)**.
 - **LightCraft's control port** (M6): MapCraft starts LightCraft with `--control` on a free
   loopback port, which has no password (§3.6(c)): while LightCraft runs, any program on this
@@ -971,6 +975,31 @@ the design system. Sensible starting points (**user, 2026-11-14**): a dark UI ar
 Lightroom's Map module, and a family resemblance to PhotoCraft and LightCraft, since they share
 egui.
 
+### 3.10 Releases and self-update (M7, planned 2026-11-15)
+
+- **The check:** once per start, on a background thread, a GET to
+  `https://api.github.com/repos/mariokoehler/MapCraft/releases/latest` (prereleases and drafts
+  are never "latest"). Unauthenticated calls get 60 requests per hour per IP (verified
+  2026-11-15, https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api).
+  A failed check is logged and otherwise silent. Off in tests and in debug builds.
+- **Newer:** the tag `vX.Y.Z` compared with the running version as three numbers. A newer one
+  shows a toast "MapCraft X.Y.Z is available" with "Update…".
+- **The confirmation:** a dialog (the existing `widgets::dialog`) names both versions, the
+  download size and that MapCraft restarts; buttons "Update and restart", "Not now", and a
+  link to the release notes. It says when the exe's folder isn't writable (e.g. under
+  `Program Files`) and offers the release page instead.
+- **The update:** download `mapcraft.exe` and `mapcraft.exe.sha256` beside the running exe,
+  check the SHA-256 (`sha2`, 0.11.1, verified 2026-11-15, https://crates.io/crates/sha2),
+  swap the exe with `self-replace` (1.5.1, verified 2026-11-15,
+  https://crates.io/crates/self-replace; Windows can rename a running exe but not overwrite it),
+  then close normally and start the new exe after `run_native` returns. `self_update` (1.3.3)
+  was considered: it expects zip or tar archives, and we already have `reqwest`.
+- **Trust:** the checksum catches a broken download, not a compromised GitHub account; release
+  signing would, at the cost of a key to keep. HTTPS plus the checksum is enough here
+  **(unconfirmed)**.
+- **One-way:** a newer version may migrate the library (as 0002 did); an older exe can't open
+  it afterwards. Release notes say when a version migrates.
+
 ## 4. Open questions
 
 Not blocking v1:
@@ -1009,6 +1038,9 @@ Unconfirmed defaults awaiting review:
   shows only with 2 or more sources; the date range applies when a handle is released; the top
   bar's "of M" counts the photos on the map; file types by the original (a RAW+JPEG pair is
   RAW), all camera RAWs as one "RAW", in a fixed order, the section shown with 2 or more.
+- §3.10 / M7 (packaging): check once per start (no "skip this version"); a dismissed toast
+  returns at the next start; no check in debug builds; HTTPS plus checksum without signing;
+  the confirmation is a plain dialog, no mockup (it reuses `widgets::dialog`).
 - §3.2: the planned crates.
 - §2.8(f): the tree starts all ticked; leaving a folder out later removes its records; a folder
   that is, lies inside, or contains an existing source can't be added (it would duplicate
@@ -1094,7 +1126,23 @@ Milestones are rough and get refined as we go.
     move to Later.
   - The tile cache's size limit (§3.5(d)) was planned alongside the providers and now has no
     milestone.
-- **M7 — Packaging:** an installer or a portable zip, an icon, the GitHub repo and CI.
+- **M7 — Packaging, releases and updates** (planned 2026-11-15; decided by the user that day:
+  one exe, tag-triggered releases as in LaunchWindow, update check on by default, one-click
+  update with a confirmation).
+  - **One exe, no installer:** `mapcraft.exe` is the release file, run from any folder. Fonts,
+    icons and tokens are already compiled in, SQLite is bundled, TLS is rustls; the C runtime
+    is linked statically (`+crt-static` in `.cargo/config.toml`), so no VC++ redistributable
+    is needed. A `build.rs` puts the icon and version info into the exe (`winresource`, 0.1.34,
+    verified 2026-11-15, https://crates.io/crates/winresource). The icon comes from the user
+    (in progress, 2026-11-15).
+  - The exe isn't code-signed: Windows SmartScreen warns on first run ("More info → Run
+    anyway"). Accepted for a personal, non-commercial app; the README says so.
+  - **Releases:** `.github/workflows/release.yml` runs when a `v*` tag is pushed (Windows
+    runner): it checks the tag against the version in `Cargo.toml`, runs the tests, builds
+    the release exe and publishes it with `mapcraft.exe.sha256` as a GitHub Release
+    (`gh release create --generate-notes`). `Cargo.toml` is the one place for the version.
+    Never push a tag without the user's go-ahead.
+  - **Updates** (§2.7, §3.8): see §3.10.
 
 **Later:** a keyed tile provider and offline PMTiles (§3.5(b); walkers has a `pmtiles`
 feature, and its vector rendering needs the wgpu renderer, which eframe uses by default), the

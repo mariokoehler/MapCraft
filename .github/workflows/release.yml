@@ -1,0 +1,71 @@
+# Builds mapcraft.exe and publishes it as a GitHub Release whenever a version tag `vX.Y.Z` is
+# pushed (design.md M7, §3.10). The version lives in Cargo.toml; the tag must match it.
+#
+# `workflow_dispatch` runs the same checks and build by hand (Actions tab → Run workflow), as a
+# rehearsal: it uploads the exe as a workflow artifact and publishes nothing.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust (stable)
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc --version
+
+      - name: Check the tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ("v$version" -ne $env:GITHUB_REF_NAME) {
+            throw "Tag $env:GITHUB_REF_NAME doesn't match Cargo.toml's version $version"
+          }
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Checksum
+        # ASCII, lower case, one line: "<hash>  mapcraft.exe" (src/update.rs reads it).
+        run: |
+          $hash = (Get-FileHash target\release\mapcraft.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("target\release\mapcraft.exe.sha256", "$hash  mapcraft.exe`n", [Text.Encoding]::ASCII)
+          Get-Content target\release\mapcraft.exe.sha256
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$env:GITHUB_REF_NAME" `
+            target\release\mapcraft.exe target\release\mapcraft.exe.sha256 `
+            --title "MapCraft $env:GITHUB_REF_NAME" `
+            --generate-notes
+
+      - name: Keep the rehearsal's exe
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: mapcraft
+          path: |
+            target/release/mapcraft.exe
+            target/release/mapcraft.exe.sha256

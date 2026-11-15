@@ -19,3 +19,4 @@ pub mod settings;
 pub mod theme;
 pub mod thumbs;
 pub mod ui;
+pub mod update;
