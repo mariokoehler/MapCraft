@@ -22,6 +22,9 @@ pub struct Settings {
     pub window: WindowSettings,
     pub companions: CompanionSettings,
     pub updates: UpdateSettings,
+    /// The data folder MapCraft moved away from, until the user removes or keeps its data
+    /// (design.md M8).
+    pub old_data_folder: Option<PathBuf>,
 }
 
 /// Updates (design.md §3.10): whether to ask GitHub for a newer release at each start.

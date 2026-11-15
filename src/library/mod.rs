@@ -904,6 +904,15 @@ impl Library {
         Ok(f)
     }
 
+    /// Marks every thumbnail as not made (Free up space, before their files are deleted), so
+    /// the thumbnail job makes them again. Returns how many photos had one.
+    pub fn forget_thumbnails(&mut self) -> Result<usize> {
+        self.conn.execute(
+            "UPDATE photo SET thumb_state = 'none' WHERE thumb_state <> 'none'",
+            [],
+        )
+    }
+
     /// Every photo id, for removing the thumbnail files of deleted records.
     pub fn all_ids(&self) -> Result<std::collections::HashSet<i64>> {
         let mut stmt = self.conn.prepare("SELECT id FROM photo")?;

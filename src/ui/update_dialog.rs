@@ -2,10 +2,10 @@
 //! confirmation, then the download, and what can happen. The work itself runs in
 //! `crate::update`; this only draws the stage the app hands it and reports the buttons.
 
-use egui::{Align, Layout, ProgressBar, RichText};
+use egui::{ProgressBar, RichText};
 
 use crate::theme::Palette;
-use crate::ui::widgets::{self, Tone};
+use crate::ui::widgets::{self, Tone, banner};
 use crate::update::{Release, Version};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -228,19 +228,4 @@ fn progress(ui: &mut egui::Ui, p: &Palette, done: u64, total: u64, suffix: &str)
         .small()
         .color(p.text_weak),
     );
-}
-
-/// A banner in a tone: its icon and the message, on the tone's subtle ground.
-fn banner(ui: &mut egui::Ui, p: &Palette, tone: Tone, text: &str) {
-    let (fg, bg) = tone.colors(p);
-    egui::Frame::NONE
-        .fill(bg)
-        .corner_radius(p.radius_sm)
-        .inner_margin(egui::Margin::symmetric(p.space_3 as i8, 6))
-        .show(ui, |ui| {
-            ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
-                ui.add(tone.icon().image(p.size_icon_md, fg));
-                ui.add(egui::Label::new(RichText::new(text).color(p.text_normal)).wrap());
-            });
-        });
 }

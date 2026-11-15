@@ -58,12 +58,19 @@ fn main() -> eframe::Result {
         error!("Windows didn't report the AppData folders; can't start");
         std::process::exit(1);
     };
+    // `--settings <file>`: another settings file, for trials that must not touch the real one
+    // (design.md M8). It's kept across a restart like every other option.
+    let mut locations = locations;
+    if let Some(f) = flag("--settings") {
+        locations.settings_file = std::path::PathBuf::from(f);
+    }
     let (settings, writable) = load_settings(&locations);
     // `--data <folder>` overrides the data folder for this run only (tests and trials with
     // generated photos never touch the real library).
-    let data_override = flag("--data").map(std::path::PathBuf::from);
+    let data_from_flag = flag("--data").map(std::path::PathBuf::from);
+    let data_override = data_from_flag.is_some();
     let data_folder =
-        data_override.unwrap_or_else(|| settings.data_folder_or(&locations.default_data_folder));
+        data_from_flag.unwrap_or_else(|| settings.data_folder_or(&locations.default_data_folder));
     let tile_cache = data_folder.join("tiles");
     if let Err(e) = fs::create_dir_all(&tile_cache) {
         warn!(
@@ -110,6 +117,7 @@ fn main() -> eframe::Result {
                 settings_file: writable.then_some(locations.settings_file),
                 check_updates,
                 update_endpoint,
+                data_override,
             };
             Ok(Box::new(app::MapCraftApp::new(&cc.egui_ctx, config)))
         }),
@@ -122,20 +130,27 @@ fn main() -> eframe::Result {
 /// has closed, and starts the new version when the user chose to restart. The new version gets
 /// the same options, `--data` included, so it opens the same library.
 fn install_pending_update(args: &[String]) {
-    let Some((file, restart)) = mapcraft::update::take_pending() else {
+    let pending = mapcraft::update::take_pending();
+    // A restart for the update, or for a new data folder (even after "Restart later").
+    let restart = pending.as_ref().is_some_and(|p| p.1) || mapcraft::update::restart_requested();
+    if pending.is_none() && !restart {
         return;
-    };
+    }
     // The path before the swap: afterwards it holds the new version.
     let Ok(exe) = std::env::current_exe() else {
-        error!("can't tell where MapCraft's exe is; the update isn't installed");
-        let _ = std::fs::remove_file(&file);
+        error!("can't tell where MapCraft's exe is; no update or restart");
+        if let Some((file, _)) = pending {
+            let _ = std::fs::remove_file(file);
+        }
         return;
     };
-    match mapcraft::update::install(&file) {
-        Ok(()) => info!("update installed"),
-        // The old version stays; when a restart was asked for, it starts again, so the window
-        // doesn't just vanish (the release build has no console to say why).
-        Err(e) => error!("{e}"),
+    if let Some((file, _)) = pending {
+        match mapcraft::update::install(&file) {
+            Ok(()) => info!("update installed"),
+            // The old version stays; when a restart was asked for, it starts again, so the
+            // window doesn't just vanish (the release build has no console to say why).
+            Err(e) => error!("{e}"),
+        }
     }
     if restart
         && let Err(e) = mapcraft::update::restart(&exe, &mapcraft::update::restart_args(&args[1..]))

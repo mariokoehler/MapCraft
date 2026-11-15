@@ -6,6 +6,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -13,6 +15,7 @@ use egui::{Frame, Panel, RichText, Stroke};
 use tracing::{error, info};
 
 use crate::companions::{self, Companion, Event as LcEvent, Failure};
+use crate::datafolder::{self, CopyError, Kind, Progress, Size, Target, Usage};
 use crate::filter::{Facets, Filter};
 use crate::import::scope::Scope;
 use crate::jobs::{ImportJob, JobEvent, ThumbEvent, ThumbJob};
@@ -21,12 +24,15 @@ use crate::library::{Counts, Library, PhotoDetail, Source};
 use crate::provider::Provider;
 use crate::settings::Settings;
 use crate::theme::{self, Palette, ThemeKind, Tokens};
+use crate::ui::data_dialogs::{
+    ChangeAction, ChangeDialog, ChangeStage, FreeAction, FreeSpaceDialog,
+};
 use crate::ui::details::{self, CompanionButtons, DetailPanel, PanelAction, PreviewFace, Previews};
 use crate::ui::filters::{self, FilterPanel, FiltersAction};
 use crate::ui::folder_dialog::{FolderAction, FolderDialog};
 use crate::ui::map_view::{MapAction, MapView};
 use crate::ui::search::{SearchAction, SearchBox};
-use crate::ui::settings_dialog::{SettingsAction, SettingsDialog};
+use crate::ui::settings_dialog::{DataView, Section, SettingsAction, SettingsDialog};
 use crate::ui::sources_dialog::{SourcesAction, SourcesDialog};
 use crate::ui::toasts::{self, Toast, ToastAction, Toasts};
 use crate::ui::top_bar::{self, BarFilters, Running, Task, TopBarAction};
@@ -104,6 +110,24 @@ pub struct Config {
     pub check_updates: bool,
     /// Where releases come from (GitHub, or a pretend one for trials).
     pub update_endpoint: update::Endpoint,
+    /// The data folder came from `--data`: Settings doesn't offer to change it (design.md M8).
+    pub data_override: bool,
+}
+
+/// Work on the data folder that waits for the thumbnail job to stop (design.md M8).
+#[derive(Debug, Clone, PartialEq)]
+enum DataTask {
+    Copy(PathBuf),
+    Purge(Vec<Kind>),
+}
+
+/// What the data folder's background work reports.
+enum DataEvent {
+    Counted(Usage, Option<u64>),
+    Progress(Progress),
+    Copied(Result<(), CopyError>),
+    Purged(Size, Vec<Kind>),
+    Removed(Result<(), String>),
 }
 
 /// A change to the library that waits until the thumbnail job has stopped. The job writes
@@ -190,6 +214,17 @@ pub struct MapCraftApp {
     update_calls: Vec<String>,
     /// "Restart later" was chosen: the download waits for the window to close.
     update_pending: bool,
+    /// The data folder (design.md M8): what it takes (and the old folder, after a move), the
+    /// dialogs, the background work and its cancel flag, and work waiting for the thumbnails.
+    data_override: bool,
+    data_usage: Option<Usage>,
+    old_size: Option<u64>,
+    data_events: (Sender<DataEvent>, Receiver<DataEvent>),
+    data_cancel: Arc<AtomicBool>,
+    change_dialog: Option<ChangeDialog>,
+    free_dialog: Option<FreeSpaceDialog>,
+    remove_old_open: bool,
+    data_waiting: Option<DataTask>,
 }
 
 impl MapCraftApp {
@@ -269,6 +304,15 @@ impl MapCraftApp {
             auto_check: false,
             update_calls: Vec::new(),
             update_pending: false,
+            data_override: config.data_override,
+            data_usage: None,
+            old_size: None,
+            data_events: mpsc::channel(),
+            data_cancel: Arc::new(AtomicBool::new(false)),
+            change_dialog: None,
+            free_dialog: None,
+            remove_old_open: false,
+            data_waiting: None,
         };
         if config.check_updates {
             app.auto_check = true;
@@ -625,13 +669,27 @@ impl MapCraftApp {
             self.launch,
             ctx,
         ));
+        self.count_usage();
     }
 
     fn settings_dialog(&mut self, ctx: &egui::Context) {
+        let blocked = self.data_blocked();
         let Some(dialog) = &mut self.settings_dialog else {
             return;
         };
-        match dialog.show(ctx, &self.palette, self.update_status) {
+        let old = self
+            .settings
+            .old_data_folder
+            .as_deref()
+            .filter(|o| o.exists());
+        let view = DataView {
+            folder: &self.data_folder,
+            usage: self.data_usage.as_ref(),
+            old: old.map(|o| (o, self.old_size)),
+            blocked,
+        };
+        let shown = dialog.show(ctx, &self.palette, self.update_status, &view);
+        match shown {
             Some(SettingsAction::Save {
                 photocraft,
                 lightcraft,
@@ -657,7 +715,381 @@ impl MapCraftApp {
                 self.settings_dialog = None;
                 self.open_update();
             }
+            Some(SettingsAction::ChangeDataFolder(picked)) => {
+                self.settings_dialog = None;
+                self.pick_data_folder(&picked);
+            }
+            Some(SettingsAction::ShowDataFolder) => {
+                if self.launch {
+                    if let Err(e) = launch::spawn(Launch::Open, &self.data_folder) {
+                        error!("can't show the data folder: {e}");
+                    }
+                } else {
+                    self.update_calls.push("show data folder".into());
+                }
+            }
+            Some(SettingsAction::FreeSpace) => {
+                if let Some(u) = self.data_usage.clone() {
+                    self.settings_dialog = None;
+                    self.free_dialog = Some(FreeSpaceDialog::new(u));
+                }
+            }
+            Some(SettingsAction::RemoveOldData) => {
+                self.settings_dialog = None;
+                self.remove_old_open = true;
+            }
             None => {}
+        }
+    }
+
+    /// Why the data folder can't change now, if it can't (design.md M8).
+    fn data_blocked(&self) -> Option<&'static str> {
+        if self.data_override {
+            Some("This run uses --data, so the data folder can’t be changed here.")
+        } else if self.job.is_some() {
+            Some("An import is running. Change the data folder when it’s done.")
+        } else if self.search.downloading() {
+            Some("Place names are downloading. Change the data folder when they’re done.")
+        } else {
+            None
+        }
+    }
+
+    /// Counts the data folder (and the old one, after a move) on a background thread.
+    fn count_usage(&mut self) {
+        self.data_usage = None;
+        let (data, old, tx, ctx) = (
+            self.data_folder.clone(),
+            self.settings.old_data_folder.clone(),
+            self.data_events.0.clone(),
+            self.ctx.clone(),
+        );
+        std::thread::spawn(move || {
+            let u = datafolder::usage(&data);
+            let old = old
+                .filter(|o| o.exists())
+                .map(|o| datafolder::usage(&o).total().bytes);
+            let _ = tx.send(DataEvent::Counted(u, old));
+            ctx.request_repaint();
+        });
+    }
+
+    /// A folder was picked as the new data folder: what it means (canvas artboard 2).
+    fn pick_data_folder(&mut self, picked: &std::path::Path) {
+        let stage = if let Some(why) = self.data_blocked() {
+            ChangeStage::Failed(why.into())
+        } else {
+            match datafolder::classify(&self.data_folder, picked) {
+                Target::Refused(why) => ChangeStage::Failed(why),
+                Target::Empty { dir, inside } => ChangeStage::Choose {
+                    network: datafolder::is_network(&dir),
+                    dir,
+                    inside,
+                    picked: picked.to_path_buf(),
+                },
+                Target::Existing { dir, photos } => ChangeStage::Existing { dir, photos },
+            }
+        };
+        let size = self.data_usage.as_ref().map(|u| u.total().bytes);
+        self.change_dialog = Some(ChangeDialog::new(stage, size));
+    }
+
+    fn change_dialog(&mut self, ctx: &egui::Context) {
+        let Some(d) = &mut self.change_dialog else {
+            return;
+        };
+        let Some(action) = d.show(ctx, &self.palette) else {
+            return;
+        };
+        let stage = d.stage.clone();
+        match (action, stage) {
+            (ChangeAction::Move, ChangeStage::Choose { dir, .. }) => {
+                if let Some(t) = &self.thumbs {
+                    // The thumbnail job writes into the library and the folder: it pauses
+                    // first, and the copy starts once it has stopped.
+                    t.cancel();
+                    self.data_waiting = Some(DataTask::Copy(dir));
+                    self.set_change_stage(ChangeStage::Pausing);
+                } else {
+                    self.start_copy(dir);
+                }
+            }
+            (ChangeAction::StartEmpty, ChangeStage::Choose { dir, .. }) => {
+                self.switch_data_folder(dir, false, ctx);
+            }
+            (ChangeAction::UseExisting, ChangeStage::Existing { dir, .. }) => {
+                self.switch_data_folder(dir, false, ctx);
+            }
+            (ChangeAction::ChooseAnother, _) => {
+                self.change_dialog = None;
+                self.open_settings(ctx);
+                if let Some(s) = &mut self.settings_dialog {
+                    s.section = Section::Data;
+                }
+            }
+            (ChangeAction::Cancel, ChangeStage::Copying { .. }) => {
+                // The dialog closes once the copy has stopped and cleaned up.
+                self.data_cancel.store(true, Ordering::Relaxed);
+            }
+            (ChangeAction::Cancel, ChangeStage::Pausing) => {
+                self.data_waiting = None;
+                self.change_dialog = None;
+            }
+            (ChangeAction::Cancel, _) => self.change_dialog = None,
+            _ => {}
+        }
+    }
+
+    fn set_change_stage(&mut self, stage: ChangeStage) {
+        if let Some(d) = &mut self.change_dialog {
+            d.stage = stage;
+        }
+    }
+
+    /// Copies the data to `dir` on a background thread (canvas artboard 2, Copying).
+    fn start_copy(&mut self, dir: PathBuf) {
+        self.set_change_stage(ChangeStage::Copying {
+            dir: dir.clone(),
+            at: None,
+        });
+        self.data_cancel.store(false, Ordering::Relaxed);
+        let (from, tx, ctx, cancel) = (
+            self.data_folder.clone(),
+            self.data_events.0.clone(),
+            self.ctx.clone(),
+            self.data_cancel.clone(),
+        );
+        std::thread::spawn(move || {
+            let progress = |p| {
+                let _ = tx.send(DataEvent::Progress(p));
+                ctx.request_repaint();
+                !cancel.load(Ordering::Relaxed)
+            };
+            let r = datafolder::copy(&from, &dir, &progress);
+            if let Err(CopyError::Failed(e)) = &r {
+                error!("copying the data folder: {e}");
+            }
+            let _ = tx.send(DataEvent::Copied(r));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Makes `dir` the data folder and restarts there. The setting must be saved first: if it
+    /// can't be, nothing switches (and a copy made for the move is removed again).
+    fn switch_data_folder(&mut self, dir: PathBuf, moved: bool, ctx: &egui::Context) {
+        let mut new = self.settings.clone();
+        new.data_folder = Some(dir.clone());
+        if moved {
+            new.old_data_folder = Some(self.data_folder.clone());
+        }
+        let saved = match &self.settings_file {
+            Some(f) => new.save_to(f).map_err(|e| e.to_string()),
+            None => Err("the settings file couldn’t be read at start".into()),
+        };
+        if let Err(e) = saved {
+            error!("can't save the new data folder: {e}");
+            if moved {
+                let _ = datafolder::remove_owned(&dir, true);
+            }
+            self.set_change_stage(ChangeStage::Failed(format!(
+                "MapCraft can’t save its settings ({e}), so the data folder stays where it is."
+            )));
+            return;
+        }
+        info!("data folder changes; restarting");
+        self.settings = new;
+        if self.launch {
+            update::request_restart();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else {
+            self.update_calls.push("restart".into());
+        }
+    }
+
+    fn free_dialog(&mut self, ctx: &egui::Context) {
+        let Some(d) = &mut self.free_dialog else {
+            return;
+        };
+        let Some(action) = d.show(ctx, &self.palette) else {
+            return;
+        };
+        self.free_dialog = None;
+        let FreeAction::Delete(kinds) = action else {
+            return;
+        };
+        match &self.thumbs {
+            Some(t) if kinds.contains(&Kind::Thumbnails) => {
+                t.cancel();
+                self.data_waiting = Some(DataTask::Purge(kinds));
+            }
+            _ => self.start_purge(kinds),
+        }
+    }
+
+    /// Deletes what MapCraft makes again, on a background thread. Thumbnails are marked as not
+    /// made in the library first, then their files go.
+    fn start_purge(&mut self, kinds: Vec<Kind>) {
+        let (data, db, tx, ctx) = (
+            self.data_folder.clone(),
+            self.db_path.clone(),
+            self.data_events.0.clone(),
+            self.ctx.clone(),
+        );
+        std::thread::spawn(move || {
+            if kinds.contains(&Kind::Thumbnails) {
+                match Library::open(&db).and_then(|mut l| l.forget_thumbnails()) {
+                    Ok(n) => info!("{n} thumbnails to be made again"),
+                    Err(e) => {
+                        error!("can't reset the thumbnails: {e}");
+                        let _ = tx.send(DataEvent::Purged(Size::default(), Vec::new()));
+                        return;
+                    }
+                }
+            }
+            let freed = datafolder::purge(&data, &kinds);
+            let _ = tx.send(DataEvent::Purged(freed, kinds));
+            ctx.request_repaint();
+        });
+    }
+
+    fn remove_old_dialog(&mut self, ctx: &egui::Context) {
+        if !self.remove_old_open {
+            return;
+        }
+        let Some(old) = self.settings.old_data_folder.clone() else {
+            self.remove_old_open = false;
+            return;
+        };
+        let Some(remove) = crate::ui::data_dialogs::remove_old_dialog(
+            ctx,
+            &self.palette,
+            &old,
+            &self.data_folder,
+            self.old_size,
+        ) else {
+            return;
+        };
+        self.remove_old_open = false;
+        if !remove {
+            return;
+        }
+        // Never the folder in use, nor one holding it or held by it.
+        if datafolder::same_or_inside(&old, &self.data_folder)
+            || datafolder::same_or_inside(&self.data_folder, &old)
+        {
+            self.settings.old_data_folder = None;
+            self.save_settings();
+            return;
+        }
+        let (tx, c) = (self.data_events.0.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let r = datafolder::remove_owned(&old, true).map_err(|e| e.to_string());
+            let _ = tx.send(DataEvent::Removed(r));
+            c.request_repaint();
+        });
+    }
+
+    /// Takes the data folder work's news, and starts work that waited for the thumbnails.
+    fn poll_data(&mut self, ctx: &egui::Context) {
+        if self.thumbs.is_none()
+            && let Some(task) = self.data_waiting.take()
+        {
+            match task {
+                DataTask::Copy(dir) => self.start_copy(dir),
+                DataTask::Purge(kinds) => self.start_purge(kinds),
+            }
+        }
+        let events: Vec<DataEvent> = self.data_events.1.try_iter().collect();
+        for e in events {
+            match e {
+                DataEvent::Counted(u, old) => {
+                    self.data_usage = Some(u);
+                    self.old_size = old;
+                }
+                DataEvent::Progress(p) => {
+                    if let Some(d) = &mut self.change_dialog
+                        && let ChangeStage::Copying { at, .. } = &mut d.stage
+                    {
+                        *at = Some(p);
+                    }
+                }
+                DataEvent::Copied(r) => {
+                    let dir = match self.change_dialog.as_ref().map(|d| &d.stage) {
+                        Some(ChangeStage::Copying { dir, .. }) => Some(dir.clone()),
+                        _ => None,
+                    };
+                    match (r, dir) {
+                        (Ok(()), Some(dir)) => self.switch_data_folder(dir, true, ctx),
+                        (Err(CopyError::Failed(e)), _) => {
+                            self.set_change_stage(ChangeStage::Failed(e));
+                            self.start_thumbs();
+                        }
+                        _ => {
+                            self.change_dialog = None;
+                            self.start_thumbs();
+                        }
+                    }
+                }
+                DataEvent::Purged(freed, kinds) => {
+                    if !kinds.is_empty() {
+                        let names: Vec<&str> = kinds
+                            .iter()
+                            .map(|k| match k {
+                                Kind::Previews => "detail previews",
+                                Kind::Tiles => "map tiles",
+                                _ => "thumbnails",
+                            })
+                            .collect();
+                        let what = match names.as_slice() {
+                            [one] => one.to_string(),
+                            [a, b] => format!("{a} and {b}"),
+                            [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+                            [] => String::new(),
+                        };
+                        let what: String = {
+                            let mut c = what.chars();
+                            c.next()
+                                .map(|f| f.to_uppercase().chain(c).collect())
+                                .unwrap_or_default()
+                        };
+                        self.toasts.push(toasts::note(
+                            Tone::Success,
+                            &format!("Freed {}", datafolder::bytes_text(freed.bytes)),
+                            &format!("{what} are made again when they’re needed."),
+                            None,
+                        ));
+                    }
+                    if kinds.contains(&Kind::Thumbnails) {
+                        self.refresh();
+                        self.start_thumbs();
+                    }
+                    self.count_usage();
+                }
+                DataEvent::Removed(r) => {
+                    match r {
+                        Ok(()) => {
+                            self.settings.old_data_folder = None;
+                            self.save_settings();
+                            self.toasts.push(toasts::note(
+                                Tone::Success,
+                                "Old data removed",
+                                "MapCraft’s files are gone from the old data folder.",
+                                None,
+                            ));
+                        }
+                        Err(e) => {
+                            error!("removing the old data: {e}");
+                            self.toasts.push(toasts::note(
+                                Tone::Error,
+                                "Some old data couldn’t be removed",
+                                "A file may be in use. Try again later.",
+                                None,
+                            ));
+                        }
+                    }
+                    self.count_usage();
+                }
+            }
         }
     }
 
@@ -1193,6 +1625,7 @@ impl MapCraftApp {
         self.poll_job();
         self.poll_thumbs();
         self.poll_updates(&ctx);
+        self.poll_data(&ctx);
 
         let p = self.palette.clone();
         let running = self.running();
@@ -1259,6 +1692,9 @@ impl MapCraftApp {
             || self.narrow.is_some()
             || self.settings_dialog.is_some()
             || self.update_dialog.is_some()
+            || self.change_dialog.is_some()
+            || self.free_dialog.is_some()
+            || self.remove_old_open
             || self.lc_add.is_some();
 
         // Keys: Ctrl+I shows or hides the panel, Esc closes the strip or clears the selection.
@@ -1416,6 +1852,9 @@ impl MapCraftApp {
         self.sources_dialog(&ctx);
         self.narrow_dialog(&ctx);
         self.settings_dialog(&ctx);
+        self.change_dialog(&ctx);
+        self.free_dialog(&ctx);
+        self.remove_old_dialog(&ctx);
         self.update_dialog(&ctx);
         self.add_dialog(&ctx);
 
@@ -1478,6 +1917,7 @@ mod tests {
                                 settings_file: None,
                                 check_updates: false,
                                 update_endpoint: crate::update::Endpoint::github(),
+                                data_override: false,
                             },
                         )
                     });
@@ -2177,6 +2617,7 @@ mod tests {
                                 settings_file: None,
                                 check_updates: false,
                                 update_endpoint: crate::update::Endpoint::github(),
+                                data_override: false,
                             },
                         )
                     });
@@ -2550,6 +2991,8 @@ owhere\lightcraft.exe",
         let dir = tempfile::tempdir().unwrap();
         let mut h = harness_with(dir.path(), Some(StartDialog::Settings));
         h.run_steps(2);
+        h.get_by_label("Updates").click();
+        h.run_steps(2);
         h.get_by_label(&format!("MapCraft {}", env!("CARGO_PKG_VERSION")));
         h.get_by_label("Check now").click();
         h.run_steps(2);
@@ -2580,9 +3023,163 @@ owhere\lightcraft.exe",
             .unwrap()
             .open_settings(&egui::Context::default());
         h.run_steps(3);
+        h.get_by_label("Updates").click();
+        h.run_steps(2);
         h.get_by_label("Update…").click();
         h.run_steps(3);
         h.get_by_label("Update MapCraft");
         assert!(h.query_by_label("Companion apps").is_none());
+    }
+
+    /// Opens Settings on the Data folder section and waits for the count.
+    fn data_section(h: &mut Harness<'static, Option<MapCraftApp>>) {
+        h.state_mut()
+            .as_mut()
+            .unwrap()
+            .open_settings(&egui::Context::default());
+        h.run_steps(2);
+        h.get_by_label("Data folder").click();
+        step_until(h, "the count", |h| {
+            h.state().as_ref().unwrap().data_usage.is_some()
+        });
+    }
+
+    #[test]
+    fn the_data_folder_shows_its_space_and_frees_previews() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 8);
+        let mut h = harness(dir.path());
+        settled(&mut h);
+        // A preview and a tile beside the thumbnails the import made.
+        let previews = dir.path().join("previews/aa/bb");
+        std::fs::create_dir_all(&previews).unwrap();
+        std::fs::write(previews.join("1_1024.jpg"), vec![1u8; 2_000_000]).unwrap();
+        data_section(&mut h);
+        h.get_by_label("Thumbnails");
+        h.get_by_label("Detail previews");
+        assert!(h.query_all_by_label("2 MB").count() >= 1);
+        h.get_by_label("Show in Explorer").click();
+        h.run_steps(2);
+        assert_eq!(
+            h.state().as_ref().unwrap().update_calls,
+            ["show data folder"]
+        );
+
+        h.get_by_label("Free up space…").click();
+        h.run_steps(3);
+        h.get_by_label("Free up space");
+        assert!(
+            h.query_by_label("Data folder").is_none(),
+            "Settings gave way"
+        );
+        h.get_by_label_contains("Delete 2 MB").click();
+        step_until(&mut h, "the toast", |h| {
+            h.query_by_label("Freed 2 MB").is_some()
+        });
+        assert!(!dir.path().join("previews").exists());
+        assert!(
+            dir.path().join("thumbs").exists(),
+            "thumbnails weren't ticked"
+        );
+    }
+
+    #[test]
+    fn freeing_thumbnails_makes_them_again() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 8);
+        let mut h = harness(dir.path());
+        settled(&mut h);
+        let made = |h: &Harness<'static, Option<MapCraftApp>>| {
+            let app = h.state().as_ref().unwrap();
+            app.lib.as_ref().unwrap().thumb_counts().unwrap()
+        };
+        assert_eq!(made(&h).1, 0, "all made");
+        data_section(&mut h);
+        h.get_by_label("Free up space…").click();
+        h.run_steps(3);
+        h.query_all_by_label("Thumbnails").next().unwrap().click();
+        h.run_steps(2);
+        h.get_by_label_contains("Delete").click();
+        // Forgotten, deleted, then made again by the thumbnail job.
+        step_until(&mut h, "the toast", |h| {
+            h.query_by_label_contains("Freed").is_some()
+        });
+        step_until(&mut h, "the thumbnails again", |h| {
+            let app = h.state().as_ref().unwrap();
+            app.thumbs.is_none() && made(h).1 == 0
+        });
+        assert!(dir.path().join("thumbs").exists());
+    }
+
+    #[test]
+    fn moving_the_data_folder_copies_saves_and_restarts() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        imported(&data, 4);
+        let mut h = harness(&data);
+        settled(&mut h);
+        let settings_file = dir.path().join("settings.toml");
+        h.state_mut().as_mut().unwrap().settings_file = Some(settings_file.clone());
+        data_section(&mut h);
+
+        // A folder with other files: a MapCraft folder inside it.
+        let picked = dir.path().join("D");
+        std::fs::create_dir_all(&picked).unwrap();
+        std::fs::write(picked.join("notes.txt"), b"x").unwrap();
+        h.state_mut().as_mut().unwrap().settings_dialog = None;
+        h.state_mut().as_mut().unwrap().pick_data_folder(&picked);
+        h.run_steps(3);
+        h.get_by_label("Change data folder");
+        h.get_by_label_contains("holds other files");
+        h.get_by_label("Move and restart").click();
+        step_until(&mut h, "the copy and the restart", |h| {
+            !h.state().as_ref().unwrap().update_calls.is_empty()
+        });
+        let new = picked.join("MapCraft");
+        assert_eq!(h.state().as_ref().unwrap().update_calls, ["restart"]);
+        assert!(datafolder::has_library(&new));
+        assert!(new.join("thumbs").exists());
+        let saved = Settings::load_from(&settings_file).unwrap();
+        assert_eq!(saved.data_folder.as_deref(), Some(new.as_path()));
+        assert_eq!(saved.old_data_folder.as_deref(), Some(data.as_path()));
+        assert!(datafolder::has_library(&data), "the old copy stays");
+        assert!(picked.join("notes.txt").is_file());
+    }
+
+    #[test]
+    fn the_data_folder_isnt_changed_where_it_cant_be() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = harness(dir.path());
+        h.run_steps(2);
+        // Without a settings file to save to, nothing switches.
+        let other = tempfile::tempdir().unwrap();
+        let empty = other.path().join("elsewhere");
+        h.state_mut().as_mut().unwrap().pick_data_folder(&empty);
+        h.run_steps(3);
+        // The option is named twice (radio and text): either chooses it.
+        h.query_all_by_label("Start empty there")
+            .next()
+            .unwrap()
+            .click();
+        h.run_steps(2);
+        h.get_by_label("Start empty and restart").click();
+        h.run_steps(3);
+        h.get_by_label_contains("can’t save its settings");
+        assert!(h.state().as_ref().unwrap().update_calls.is_empty());
+        h.get_by_label("Close").click();
+        h.run_steps(2);
+
+        // The folder in use: refused.
+        h.state_mut().as_mut().unwrap().pick_data_folder(dir.path());
+        h.run_steps(3);
+        h.get_by_label_contains("uses now");
+        h.get_by_label("Close").click();
+        h.run_steps(2);
+
+        // A run with --data doesn't offer Change….
+        h.state_mut().as_mut().unwrap().data_override = true;
+        data_section(&mut h);
+        h.get_by_label_contains("uses --data");
     }
 }

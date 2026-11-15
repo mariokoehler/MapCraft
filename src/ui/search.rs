@@ -450,6 +450,11 @@ impl SearchBox {
         self.open = false;
     }
 
+    /// Whether the place names are downloading (the data folder can't change meanwhile).
+    pub fn downloading(&self) -> bool {
+        matches!(self.download, Some(Download::Running { .. }))
+    }
+
     fn start_download(&mut self) {
         if !self.network {
             self.download_asked += 1;

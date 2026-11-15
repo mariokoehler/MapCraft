@@ -366,6 +366,18 @@ impl Updater {
     }
 }
 
+/// A restart asked for by something other than an update (a new data folder, design.md M8).
+static RESTART: AtomicBool = AtomicBool::new(false);
+
+/// Asks `main` to start MapCraft again once the window has closed.
+pub fn request_restart() {
+    RESTART.store(true, Ordering::Relaxed);
+}
+
+pub fn restart_requested() -> bool {
+    RESTART.load(Ordering::Relaxed)
+}
+
 /// A verified download waiting to be swapped in once the window has closed, and whether to
 /// start the new version then. `main` takes it after `run_native` returns.
 static PENDING: Mutex<Option<(PathBuf, bool)>> = Mutex::new(None);

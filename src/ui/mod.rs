@@ -1,6 +1,7 @@
 //! The screens and widgets: the top bar, the map with its overlays (M1), and the import's
 //! dialogs and toasts (M2), the photo markers (M3).
 
+pub mod data_dialogs;
 pub mod details;
 pub mod filters;
 pub mod folder_dialog;

@@ -295,6 +295,21 @@ pub fn thousands(n: usize) -> String {
     out
 }
 
+/// A banner in a tone: its icon and the message, on the tone's subtle ground.
+pub fn banner(ui: &mut egui::Ui, p: &Palette, tone: Tone, text: &str) {
+    let (fg, bg) = tone.colors(p);
+    Frame::NONE
+        .fill(bg)
+        .corner_radius(p.radius_sm)
+        .inner_margin(Margin::symmetric(p.space_3 as i8, 6))
+        .show(ui, |ui| {
+            ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
+                ui.add(tone.icon().image(p.size_icon_md, fg));
+                ui.add(egui::Label::new(RichText::new(text).color(p.text_normal)).wrap());
+            });
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::thousands;
