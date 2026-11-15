@@ -191,6 +191,8 @@ committed):
     an extra widget shifts the layout and the ids below it, and clicks get lost.
   - Wait for the thumbnail job (`thumbs.is_none()`) before `h.run()`: its chip's spinner keeps
     the frame repainting.
+- `cargo run --release --example make_icon` remakes `assets/brand/mapcraft.ico` and the 256 px
+  window icon from the master `assets/brand/mapcraft-icon-1024.png`; commit the results.
 - `cargo run --release --example cluster_probe -- [n]` times the grouping on synthetic photos.
 - `places_probe -- <cities500.zip> <admin1> <countryInfo> <out.sqlite> [queries…]` builds the
   place index from downloaded GeoNames files and times searches (public data only).

@@ -72,9 +72,14 @@ fn main() -> eframe::Result {
     info!("settings file: {}", locations.settings_file.display());
     info!("data folder: {}", data_folder.display());
 
+    // The window's icon (title bar, taskbar); the exe's own comes from build.rs.
+    let icon =
+        eframe::icon_data::from_png_bytes(include_bytes!("../assets/brand/mapcraft-icon-256.png"))
+            .expect("the embedded icon is a valid PNG");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("MapCraft")
+            .with_icon(icon)
             .with_inner_size([settings.window.width, settings.window.height])
             .with_min_inner_size([960.0, 600.0]),
         ..Default::default()

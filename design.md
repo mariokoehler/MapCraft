@@ -1135,8 +1135,12 @@ Milestones are rough and get refined as we go.
     icons and tokens are already compiled in, SQLite is bundled, TLS is rustls; the C runtime
     is linked statically (`+crt-static` in `.cargo/config.toml`), so no VC++ redistributable
     is needed. A `build.rs` puts the icon and version info into the exe (`winresource`, 0.1.34,
-    verified 2026-11-15, https://crates.io/crates/winresource). The icon comes from the user
-    (in progress, 2026-11-15).
+    verified 2026-11-15, https://crates.io/crates/winresource).
+  - **The icon** (the user's, 2026-11-15): a compass over a teal map. The master is
+    `assets/brand/mapcraft-icon-1024.png`; `examples/make_icon.rs` makes `mapcraft.ico` (16 to
+    256 px; bitmaps below 256, which every Windows API reads, PNG at 256) and
+    `mapcraft-icon-256.png`, the window's icon set in `main.rs`. The top bar still shows the
+    older orange mark (`mapcraft-mark-32.svg`).
   - The exe isn't code-signed: Windows SmartScreen warns on first run ("More info → Run
     anyway"). Accepted for a personal, non-commercial app; the README says so.
   - **Releases:** `.github/workflows/release.yml` runs when a `v*` tag is pushed (Windows
