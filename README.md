@@ -1,40 +1,183 @@
 # MapCraft
 
-A Windows desktop app, written in Rust, that shows your photos on a world map, like the Map module
-in Lightroom Classic.
+[![Latest release](https://img.shields.io/github/v/release/mariokoehler/MapCraft)](https://github.com/mariokoehler/MapCraft/releases/latest)
+[![Release build](https://github.com/mariokoehler/MapCraft/actions/workflows/release.yml/badge.svg)](https://github.com/mariokoehler/MapCraft/actions/workflows/release.yml)
+[![Licence: MIT OR Apache-2.0](https://img.shields.io/badge/licence-MIT%20OR%20Apache--2.0-blue)](#licence)
 
-- Photos stay where they are, on local drives or SMB shares. MapCraft only records their paths
-  and keeps a small thumbnail of each.
-- Photos are placed by their EXIF GPS position and merge into groups that split as you zoom in.
-- RAW files and other formats it doesn't decode itself are handed to the companion apps
-  [LightCraft](https://github.com/storytold/lightcraft) and
-  [PhotoCraft](https://github.com/storytold/photocraft).
+**Your photos on a world map.** MapCraft is a Windows desktop app that places your photos where
+they were taken, like the Map module in Lightroom Classic, without importing them into a
+catalogue. It reads the GPS position from each photo, shows thumbnails on an OpenStreetMap map,
+and merges nearby photos into groups that split as you zoom in.
 
-**Status:** early development. Folders of photos (local drives or network shares) show on the
-map as thumbnails that group and split as you zoom; search, filters and the companion apps work.
-See [`design.md`](design.md) for the concept, features, architecture and roadmap.
+![MapCraft showing photos from trips around Iceland as thumbnail groups on the map](docs/screenshots/map.jpg)
 
-## Download
+- [Features](#features)
+- [Screenshots](#screenshots)
+- [Download and install](#download-and-install)
+- [Getting started](#getting-started)
+- [Updates](#updates)
+- [Privacy](#privacy)
+- [Companion apps](#companion-apps)
+- [Limitations](#limitations)
+- [Building from source](#building-from-source)
+- [Contributing](#contributing)
+- [Licence](#licence)
 
-Each [release](https://github.com/mariokoehler/MapCraft/releases) has `mapcraft.exe`: one file,
-no installer. Put it in a folder of your own (for example `%LOCALAPPDATA%\Programs\MapCraft`)
-and run it. Settings and the library live in `%APPDATA%\MapCraft` and `%LOCALAPPDATA%\MapCraft`.
+## Features
 
-- The exe isn't code-signed, so Windows SmartScreen warns the first time: choose
-  **More info → Run anyway**.
-- MapCraft checks for a newer release when it starts and offers to update itself (it can be
-  turned off in Settings). The check asks GitHub for the latest release; nothing about your
-  photos is sent. Updating needs a folder MapCraft can write to, so not `Program Files`.
-- `mapcraft.exe.sha256` is the exe's checksum; `THIRD-PARTY-NOTICES.txt` lists the licences of
-  everything built into it.
+- **Your photos stay where they are.** MapCraft only records their paths, on local drives or
+  network shares (SMB), and keeps a small thumbnail of each in its own data folder. It never
+  copies, moves, renames or writes to your photos, and never adds sidecar files next to them.
+- **Thumbnails on the map.** Photos close to each other merge into a group with a count; zoom
+  in and the groups split. Click a group to zoom to it, or to see its photos in a strip when
+  they were all taken at the same spot.
+- **RAW-friendly.** A RAW file and its JPEG count as one photo. Thumbnails come from the RAW's
+  embedded preview, so even large libraries are fast to build.
+- **GPS from EXIF or XMP sidecars**, for JPEG, TIFF, DNG, CR2, RAF and more.
+- **Search** for places (an offline index of towns and cities from GeoNames, downloaded once on
+  request) or for photos by file name, folder, date or camera.
+- **Filters** by date (with a histogram), source folder, camera and file type (RAW, DNG, TIFF,
+  JPEG, …).
+- **Photo details**: file, capture date, camera, lens and position, with *Show in Explorer* and
+  *Open*.
+- **Companion apps**: open a photo in [PhotoCraft](https://github.com/storytold/photocraft) or
+  show it in [LightCraft](https://github.com/storytold/lightcraft) with one click.
+- **Rescans** pick up new, changed, moved and missing photos, and folders can be left out.
+- **Your data, your disk**: choose where MapCraft keeps its library and thumbnails, see how much
+  space each part takes, and free up space when you need it.
+- **Updates itself** from GitHub releases, after asking.
 
-## Building
+## Screenshots
 
-You need Rust (via [rustup](https://rustup.rs)) and, on Windows, the Visual Studio Build Tools
-with the C++ workload. Then `cargo run`.
+| Groups split as you zoom in | Search for a place |
+| --- | --- |
+| ![Photo groups around Reykjavík after zooming in](docs/screenshots/groups.jpg) | ![The search field finding Reykjavík, with the number of photos taken there](docs/screenshots/search.jpg) |
 
-MapCraft is a personal, non-commercial project. It is **not affiliated** with the storytold /
-ArtCraft team that makes LightCraft and PhotoCraft.
+| Filter by date, camera and file type |
+| --- |
+| ![The filter panel with a date histogram, cameras and file types](docs/screenshots/filters.jpg) |
+
+## Download and install
+
+MapCraft is a single file, `mapcraft.exe`. There's no installer.
+
+1. **Download** `mapcraft.exe` from the
+   [latest release](https://github.com/mariokoehler/MapCraft/releases/latest).
+2. **Put it in a folder of your own**, for example `%LOCALAPPDATA%\Programs\MapCraft` (type that
+   into Explorer's address bar) or `D:\Apps\MapCraft`.
+   - **Not under `C:\Program Files`.** MapCraft updates itself by replacing its own file, and
+     Windows doesn't let normal programs change files there. It would still run, but every
+     update would have to be downloaded by hand.
+   - The folder can be anywhere you can write to: another drive is fine.
+3. **Start it.** The exe isn't code-signed, so the first time Windows SmartScreen shows
+   *Windows protected your PC*. Click **More info**, then **Run anyway**.
+4. Optional: pin it to the taskbar or create a shortcut on the desktop or in the Start menu
+   (right-click the exe → *Show more options* → *Send to* / *Pin to Start*).
+
+**Requirements:** Windows 11, 64-bit. Windows 10 (64-bit) should work but isn't tested. An
+internet connection for the map tiles.
+
+**Checking the download** (optional): each release also has `mapcraft.exe.sha256`. In
+PowerShell, `(Get-FileHash mapcraft.exe).Hash` must match the hash in that file (case doesn't
+matter).
+
+**Where MapCraft keeps things:**
+
+| What | Where |
+| --- | --- |
+| Settings | `%APPDATA%\MapCraft\settings.toml` |
+| Library, thumbnails, previews, map tiles, place names | `%LOCALAPPDATA%\MapCraft` by default; change it in *Settings → Data folder* |
+
+**Uninstalling:** delete `mapcraft.exe`, the `%APPDATA%\MapCraft` folder, and the data folder
+(shown in *Settings → Data folder*). Your photos aren't affected.
+
+## Getting started
+
+1. Click **Add folder** (the folder icon with a plus, top right) and pick a folder of photos,
+   on a local drive or a network share. You can leave out subfolders before importing.
+2. MapCraft reads the GPS positions; photos appear on the map as it goes, then thumbnails
+   replace the dots.
+3. Zoom and pan the map; click a group to zoom in. **F** zooms to all photos, **+** and **−**
+   zoom in and out.
+4. **Ctrl K** jumps to the search field. **Esc** closes the strip or the selection.
+5. Click a photo for its details; **Ctrl I** shows or hides the detail panel.
+
+Photos without a GPS position are counted in the top bar but can't be shown on the map.
+
+## Updates
+
+MapCraft checks GitHub for a newer release when it starts. If there is one, it says so; click
+**Update…**, then **Update and restart**. It downloads the new version, checks it against the
+release's checksum, replaces itself and starts again. Your library and settings stay as they
+are.
+
+- The check can be turned off in *Settings → Updates*, which also has **Check now**.
+- If MapCraft's folder isn't writable (see [Download and install](#download-and-install)), it
+  offers the release page instead: download the new `mapcraft.exe` and replace the old one.
+- A newer version may upgrade the library's format; an older version can't open it afterwards.
+  The release notes say when that happens.
+
+## Privacy
+
+Your photos and their locations stay on your computer. MapCraft connects to:
+
+- **OpenStreetMap's tile servers**, to draw the map (the requests show which area you look at,
+  not your photos);
+- **GitHub**, once per start, to ask for the latest release (it can be turned off);
+- **geonames.org**, only when you ask for the place index to be downloaded.
+
+Nothing else is sent anywhere, and the log never contains positions.
+
+## Companion apps
+
+MapCraft doesn't edit photos. It hands them to two open-source apps, if you have them:
+
+- **[PhotoCraft](https://github.com/storytold/photocraft)** opens JPEG, PNG, TIFF, WebP and PSD
+  files.
+- **[LightCraft](https://github.com/storytold/lightcraft)** finds the photo in its library and
+  shows it. MapCraft starts it with remote control on: a local port without a password, which
+  other programs on the same computer could use while LightCraft runs.
+
+Their locations are set in *Settings → Companion apps*. MapCraft is not affiliated with the
+team that makes them.
+
+## Limitations
+
+- **Windows only.**
+- **Photos without GPS** aren't placed on the map yet; there's no manual placement.
+- **Videos** aren't imported.
+- **HEIC files** and RAW files without an embedded preview get a placeholder instead of a
+  thumbnail.
+- **The map** uses OpenStreetMap's tiles, so it needs an internet connection; tiles you've seen
+  are cached.
+
+See [`design.md`](design.md) for the concept, the architecture, open questions and the roadmap.
+
+## Building from source
+
+You need Rust (via [rustup](https://rustup.rs)) and the Visual Studio Build Tools with the
+*Desktop development with C++* workload.
+
+```powershell
+git clone https://github.com/mariokoehler/MapCraft.git
+cd MapCraft
+cargo run            # a debug build, with a console window for the log
+cargo run --release  # the optimised build, as released
+cargo test           # the unit and headless UI tests
+```
+
+More on the project's layout, its development flags and the release process is in
+[`CLAUDE.md`](CLAUDE.md) and [`design.md`](design.md).
+
+## Contributing
+
+MapCraft is a personal, non-commercial project, but bug reports and ideas are welcome as
+[issues](https://github.com/mariokoehler/MapCraft/issues). Please include the MapCraft version
+(*Settings → Updates*) and, for import or thumbnail problems, the file types involved; never
+attach photos that show where you live.
+
+Before a pull request: `cargo fmt`, `cargo clippy --all-targets` (warning-free) and
+`cargo test`.
 
 ## Licence
 
@@ -50,11 +193,14 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any
 additional terms or conditions.
 
-## Third-party material
+### Third-party material
 
-- Map data © OpenStreetMap contributors (ODbL). Place names from GeoNames (CC-BY 4.0), once
-  place search is built.
-- [IBM Plex](https://github.com/IBM/plex) Sans and Mono fonts, © IBM Corp., under the SIL Open Font
-  License 1.1 ([`assets/fonts/OFL.txt`](assets/fonts/OFL.txt)).
+- Map data © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors (ODbL). Place
+  names from [GeoNames](https://www.geonames.org/) (CC BY 4.0).
+- [IBM Plex](https://github.com/IBM/plex) Sans and Mono fonts, © IBM Corp., under the SIL Open
+  Font License 1.1 ([`assets/fonts/OFL.txt`](assets/fonts/OFL.txt)).
 - [Lucide](https://lucide.dev) icons, © Lucide Icons and Contributors, under the ISC licence
   ([`assets/icons/LICENSE`](assets/icons/LICENSE)).
+- The libraries built into the exe, with their licences, are listed in `THIRD-PARTY-NOTICES.txt`
+  in each release.
+- The screenshots show the author's own photos.

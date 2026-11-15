@@ -110,7 +110,10 @@ tests the update 0.1.0 → 0.2.0. M6
 - **Flag unprompted:** security and privacy concerns (briefly). Photo locations are personal data
   (`design.md` §3.8).
 - **The repo will be public:** no API keys, personal paths beyond the defaults, or personal photos
-  in it. Test images are our own or generated.
+  in it. Test images are our own or generated. Exception: the README's screenshots
+  (`docs/screenshots/`) show the user's Iceland photos on the map, at the user's wish
+  (2026-11-15); they show thumbnails, places and the trip's year, never paths, file names or
+  the detail panel. Take them from a scratch copy of the data folder.
 - **Commits are not signed** in this repo (user, 2026-11-14): the GPG key is for the user's job
   only. `commit.gpgsign = false` is set in the repo's local git config. The global Kleopatra rule
   doesn't apply here.
