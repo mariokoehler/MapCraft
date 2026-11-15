@@ -1,5 +1,5 @@
 //! The filters' UI (canvas `MapCraft — Filters`): the Filters button in the top bar, its panel
-//! (date histogram and range, sources, cameras), the chips over the map, and the card shown when
+//! (date histogram and range, sources, cameras, file types), the chips over the map, and the card shown when
 //! nothing matches. What a filter hides is decided in `crate::filter`.
 
 use egui::{
@@ -146,6 +146,9 @@ impl FilterPanel {
                         }
                         if !facets.cameras.is_empty() {
                             section(ui, p, false, |ui| self.cameras(ui, p, f, facets));
+                        }
+                        if facets.types.len() > 1 {
+                            section(ui, p, false, |ui| types_list(ui, p, f, facets));
                         }
                         section(ui, p, false, |ui| {
                             ui.horizontal(|ui| {
@@ -375,6 +378,16 @@ fn sources_list(ui: &mut Ui, p: &Palette, f: &mut Filter, facets: &Facets, sourc
     }
 }
 
+fn types_list(ui: &mut Ui, p: &Palette, f: &mut Filter, facets: &Facets) {
+    caption(ui, p, "File types");
+    for &(t, n) in &facets.types {
+        let on = !f.hidden_types.contains(t);
+        if check_row(ui, p, t, n, on) {
+            f.set_type(t, !on);
+        }
+    }
+}
+
 /// A section of the panel, with a hairline above all but the first.
 fn section(ui: &mut Ui, p: &Palette, first: bool, body: impl FnOnce(&mut Ui)) {
     if !first {
@@ -523,6 +536,17 @@ pub fn chips(
             .collect();
         texts.push(("camera", filter::list_text("cameras", &shown, &hidden)));
     }
+    if !f.hidden_types.is_empty() {
+        let (shown, hidden): (Vec<&str>, Vec<&str>) = facets
+            .types
+            .iter()
+            .map(|(t, _)| *t)
+            .partition(|t| !f.hidden_types.contains(*t));
+        texts.push((
+            "file type",
+            filter::list_text("file types", &shown, &hidden),
+        ));
+    }
     Area::new(Id::unique("filter-chips"))
         .order(Order::Middle)
         .pivot(Align2::LEFT_TOP)
@@ -561,7 +585,9 @@ pub fn chips(
                         match *kind {
                             "date" => f.dates = None,
                             "source" => f.hidden_sources.clear(),
-                            _ => f.hidden_cameras.clear(),
+                            "camera" => f.hidden_cameras.clear(),
+                            "file type" => f.hidden_types.clear(),
+                            _ => {}
                         }
                     }
                 }

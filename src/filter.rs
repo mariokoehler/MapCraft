@@ -1,17 +1,19 @@
-//! Filters (design.md §2.3): a date range, sources and cameras. They narrow what the map shows;
+//! Filters (design.md §2.3): a date range, sources, cameras and file types. They narrow what the map shows;
 //! hidden photos also leave the groups, the counts and search.
 //!
 //! One rule decides what a filter hides: the SQL condition from [`Filter::sql`], used by every
 //! query that lists photos on the map (positions, place counts, search). There's no second
 //! in-memory version that could drift from it.
 //!
-//! Sources and cameras are stored as what's *hidden*, so a camera or source that appears later
+//! Sources, cameras and file types are stored as what's *hidden*, so a camera or source that appears later
 //! (an import during the session) shows rather than being left out silently. Filters live for
 //! the session only and are never logged (design.md §3.8, §4).
 
 use std::collections::{BTreeSet, HashMap};
 
 use rusqlite::types::Value;
+
+use crate::import::scan;
 
 /// A month as `yyyymm` (201905 is May 2019).
 pub type Month = u32;
@@ -23,6 +25,8 @@ pub struct Filter {
     pub hidden_sources: BTreeSet<i64>,
     /// Raw camera keys ([`camera_key`]) left out.
     pub hidden_cameras: BTreeSet<String>,
+    /// File types ([`scan::FILE_TYPES`]) left out, by the photo's original file.
+    pub hidden_types: BTreeSet<String>,
 }
 
 /// A SQL condition (`" AND …"`, or empty) with its named parameters.
@@ -37,11 +41,13 @@ impl Filter {
         self.active_count() > 0
     }
 
-    /// How many filters are set (the badge on the Filters button): date, sources, cameras.
+    /// How many filters are set (the badge on the Filters button): date, sources, cameras,
+    /// file types.
     pub fn active_count(&self) -> usize {
         self.dates.is_some() as usize
             + !self.hidden_sources.is_empty() as usize
             + !self.hidden_cameras.is_empty() as usize
+            + !self.hidden_types.is_empty() as usize
     }
 
     /// The condition on table `photo` (columns prefixed with `prefix`, such as `"p."`). Values
@@ -83,7 +89,32 @@ impl Filter {
                 w.params.push((n, Value::Text(key.clone())));
             }
         }
+        let exts: Vec<&str> = self
+            .hidden_types
+            .iter()
+            .flat_map(|t| scan::exts_of(t))
+            .collect();
+        if !exts.is_empty() {
+            let names: Vec<String> = (0..exts.len()).map(|i| format!(":f_t{i}")).collect();
+            w.sql.push_str(&format!(
+                " AND {} NOT IN ({})",
+                format_args!("{prefix}original_ext"),
+                names.join(", ")
+            ));
+            for (n, ext) in names.into_iter().zip(exts) {
+                w.params.push((n, Value::Text(ext.to_owned())));
+            }
+        }
         w
+    }
+
+    /// Shows or hides a file type.
+    pub fn set_type(&mut self, file_type: &str, shown: bool) {
+        if shown {
+            self.hidden_types.remove(file_type);
+        } else {
+            self.hidden_types.insert(file_type.to_owned());
+        }
     }
 
     /// Shows or hides a camera (all its raw keys).
@@ -125,7 +156,8 @@ pub struct Camera {
     pub photos: usize,
 }
 
-/// What the filter panel offers: the library's photos on the map by month, source and camera.
+/// What the filter panel offers: the library's photos on the map by month, source, camera and
+/// file type.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Facets {
     /// Photos per month, in order (months without photos left out).
@@ -134,6 +166,8 @@ pub struct Facets {
     pub sources: HashMap<i64, usize>,
     /// The most photos first.
     pub cameras: Vec<Camera>,
+    /// The file types with photos, in [`scan::FILE_TYPES`] order.
+    pub types: Vec<(&'static str, usize)>,
 }
 
 impl Facets {
@@ -148,6 +182,20 @@ impl Facets {
         y.dedup();
         y.reverse();
         y
+    }
+
+    /// Groups (extension, photos) rows into file types.
+    pub fn types_from(rows: Vec<(String, usize)>) -> Vec<(&'static str, usize)> {
+        let mut by: HashMap<&'static str, usize> = HashMap::new();
+        for (ext, n) in rows {
+            if let Some(t) = scan::file_type(&ext.to_lowercase()) {
+                *by.entry(t).or_default() += n;
+            }
+        }
+        scan::FILE_TYPES
+            .iter()
+            .filter_map(|t| Some((*t, *by.get(t)?)))
+            .collect()
     }
 
     /// Groups raw (make, model, photos) rows into cameras by their label.
@@ -343,6 +391,35 @@ mod tests {
         assert!(!f.camera_shown(&c[1]));
         f.set_camera(&c[1], true);
         assert!(f.hidden_cameras.is_empty());
+    }
+
+    #[test]
+    fn file_types_group_extensions() {
+        let t = Facets::types_from(vec![
+            ("jpg".into(), 4),
+            ("cr2".into(), 2),
+            ("JPEG".into(), 1),
+            ("raf".into(), 3),
+            ("dng".into(), 1),
+            ("txt".into(), 9),
+        ]);
+        assert_eq!(t, [("RAW", 5), ("DNG", 1), ("JPEG", 5)]);
+        let mut f = Filter::default();
+        f.set_type("RAW", false);
+        assert_eq!(f.active_count(), 1);
+        let w = f.sql("p.");
+        assert!(w.sql.contains("p.original_ext NOT IN"));
+        assert!(
+            w.params
+                .contains(&(":f_t0".into(), Value::Text("cr2".into())))
+        );
+        assert!(
+            !w.params
+                .iter()
+                .any(|(_, v)| *v == Value::Text("dng".into()))
+        );
+        f.set_type("RAW", true);
+        assert!(!f.is_active());
     }
 
     #[test]

@@ -46,6 +46,39 @@ fn rank(ext: &str) -> u8 {
     }
 }
 
+/// The file types the filter offers (design.md §2.3), in the panel's order. Every camera RAW is
+/// one type; DNG is its own.
+pub const FILE_TYPES: [&str; 7] = ["RAW", "DNG", "TIFF", "PSD", "PNG", "HEIC", "JPEG"];
+
+/// The file type of an extension (lower case), one of [`FILE_TYPES`]; `None` for one we don't
+/// import.
+pub fn file_type(ext: &str) -> Option<&'static str> {
+    if !IMAGE_EXTS.contains(&ext) {
+        return None;
+    }
+    Some(match ext {
+        "dng" => "DNG",
+        "tif" | "tiff" => "TIFF",
+        "psd" => "PSD",
+        "png" => "PNG",
+        "heic" | "heif" => "HEIC",
+        "jpg" | "jpeg" => "JPEG",
+        _ => "RAW",
+    })
+}
+
+/// The extensions (lower case) of a file type.
+pub fn exts_of(file_type: &str) -> impl Iterator<Item = &'static str> + '_ {
+    IMAGE_EXTS
+        .into_iter()
+        .filter(move |e| self::file_type(e) == Some(file_type))
+}
+
+/// A file name's extension in lower case, as grouping sees it (`""` for none).
+pub fn ext_of(name: &str) -> String {
+    split(name).1
+}
+
 fn is_jpeg(ext: &str) -> bool {
     ext == "jpg" || ext == "jpeg"
 }

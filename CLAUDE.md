@@ -65,8 +65,8 @@ the user).
   group markers and the strip (`src/ui/strip.rs`).
 - Search: the offline place index from GeoNames (`src/places.rs`), the search thread
   (`src/search.rs`) and the field with its dropdown (`src/ui/search.rs`).
-- Filters: one SQL condition for map, counts and search (`src/filter.rs`), the panel, chips and
-  no-match card (`src/ui/filters.rs`).
+- Filters (date, sources, cameras, file types): one SQL condition for map, counts and search
+  (`src/filter.rs`), the panel, chips and no-match card (`src/ui/filters.rs`).
 - Companion apps: PhotoCraft launch and the LightCraft control-port client
   (`src/companions.rs`), the Settings dialog (`src/ui/settings_dialog.rs`), the panel's buttons.
 

@@ -1661,6 +1661,54 @@ mod tests {
         assert_eq!(shown(&h), 21);
     }
 
+    #[test]
+    fn file_types_filter_by_the_original() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 24); // 21 on the map, all JPEG
+        {
+            // Make some of them RAW and DNG originals (the demo writes only JPEGs).
+            let mut lib = Library::open(&dir.path().join("library.sqlite")).unwrap();
+            let tx = lib.transaction().unwrap();
+            let raws = tx
+                .execute(
+                    "UPDATE photo SET original_name = stem || '.CR2', original_ext = 'cr2'
+                     WHERE id IN (SELECT id FROM photo WHERE lat IS NOT NULL ORDER BY id LIMIT 5)",
+                    [],
+                )
+                .unwrap();
+            assert_eq!(raws, 5);
+            tx.execute(
+                "UPDATE photo SET original_name = stem || '.dng', original_ext = 'dng'
+                 WHERE id IN (SELECT id FROM photo WHERE lat IS NOT NULL
+                              AND original_name NOT LIKE '%.CR2' ORDER BY id LIMIT 2)",
+                [],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let mut h = harness(dir.path());
+        settled(&mut h);
+        let shown = |h: &Harness<'static, Option<MapCraftApp>>| h.state().as_ref().unwrap().shown;
+        h.get_by_label("Filters").click();
+        h.run_steps(3);
+        h.get_by_label("File types");
+        h.query_all_by_label("RAW").next().unwrap().click();
+        h.run_steps(3);
+        assert_eq!(shown(&h), 16);
+        h.get_by_label("All file types but RAW");
+        h.query_all_by_label("JPEG").next().unwrap().click();
+        h.run_steps(3);
+        assert_eq!(shown(&h), 2, "only the DNGs");
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+        h.get_by_label("DNG");
+        // Removing the chip takes only the file types away.
+        h.get_by_label("Remove the file type filter").click();
+        h.run_steps(3);
+        assert_eq!(shown(&h), 21);
+        assert!(!h.state().as_ref().unwrap().filter.is_active());
+    }
+
     /// A press and release at `pos`, moving by `by` in between (zero: a click).
     fn press_drag(h: &mut Harness<'static, Option<MapCraftApp>>, pos: egui::Pos2, by: egui::Vec2) {
         let button = |pos, pressed| egui::Event::PointerButton {

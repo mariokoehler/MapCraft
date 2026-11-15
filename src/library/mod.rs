@@ -19,7 +19,10 @@ pub use rusqlite::Error;
 pub type Result<T> = rusqlite::Result<T>;
 
 /// The schema migrations, in order. `PRAGMA user_version` records how many have run.
-const MIGRATIONS: [&str; 1] = [include_str!("migrations/0001_init.sql")];
+const MIGRATIONS: [&str; 2] = [
+    include_str!("migrations/0001_init.sql"),
+    include_str!("migrations/0002_original_ext.sql"),
+];
 
 pub struct Library {
     conn: Connection,
@@ -463,6 +466,7 @@ pub fn write_photo(
     id: Option<i64>,
     p: &PhotoRecord,
 ) -> Result<()> {
+    let ext = crate::import::scan::ext_of(&p.original_name);
     let values = params![
         source_id,
         p.rel_dir,
@@ -489,11 +493,12 @@ pub fn write_photo(
         p.height,
         p.orientation,
         p.read_error,
+        ext,
     ];
     const COLS: &str = "source_id, rel_dir, rel_dir_key, stem, stem_key, original_name,
         preview_name, sidecar_name, files_sig, file_size, file_mtime, quick_hash, lat, lon, alt,
         gps_source, taken_at, taken_at_offset, camera_make, camera_model, lens, width, height,
-        orientation, read_error";
+        orientation, read_error, original_ext";
     // A thumbnail stays valid while what it's made from stays the same: the image (its quick
     // hash), the paired JPEG and the orientation. A moved photo keeps it; a changed one, or one
     // whose sidecar changed only, is judged by these alone. In an UPDATE, a bare column is the
@@ -507,8 +512,8 @@ pub fn write_photo(
                 &format!(
                     "UPDATE photo SET ({COLS}, state) = (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                      ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
-                     'ok'), thumb_state = CASE WHEN {SAME_THUMB_INPUTS} THEN thumb_state
-                     ELSE 'none' END WHERE id = ?26"
+                     ?26, 'ok'), thumb_state = CASE WHEN {SAME_THUMB_INPUTS} THEN thumb_state
+                     ELSE 'none' END WHERE id = ?27"
                 ),
                 rusqlite::params_from_iter(
                     values.iter().copied().chain([&id as &dyn rusqlite::ToSql]),
@@ -519,10 +524,12 @@ pub fn write_photo(
             tx.execute(
                 &format!(
                     "INSERT INTO photo ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                     ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+                     ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+                     ?26)
                      ON CONFLICT (source_id, rel_dir_key, stem_key) DO UPDATE SET
                      rel_dir = excluded.rel_dir, stem = excluded.stem,
-                     original_name = excluded.original_name, preview_name = excluded.preview_name,
+                     original_name = excluded.original_name,
+                     original_ext = excluded.original_ext, preview_name = excluded.preview_name,
                      sidecar_name = excluded.sidecar_name, files_sig = excluded.files_sig,
                      file_size = excluded.file_size, file_mtime = excluded.file_mtime,
                      quick_hash = excluded.quick_hash, lat = excluded.lat, lon = excluded.lon,
@@ -849,7 +856,8 @@ impl Library {
         Ok(n.first().copied().unwrap_or(0) as usize)
     }
 
-    /// What the filter panel offers: photos on the map by month, source and camera (unfiltered).
+    /// What the filter panel offers: photos on the map by month, source, camera and file type
+    /// (unfiltered).
     pub fn facets(&self) -> Result<Facets> {
         let mut f = Facets::default();
         let mut stmt = self.conn.prepare_cached(
@@ -885,6 +893,14 @@ impl Library {
             })?
             .collect::<Result<Vec<_>>>()?;
         f.cameras = Facets::cameras_from(rows);
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT original_ext, count(*) FROM photo
+             WHERE +lat IS NOT NULL AND state = 'ok' GROUP BY original_ext",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as usize)))?
+            .collect::<Result<Vec<_>>>()?;
+        f.types = Facets::types_from(rows);
         Ok(f)
     }
 
@@ -926,6 +942,44 @@ mod tests {
             lat: Some(10.0),
             lon: Some(20.0),
             ..PhotoRecord::default()
+        }
+    }
+
+    #[test]
+    fn the_extension_is_backfilled_as_the_import_reads_it() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.execute(
+            "INSERT INTO source (root_path, label, added_at) VALUES ('P', 'P', '')",
+            [],
+        )
+        .unwrap();
+        let names = [
+            "IMG_1.CR2",
+            "a.b.JPG",
+            "x.x.tiff",
+            "a.a.a.a",
+            "DSCF8440.dng",
+        ];
+        for (i, n) in names.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO photo (source_id, rel_dir, rel_dir_key, stem, stem_key,
+                 original_name, files_sig, file_size, file_mtime) VALUES (1, '', '', ?1, ?1, ?2,
+                 0, 0, 0)",
+                params![i.to_string(), n],
+            )
+            .unwrap();
+        }
+        conn.execute_batch(MIGRATIONS[1]).unwrap();
+        for n in names {
+            let got: String = conn
+                .query_row(
+                    "SELECT original_ext FROM photo WHERE original_name = ?1",
+                    [n],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(got, crate::import::scan::ext_of(n), "{n}");
         }
     }
 

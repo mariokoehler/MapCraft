@@ -252,7 +252,7 @@ with a position; read-only over SMB):
   same spot), clicking opens a strip of its photos instead **(user, 2026-11-14)**.
 - **Selection** is shared between the map and the detail panel **(user, 2026-11-14)**.
 - **Filters** (built in M5 from the canvas `MapCraft — Filters`, reviewed 2026-11-14): a date
-  range, sources and cameras narrow what the map shows. Hidden photos also leave the groups, the
+  range, sources, cameras and file types narrow what the map shows. Hidden photos also leave the groups, the
   counts and search.
   - **The panel:** the Filters button beside search opens it; a badge counts the filters set.
     - The date has a histogram of photos per month and a two-handle range. The range applies
@@ -261,6 +261,9 @@ with a position; read-only over SMB):
     - Sources (shown with 2 or more) and cameras are checklists with counts. The 6 most used
       cameras show first, then "Show all N cameras".
     - Cameras whose make and model read the same are one entry ("Unknown camera" for none).
+    - File types (asked for by the user, 2026-11-15; shown with 2 or more): RAW, DNG, TIFF,
+      PSD, PNG, HEIC, JPEG. Every camera RAW (CR2, RAF, NEF…) is one "RAW"; DNG is its own.
+      The chip reads like the cameras': "All file types but RAW", "DNG".
     - The footer says "N of M photos on the map" and has Clear all.
     - Esc or a click elsewhere closes it, and Esc closes it before the strip and the selection.
   - **Active filters:** chips over the map's top left, each removable, plus Clear all. Each chip
@@ -280,6 +283,12 @@ with a position; read-only over SMB):
     - Sources and cameras are stored as what's hidden, so one added later shows.
     - The checklist counts don't change with the other filters.
     - A selected photo the filters hide is let go (the panel closes).
+    - A photo's file type is its original's (§2.8(c)): a RAW+JPEG pair is RAW, so "JPEG" alone
+      shows the JPEG-only photos. The extension is stored (`original_ext`, migration 0002):
+      computed per row in SQL it made a filter change on 100,000 photos about 100 ms slower
+      (2026-11-15).
+    - The order is fixed (RAW first, JPEG last), not by count; no type is ever hidden by
+      default.
 
 ### 2.4 Grouping (clustering)
 
@@ -998,7 +1007,8 @@ Unconfirmed defaults awaiting review:
   cameras stored as exclusions; static checklist counts; 6 cameras then Show all; 4 year buttons
   then Earlier…; a hidden selection is let go; search follows the filters; the Sources list
   shows only with 2 or more sources; the date range applies when a handle is released; the top
-  bar's "of M" counts the photos on the map.
+  bar's "of M" counts the photos on the map; file types by the original (a RAW+JPEG pair is
+  RAW), all camera RAWs as one "RAW", in a fixed order, the section shown with 2 or more.
 - §3.2: the planned crates.
 - §2.8(f): the tree starts all ticked; leaving a folder out later removes its records; a folder
   that is, lies inside, or contains an existing source can't be added (it would duplicate
@@ -1070,6 +1080,9 @@ Milestones are rough and get refined as we go.
   - Done 2026-11-14: filters (date, sources, cameras; §2.3) per the canvas `MapCraft — Filters`.
     Checked by unit tests (the SQL condition, months, camera merging), headless UI tests, and
     window captures on generated photos.
+  - Added 2026-11-15 (the user's request): a file-type filter (§2.3), straight into code with
+    the panel's existing checklist. Checked by unit tests (the types, the backfill against the
+    import's reading) and a headless UI test.
 - **M6 — Companion apps** (built 2026-11-15): Open in PhotoCraft, Open in LightCraft
   (§2.6, §3.6(c), (d)), and a Settings dialog for where the two apps are (§2.7), per the canvas
   `MapCraft — Companion apps` (approved 2026-11-15).
