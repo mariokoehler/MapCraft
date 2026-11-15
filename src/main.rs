@@ -126,14 +126,18 @@ fn install_pending_update(args: &[String]) {
         return;
     };
     // The path before the swap: afterwards it holds the new version.
-    let exe = std::env::current_exe();
-    if let Err(e) = mapcraft::update::install(&file) {
-        error!("{e}");
+    let Ok(exe) = std::env::current_exe() else {
+        error!("can't tell where MapCraft's exe is; the update isn't installed");
+        let _ = std::fs::remove_file(&file);
         return;
+    };
+    match mapcraft::update::install(&file) {
+        Ok(()) => info!("update installed"),
+        // The old version stays; when a restart was asked for, it starts again, so the window
+        // doesn't just vanish (the release build has no console to say why).
+        Err(e) => error!("{e}"),
     }
-    info!("update installed");
     if restart
-        && let Ok(exe) = exe
         && let Err(e) = mapcraft::update::restart(&exe, &mapcraft::update::restart_args(&args[1..]))
     {
         error!("{e}");

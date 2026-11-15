@@ -298,7 +298,8 @@ impl SettingsDialog {
         });
         ui.label(
             RichText::new(
-                "MapCraft asks GitHub for its latest release. GitHub sees your IP address and                  that MapCraft runs; nothing about your photos is sent.",
+                "MapCraft asks GitHub for its latest release. GitHub sees your IP address and \
+                 that MapCraft runs; nothing about your photos is sent.",
             )
             .small()
             .color(p.text_weak),

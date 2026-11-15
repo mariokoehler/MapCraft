@@ -54,6 +54,16 @@ fn unreachable(d: &PhotoDetail) -> Toast {
     )
 }
 
+/// The toast after "Restart later".
+fn update_ready(v: Version) -> Toast {
+    toasts::note(
+        Tone::Info,
+        "Update ready",
+        &format!("MapCraft {v} is installed when you close MapCraft."),
+        None,
+    )
+}
+
 /// The folder of the running exe, where an update is downloaded and swapped in.
 fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe().ok()?.parent().map(PathBuf::from)
@@ -178,6 +188,8 @@ pub struct MapCraftApp {
     auto_check: bool,
     /// What the update steps asked for, when `launch` is off (for the tests).
     update_calls: Vec<String>,
+    /// "Restart later" was chosen: the download waits for the window to close.
+    update_pending: bool,
 }
 
 impl MapCraftApp {
@@ -256,6 +268,7 @@ impl MapCraftApp {
             downloaded: None,
             auto_check: false,
             update_calls: Vec::new(),
+            update_pending: false,
         };
         if config.check_updates {
             app.auto_check = true;
@@ -736,6 +749,11 @@ impl MapCraftApp {
     /// can't update itself where it is.
     fn open_update(&mut self) {
         let Some(r) = self.offer.clone() else { return };
+        if self.update_pending {
+            // Downloaded already; a second download would overwrite the waiting file.
+            self.toasts.push(update_ready(r.version));
+            return;
+        }
         self.toasts
             .remove_titled(&format!("MapCraft {} is available", r.version));
         let dir = exe_dir();
@@ -773,15 +791,8 @@ impl MapCraftApp {
             UpdateAction::RestartNow => self.finish_update(true, ctx),
             UpdateAction::RestartLater => {
                 self.finish_update(false, ctx);
-                self.toasts.push(toasts::note(
-                    Tone::Info,
-                    "Update ready",
-                    &format!(
-                        "MapCraft {} is installed when you close MapCraft.",
-                        release.version
-                    ),
-                    None,
-                ));
+                self.update_pending = true;
+                self.toasts.push(update_ready(release.version));
             }
             UpdateAction::ReleasePage => self.release_notes(),
         }
@@ -2526,6 +2537,12 @@ owhere\lightcraft.exe",
         inject(&mut h, update::Event::Downloaded(Ok(file.clone())));
         assert!(!file.exists());
         assert!(h.state().as_ref().unwrap().update_calls.is_empty());
+        // Once "Restart later" holds a download, Update… doesn't start another.
+        h.state_mut().as_mut().unwrap().update_pending = true;
+        h.state_mut().as_mut().unwrap().open_update();
+        h.run_steps(3);
+        assert!(h.query_by_label("Update MapCraft").is_none());
+        h.get_by_label("Update ready");
     }
 
     #[test]

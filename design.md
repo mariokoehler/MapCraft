@@ -975,7 +975,7 @@ the design system. Sensible starting points (**user, 2026-11-14**): a dark UI ar
 Lightroom's Map module, and a family resemblance to PhotoCraft and LightCraft, since they share
 egui.
 
-### 3.10 Releases and self-update (M7, planned 2026-11-15)
+### 3.10 Releases and self-update (M7, built 2026-11-15)
 
 - **The check:** once per start, on a background thread, a GET to
   `https://api.github.com/repos/mariokoehler/MapCraft/releases/latest` (prereleases and drafts
@@ -1048,8 +1048,9 @@ Unconfirmed defaults awaiting review:
 - §3.10 / M7 (packaging): check once per start (no "skip this version"); a dismissed toast
   returns at the next start; no check in debug builds; HTTPS plus checksum without signing;
   while an import or thumbnails run, the update downloads but the restart waits for them
-  ("Restart now" overrides); the UI per the canvas `MapCraft — Updates` (awaiting review);
-  a third-party notices file shipped with each release.
+  ("Restart now" overrides); "Restart later" installs when MapCraft closes, without a
+  restart (the banner says "restarts when it's done", which holds only while the dialog stays
+  open); a failed swap starts the old version again.
 - §3.2: the planned crates.
 - §2.8(f): the tree starts all ticked; leaving a folder out later removes its records; a folder
   that is, lies inside, or contains an existing source can't be added (it would duplicate
@@ -1157,8 +1158,8 @@ Milestones are rough and get refined as we go.
     (`gh release create --generate-notes`). `Cargo.toml` is the one place for the version.
     Never push a tag without the user's go-ahead.
   - **Updates** (§2.7, §3.8): see §3.10. The UI is on the canvas `MapCraft — Updates`
-    (https://claude.ai/artifact/NBQN2QuFrxiTg7UiwdLb3o, made 2026-11-15, awaiting review):
-    the Settings section, the toast and confirmation, and the dialog's six states.
+    (approved by the user, 2026-11-15): the Settings section, the toast and confirmation, and
+    the dialog's six states.
   - **Licence notices** (the user approved the proposal, 2026-11-15): the exe carries the IBM
     Plex fonts (OFL 1.1), Lucide icons (ISC) and about 350 crates, whose licences ask for their
     notices to travel with copies. The workflow writes `THIRD-PARTY-NOTICES.txt`

@@ -535,6 +535,9 @@ mod tests {
                         ),
                         m => (m.to_owned(), req["params"].clone()),
                     };
+                    // Recorded before answering: once the client has its answer, the test
+                    // may read the record at once.
+                    let _ = tx.send(json!({"method": method, "params": params}));
                     // A notice without an id first: the client must skip it.
                     writeln!(w, "{}", json!({"notice": "hello"})).unwrap();
                     let result = reply(&method, &params);
@@ -545,7 +548,6 @@ mod tests {
                         json!({"id": req["id"], "ok": ok, "result": result, "error": "nope"})
                     )
                     .unwrap();
-                    let _ = tx.send(json!({"method": method, "params": params}));
                 }
             }
         });
