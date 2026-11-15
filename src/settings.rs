@@ -25,6 +25,26 @@ pub struct Settings {
     /// The data folder MapCraft moved away from, until the user removes or keeps its data
     /// (design.md M8).
     pub old_data_folder: Option<PathBuf>,
+    pub map: MapSettings,
+}
+
+/// The map (design.md M10): the style last chosen, and the user's own MapTiler key for the
+/// satellite styles. The key stays in this file; it's never logged.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MapSettings {
+    pub style: crate::provider::Style,
+    pub maptiler_key: Option<String>,
+}
+
+impl MapSettings {
+    /// The key, if one is set (blank counts as none).
+    pub fn key(&self) -> Option<&str> {
+        self.maptiler_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+    }
 }
 
 /// Updates (design.md §3.10): whether to ask GitHub for a newer release at each start.

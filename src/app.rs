@@ -21,7 +21,7 @@ use crate::import::scope::Scope;
 use crate::jobs::{ImportJob, JobEvent, ThumbEvent, ThumbJob};
 use crate::launch::{self, Launch};
 use crate::library::{Counts, Library, PhotoDetail, Source};
-use crate::provider::Provider;
+use crate::provider::{KeyCheck, Style};
 use crate::settings::Settings;
 use crate::theme::{self, Palette, ThemeKind, Tokens};
 use crate::ui::data_dialogs::{
@@ -120,6 +120,13 @@ pub struct Config {
     pub update_endpoint: update::Endpoint,
     /// The data folder came from `--data`: Settings doesn't offer to change it (design.md M8).
     pub data_override: bool,
+}
+
+/// The map style's background work (design.md M10).
+enum MapEvent {
+    /// MapTiler's answer to the key (with the key it was for).
+    Key(String, KeyCheck),
+    Logo(Arc<[u8]>),
 }
 
 /// Work on the data folder that waits for the thumbnail job to stop (design.md M8).
@@ -238,6 +245,8 @@ pub struct MapCraftApp {
     free_dialog: Option<FreeSpaceDialog>,
     remove_old_open: bool,
     data_waiting: Option<DataTask>,
+    /// What the map style's background work found: a MapTiler key's answer, its logo.
+    map_events: (Sender<MapEvent>, Receiver<MapEvent>),
     /// Geotagging (design.md §2.9): the session while tagging mode is on, its dialogs, the
     /// write or undo running, the last write's journal (for Undo), and the candidates whose
     /// thumbnails the thumbnail job makes first.
@@ -257,7 +266,6 @@ impl MapCraftApp {
         // The tokens are compiled in and covered by tests, so a failure here is a build defect.
         let tokens = Tokens::embedded(ThemeKind::Dark).expect("embedded design tokens");
         theme::apply(ctx, &tokens, ThemeKind::Dark);
-        let tile_cache = config.data_folder.join("tiles");
         let db_path = config.data_folder.join("library.sqlite");
         let mut toasts = Toasts::default();
         let lib = match Library::open(&db_path) {
@@ -284,8 +292,9 @@ impl MapCraftApp {
         let mut app = Self {
             palette: Palette::new(&tokens),
             map: MapView::new(
-                Provider::default(),
-                config.tiles.then_some(tile_cache.as_path()),
+                config.settings.map.style,
+                config.settings.map.key().map(str::to_owned),
+                config.tiles.then_some(config.data_folder.as_path()),
                 &config.data_folder,
                 ctx.clone(),
             ),
@@ -350,6 +359,7 @@ impl MapCraftApp {
             free_dialog: None,
             remove_old_open: false,
             data_waiting: None,
+            map_events: mpsc::channel(),
             geotag: None,
             geo_confirm: false,
             geo_leave: false,
@@ -361,6 +371,9 @@ impl MapCraftApp {
         if config.check_updates {
             app.auto_check = true;
             app.check_updates(ctx);
+        }
+        if app.map.style().needs_key() {
+            app.map_style_work(app.map.style());
         }
         app.refresh();
         app.find_companions();
@@ -411,6 +424,89 @@ impl MapCraftApp {
             None => {}
         }
         app
+    }
+
+    /// Switches the map's style and remembers it; a MapTiler style is checked in the
+    /// background (and falls back to Standard if MapTiler refuses the key).
+    fn set_map_style(&mut self, style: Style, ctx: &egui::Context) {
+        let key = self.settings.map.key().map(str::to_owned);
+        if !self.map.set_style(style, key, ctx) {
+            return;
+        }
+        if self.settings.map.style != style {
+            self.settings.map.style = style;
+            self.save_settings();
+        }
+        if style.needs_key() {
+            self.map_style_work(style);
+        }
+    }
+
+    /// For a MapTiler style: its key tested once, and its logo loaded (from the data folder,
+    /// else from MapTiler). Nothing reaches the network in tests.
+    fn map_style_work(&mut self, _style: Style) {
+        let (Some(key), true) = (self.settings.map.key().map(str::to_owned), self.launch) else {
+            return;
+        };
+        let tx = self.map_events.0.clone();
+        let ctx = self.ctx.clone();
+        let logo = crate::provider::logo_path(&self.data_folder);
+        std::thread::spawn(move || {
+            let answer = crate::provider::check_key(&key);
+            let _ = tx.send(MapEvent::Key(key, answer));
+            let bytes = std::fs::read(&logo).ok().or_else(|| {
+                let b = reqwest::blocking::Client::builder()
+                    .user_agent(crate::provider::USER_AGENT)
+                    .timeout(Duration::from_secs(15))
+                    .build()
+                    .ok()?
+                    .get(crate::provider::MAPTILER_LOGO)
+                    .send()
+                    .ok()
+                    .filter(|r| r.status().is_success())?
+                    .bytes()
+                    .ok()?
+                    .to_vec();
+                if let Some(dir) = logo.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                let _ = std::fs::write(&logo, &b);
+                Some(b)
+            });
+            if let Some(b) = bytes {
+                let _ = tx.send(MapEvent::Logo(Arc::from(b)));
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    fn poll_map(&mut self, ctx: &egui::Context) {
+        while let Ok(e) = self.map_events.1.try_recv() {
+            match e {
+                MapEvent::Logo(svg) => self.map.set_logo(Some(svg)),
+                MapEvent::Key(key, answer) => {
+                    if self.settings.map.key() != Some(key.as_str()) {
+                        continue; // a key changed since
+                    }
+                    let why = match answer {
+                        KeyCheck::Works | KeyCheck::Failed(_) => continue,
+                        KeyCheck::Refused => {
+                            "MapTiler doesn’t accept the key: it may have been changed or \
+                             removed on MapTiler’s site."
+                        }
+                        KeyCheck::UsedUp => "This month’s free MapTiler tiles are used up.",
+                    };
+                    info!("MapTiler refused the key ({answer:?}); back to Standard");
+                    self.set_map_style(Style::Standard, ctx);
+                    self.toasts.push(toasts::note(
+                        Tone::Warning,
+                        "MapTiler refused the key",
+                        &format!("{why} The map is back to Standard."),
+                        Some(("Settings…", ToastAction::OpenMapSettings)),
+                    ));
+                }
+            }
+        }
     }
 
     /// Reloads what the UI shows from the library.
@@ -726,6 +822,7 @@ impl MapCraftApp {
         self.settings_dialog = Some(SettingsDialog::open(
             &self.settings.companions,
             self.settings.updates.check,
+            self.settings.map.key(),
             self.launch,
             ctx,
         ));
@@ -756,8 +853,20 @@ impl MapCraftApp {
                 photocraft,
                 lightcraft,
                 check_updates,
+                maptiler_key,
             }) => {
                 self.settings.updates.check = check_updates;
+                if maptiler_key != self.settings.map.maptiler_key {
+                    self.settings.map.maptiler_key = maptiler_key;
+                    // A removed key takes its styles with it; a new one is used at once.
+                    let style = self.map.style();
+                    let style = if style.needs_key() && self.settings.map.key().is_none() {
+                        Style::Standard
+                    } else {
+                        style
+                    };
+                    self.set_map_style(style, ctx);
+                }
                 let c = &mut self.settings.companions;
                 if c.lightcraft != lightcraft {
                     c.lightcraft_port = None;
@@ -1722,6 +1831,7 @@ impl MapCraftApp {
         self.poll_updates(&ctx);
         self.poll_data(&ctx);
         self.poll_geotag();
+        self.poll_map(&ctx);
 
         let p = self.palette.clone();
         let running = self.running();
@@ -1913,6 +2023,15 @@ impl MapCraftApp {
                 map_action = action;
             });
         match map_action {
+            Some(MapAction::Style(s)) => self.set_map_style(s, &ctx),
+            Some(MapAction::MapSettings) => {
+                if self.geotag.is_none() {
+                    self.open_settings(&ctx);
+                    if let Some(d) = &mut self.settings_dialog {
+                        d.section = Section::Map;
+                    }
+                }
+            }
             Some(a) if self.geotag.is_some() => {
                 if self.geo_work.is_none() {
                     self.geotag_map(a);
@@ -2000,6 +2119,13 @@ impl MapCraftApp {
             Some(ToastAction::OpenSettings) => {
                 self.toasts.replace(Vec::new());
                 self.open_settings(&ctx);
+            }
+            Some(ToastAction::OpenMapSettings) => {
+                self.toasts.replace(Vec::new());
+                self.open_settings(&ctx);
+                if let Some(d) = &mut self.settings_dialog {
+                    d.section = Section::Map;
+                }
             }
             Some(ToastAction::UndoGeotag) => {
                 self.toasts.replace(Vec::new());
@@ -3741,5 +3867,72 @@ owhere\lightcraft.exe",
             .count();
         assert_eq!(left, 1, "only TAG_01's own sidecar, as it was");
         assert!(h.query_by_label("Last written").is_none());
+    }
+
+    #[test]
+    fn the_map_style_menu_the_key_and_its_styles() {
+        let dir = tempfile::tempdir().unwrap();
+        imported(dir.path(), 4);
+        let mut h = harness(dir.path());
+        settled(&mut h);
+        let style = |h: &Harness<'static, Option<MapCraftApp>>| {
+            let app = h.state().as_ref().unwrap();
+            (app.map.style(), app.settings.map.style)
+        };
+        // Without a key, the satellite styles are listed but can't be picked.
+        h.get_by_label("Map style").click();
+        h.run_steps(3);
+        assert!(disabled(&h, "Satellite") && disabled(&h, "Hybrid"));
+        h.get_by_label("Topographic").click();
+        h.run_steps(3);
+        assert_eq!(style(&h), (Style::Topographic, Style::Topographic));
+        assert!(
+            h.query_by_label("Satellite").is_none(),
+            "a choice closes the menu"
+        );
+        h.get_by_label_contains("© OpenTopoMap (CC-BY-SA)");
+
+        // Add a key… opens Settings on Map; a saved key makes Satellite available.
+        h.get_by_label("Map style").click();
+        h.run_steps(3);
+        h.get_by_label("Add a key…").click();
+        h.run_steps(3);
+        h.get_by_label("MapTiler key").click();
+        h.run_steps(1);
+        h.get_by_label("MapTiler key").type_text("test-key-123");
+        h.run_steps(2);
+        h.get_by_label("Save").click();
+        h.run_steps(3);
+        assert_eq!(
+            h.state().as_ref().unwrap().settings.map.key(),
+            Some("test-key-123")
+        );
+        h.get_by_label("Map style").click();
+        h.run_steps(3);
+        assert!(!disabled(&h, "Satellite"));
+        h.get_by_label("Satellite").click();
+        h.run_steps(3);
+        assert_eq!(style(&h), (Style::Satellite, Style::Satellite));
+        h.get_by_label_contains("© OpenStreetMap contributors");
+
+        // Removing the key takes its styles with it.
+        h.state_mut()
+            .as_mut()
+            .unwrap()
+            .open_settings(&egui::Context::default());
+        h.state_mut()
+            .as_mut()
+            .unwrap()
+            .settings_dialog
+            .as_mut()
+            .unwrap()
+            .section = Section::Map;
+        h.run_steps(3);
+        h.get_by_label("Remove the key").click();
+        h.run_steps(2);
+        h.get_by_label("Save").click();
+        h.run_steps(3);
+        assert_eq!(style(&h), (Style::Standard, Style::Standard));
+        assert_eq!(h.state().as_ref().unwrap().settings.map.key(), None);
     }
 }

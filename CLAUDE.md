@@ -78,6 +78,8 @@ photos (XMP sidecars only, after a confirmation, with undo): trials only on scra
   (`src/datafolder.rs`, `src/ui/data_dialogs.rs`, the Data folder section of Settings).
 - Geotagging from GPX tracks: `src/geotag/` (reader, matching, sidecar writer, journal,
   session), `src/ui/geotag_panel.rs`, tagging mode in `src/ui/map_view.rs`, `src/app/geotag.rs`.
+- Map styles (M10): `src/provider.rs` (`Style`, MapTiler key check), the style menu in
+  `src/ui/map_view.rs`, *Settings → Map*.
 - Releases: the tag-triggered workflow (`.github/workflows/release.yml`), the exe's icon and
   version (`build.rs`), the static C runtime (`.cargo/config.toml`), licence notices
   (`scripts/notices.ps1`, `about.toml`); self-update (`src/update.rs`,
@@ -219,6 +221,9 @@ committed):
     `--data` scratch: it replaces the exe it runs from.
 - `pwsh scripts/notices.ps1 [out]` writes the third-party notices (needs
   `cargo install cargo-about --features cli`).
+- Pitfall: a MapTiler key travels in tile URLs. Never log a URL with it (walkers' fetch log
+  is off in `main.rs` for that reason), and keep the user's key out of the repo and the
+  scratch files after a trial.
 - Pitfall: never let a test reach `update::install`: it would replace the test binary. Tests
   run with `launch` off, which records the install instead.
 - UI tests: `egui_kittest` drives the whole app headless (`src/app.rs` tests), finding widgets

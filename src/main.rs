@@ -349,7 +349,13 @@ fn dev_import(args: &[String]) -> i32 {
 /// their debug output would include tile URLs, and tile URLs give away where the user looks
 /// (design.md §3.8: no coordinates in logs).
 fn init_logging() {
+    // walkers logs each failed tile with its URL: that holds the MapTiler key and which area
+    // was viewed (design.md §3.8, M10), so its fetch log is off whatever RUST_LOG says.
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,mapcraft=info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,mapcraft=info"))
+        .add_directive(NO_TILE_URLS.parse().expect("a valid directive"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
+
+/// The log directive that keeps tile URLs out of the log.
+const NO_TILE_URLS: &str = "walkers::io::fetch=off";

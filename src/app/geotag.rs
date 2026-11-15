@@ -363,7 +363,7 @@ impl MapCraftApp {
             MapAction::Picked(lat, lon) => {
                 s.anchor_at(lat, lon);
             }
-            MapAction::AddFolder => {}
+            MapAction::AddFolder | MapAction::Style(_) | MapAction::MapSettings => {}
         }
         self.geotag_sync();
     }

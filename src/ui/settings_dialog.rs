@@ -29,6 +29,8 @@ pub enum SettingsAction {
         photocraft: PathBuf,
         lightcraft: PathBuf,
         check_updates: bool,
+        /// The MapTiler key (`None`: none).
+        maptiler_key: Option<String>,
     },
     Close,
     /// Ask GitHub now (the dialog stays open and shows the answer).
@@ -48,16 +50,24 @@ pub enum Section {
     Companions,
     Updates,
     Data,
+    /// The MapTiler key for the satellite styles (design.md M10).
+    Map,
 }
 
 impl Section {
-    const ALL: [Section; 3] = [Section::Companions, Section::Updates, Section::Data];
+    const ALL: [Section; 4] = [
+        Section::Companions,
+        Section::Updates,
+        Section::Data,
+        Section::Map,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Section::Companions => "Companion apps",
             Section::Updates => "Updates",
             Section::Data => "Data folder",
+            Section::Map => "Map",
         }
     }
 
@@ -66,8 +76,20 @@ impl Section {
             Section::Companions => Icon::Brush,
             Section::Updates => Icon::Download,
             Section::Data => Icon::Folder,
+            Section::Map => Icon::Layers,
         }
     }
+}
+
+/// A key and what MapTiler said to it.
+type KeyAnswer = (String, crate::provider::KeyCheck);
+
+/// Where the MapTiler key's test stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KeyStatus {
+    Untested,
+    Checking,
+    Done(crate::provider::KeyCheck),
 }
 
 /// What the Data folder section shows, from the app.
@@ -148,12 +170,18 @@ pub struct SettingsDialog {
     run_tools: bool,
     check_updates: bool,
     pub section: Section,
+    key: String,
+    key_status: KeyStatus,
+    key_answer: (Sender<KeyAnswer>, Receiver<KeyAnswer>),
 }
 
 impl SettingsDialog {
+    /// `run_tools`: the version tools may run and the MapTiler key may be tested (off in
+    /// tests).
     pub fn open(
         c: &CompanionSettings,
         check_updates: bool,
+        maptiler_key: Option<&str>,
         run_tools: bool,
         ctx: &egui::Context,
     ) -> Self {
@@ -169,6 +197,9 @@ impl SettingsDialog {
             run_tools,
             check_updates,
             section: Section::Companions,
+            key: maptiler_key.unwrap_or_default().to_owned(),
+            key_status: KeyStatus::Untested,
+            key_answer: mpsc::channel(),
         };
         d.test(ctx);
         d
@@ -231,6 +262,11 @@ impl SettingsDialog {
                 self.check(i, false, ctx);
             }
         }
+        for (key, answer) in self.key_answer.1.try_iter() {
+            if key == self.key.trim() {
+                self.key_status = KeyStatus::Done(answer);
+            }
+        }
 
         let (mut save, mut test, mut cancel, mut browse) = (false, false, false, None);
         let mut action = None;
@@ -275,6 +311,7 @@ impl SettingsDialog {
                                     browse = Some(DATA_PICKER);
                                 }
                             }
+                            Section::Map => self.map(ui, p, ctx),
                         }
                     });
                 });
@@ -325,6 +362,7 @@ impl SettingsDialog {
                 photocraft: PathBuf::from(self.paths[0].trim()),
                 lightcraft: PathBuf::from(self.paths[1].trim()),
                 check_updates: self.check_updates,
+                maptiler_key: Some(self.key.trim().to_owned()).filter(|k| !k.is_empty()),
             })
         } else if let Some(f) = picked_data {
             Some(SettingsAction::ChangeDataFolder(f))
@@ -491,6 +529,129 @@ impl SettingsDialog {
     }
 
     /// The Updates section: the version, the checkbox, Check now and what the check found.
+    /// The Map section (canvas `MapCraft — Map style`, artboard 3): the MapTiler key.
+    fn map(&mut self, ui: &mut Ui, p: &Palette, ctx: &egui::Context) {
+        ui.label(RichText::new("Map").strong().color(p.text_strong));
+        ui.add(
+            egui::Label::new(
+                RichText::new(
+                    "Standard and Topographic need nothing. Satellite and Hybrid come from \
+                     MapTiler and need your own free key.",
+                )
+                .small()
+                .color(p.text_weak),
+            )
+            .wrap(),
+        );
+        ui.add_space(p.space_2);
+        widgets::label(ui, p, "Your key from MapTiler");
+        ui.horizontal(|ui| {
+            let r = ui.add(
+                TextEdit::singleline(&mut self.key)
+                    .desired_width(CONTENT_WIDTH - 90.0)
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("Paste your key"),
+            );
+            widgets::named(&r, "MapTiler key", true);
+            if r.changed() {
+                self.key_status = KeyStatus::Untested;
+            }
+            let has = !self.key.trim().is_empty();
+            let busy = self.key_status == KeyStatus::Checking;
+            if widgets::secondary(ui, p, None, "Test key", has && !busy).clicked() {
+                self.test_key(ctx);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            use crate::provider::KeyCheck;
+            match &self.key_status {
+                KeyStatus::Untested => {}
+                KeyStatus::Checking => {
+                    ui.add(egui::Spinner::new().size(14.0).color(p.text_weak));
+                    ui.label(RichText::new("Asking MapTiler…").small().color(p.text_weak));
+                }
+                KeyStatus::Done(KeyCheck::Works) => {
+                    widgets::chip(ui, p, Tone::Success, "Works");
+                    ui.label(
+                        RichText::new("Satellite and Hybrid are in the map style menu.")
+                            .small()
+                            .color(p.text_weak),
+                    );
+                }
+                KeyStatus::Done(KeyCheck::Refused) => {
+                    widgets::chip(ui, p, Tone::Error, "Refused");
+                    ui.label(
+                        RichText::new("MapTiler doesn’t accept this key.")
+                            .small()
+                            .color(p.text_weak),
+                    );
+                }
+                KeyStatus::Done(KeyCheck::UsedUp) => {
+                    widgets::chip(ui, p, Tone::Warning, "Used up");
+                    ui.label(
+                        RichText::new("This month’s free tiles are used up.")
+                            .small()
+                            .color(p.text_weak),
+                    );
+                }
+                KeyStatus::Done(KeyCheck::Failed(why)) => {
+                    widgets::chip(ui, p, Tone::Offline, "Not checked");
+                    ui.label(RichText::new(why.as_str()).small().color(p.text_weak));
+                }
+            }
+        });
+        ui.add_space(p.space_2);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let weak = |t: &str| RichText::new(t.to_owned()).small().color(p.text_weak);
+            ui.label(weak("No key yet? Make a free account at "));
+            ui.hyperlink_to(
+                RichText::new("cloud.maptiler.com").small(),
+                crate::provider::MAPTILER_SIGN_UP,
+            );
+            ui.label(weak(
+                " and copy its default key. The free plan is for personal, non-commercial use \
+                 and covers 100,000 map tiles a month; tiles you’ve seen come from MapCraft’s \
+                 cache and don’t count.",
+            ));
+        });
+        ui.add_space(p.space_1);
+        ui.add(
+            egui::Label::new(
+                RichText::new(
+                    "The key stays on this PC, in MapCraft’s settings file. Each tile request \
+                     sends it to MapTiler, with the area you look at.",
+                )
+                .small()
+                .color(p.text_weak),
+            )
+            .wrap(),
+        );
+        if !self.key.is_empty() && ui.small_button("Remove the key").clicked() {
+            self.key.clear();
+            self.key_status = KeyStatus::Untested;
+        }
+    }
+
+    /// Tests the key on a background thread (not in tests: no network there).
+    fn test_key(&mut self, ctx: &egui::Context) {
+        let key = self.key.trim().to_owned();
+        if !self.run_tools {
+            self.key_status = KeyStatus::Done(crate::provider::KeyCheck::Failed(
+                "not tested in this run".into(),
+            ));
+            return;
+        }
+        self.key_status = KeyStatus::Checking;
+        let (tx, c) = (self.key_answer.0.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let answer = crate::provider::check_key(&key);
+            let _ = tx.send((key, answer));
+            c.request_repaint();
+        });
+    }
+
     fn updates(&mut self, ui: &mut Ui, p: &Palette, status: CheckStatus) -> Option<SettingsAction> {
         let mut action = None;
         ui.horizontal(|ui| {

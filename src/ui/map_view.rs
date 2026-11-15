@@ -23,7 +23,7 @@ use crate::cluster::{self, Clusters, MAX_LEVEL};
 use crate::import::Bounds;
 use crate::import::scope::Check;
 use crate::library::{PhotoPoint, Thumb};
-use crate::provider::Provider;
+use crate::provider::Style;
 use crate::theme::Palette;
 use crate::ui::icons::Icon;
 use crate::ui::markers::{self, Face, Look, Textures};
@@ -39,6 +39,10 @@ pub enum MapAction {
     AddFolder,
     /// A marker was clicked (`Some`), or the map's background (`None`).
     Select(Option<i64>),
+    /// A style was picked in the map style menu (design.md M10).
+    Style(Style),
+    /// The menu's *Add a key…* or *Settings…*: Settings on its Map section.
+    MapSettings,
     /// Tagging mode: a tick was clicked; these photos' ticks flip together (design.md §2.9(h)).
     Toggle(Vec<i64>),
     /// Tagging mode, while picking: this spot on the track was clicked (design.md §2.9(f)).
@@ -64,9 +68,16 @@ pub struct TagLayer {
 }
 
 pub struct MapView {
-    provider: Provider,
-    /// `None` in tests: the map then draws no tiles and makes no network requests.
+    style: Style,
+    /// The MapTiler key, for its styles.
+    key: Option<String>,
+    /// Where the tile caches are (the data folder); `None` in tests: no tiles, no network.
+    tile_root: Option<std::path::PathBuf>,
     tiles: Option<HttpTiles>,
+    /// The map style menu is open.
+    style_menu: bool,
+    /// MapTiler's logo (SVG), once loaded, for its styles.
+    logo: Option<Arc<[u8]>>,
     memory: MapMemory,
     home: Position,
     points: Vec<PhotoPoint>,
@@ -106,17 +117,28 @@ impl MapView {
     /// `tile_cache: None` draws no tiles (tests and headless runs).
     /// `data`: the data folder, where the thumbnails are.
     pub fn new(
-        provider: Provider,
-        tile_cache: Option<&Path>,
+        style: Style,
+        key: Option<String>,
+        tile_root: Option<&Path>,
         data: &Path,
         ctx: egui::Context,
     ) -> Self {
+        // A key style without a key: Standard.
+        let style = if style.needs_key() && key.is_none() {
+            Style::Standard
+        } else {
+            style
+        };
         let mut memory = MapMemory::default();
         // A zoom within the tile range never fails; ignore the error rather than unwrap.
         let _ = memory.set_zoom(HOME.2);
         Self {
-            provider,
-            tiles: tile_cache.map(|c| provider.tiles(c, ctx.clone())),
+            style,
+            tiles: tile_root.and_then(|r| style.tiles(r, key.as_deref(), ctx.clone())),
+            key,
+            tile_root: tile_root.map(Path::to_path_buf),
+            style_menu: false,
+            logo: None,
             memory,
             home: lat_lon(HOME.0, HOME.1),
             points: Vec::new(),
@@ -137,6 +159,31 @@ impl MapView {
             tag: None,
             track_hover: None,
         }
+    }
+
+    pub fn style(&self) -> Style {
+        self.style
+    }
+
+    /// Switches the style (its own tiles and cache); a key style without a key is refused.
+    pub fn set_style(&mut self, style: Style, key: Option<String>, ctx: &egui::Context) -> bool {
+        if style.needs_key() && key.is_none() {
+            return false;
+        }
+        if style != self.style || key != self.key {
+            self.tiles = self
+                .tile_root
+                .as_deref()
+                .and_then(|r| style.tiles(r, key.as_deref(), ctx.clone()));
+            self.style = style;
+            self.key = key;
+        }
+        true
+    }
+
+    /// MapTiler's logo (SVG bytes), shown while its tiles are.
+    pub fn set_logo(&mut self, svg: Option<Arc<[u8]>>) {
+        self.logo = svg;
     }
 
     /// Turns tagging mode's layer on (`Some`) or off.
@@ -419,7 +466,10 @@ impl MapView {
         }
         self.zoom_keys(ui);
 
-        self.controls(ui, p, rect);
+        if let Some(a) = self.controls(ui, p, rect) {
+            action = Some(a);
+        }
+        self.logo(ui, rect);
         self.scale_bar(ui, p, rect);
         self.attribution(ui, p, rect);
         if empty && let Some(a) = empty_state(ui, p, rect) {
@@ -483,8 +533,9 @@ impl MapView {
 
     /// Zoom in/out and "zoom to all photos" (once there are photos); "map style" has nothing to
     /// choose from yet.
-    fn controls(&mut self, ui: &Ui, p: &Palette, map: Rect) {
+    fn controls(&mut self, ui: &Ui, p: &Palette, map: Rect) -> Option<MapAction> {
         let all = self.all_bounds();
+        let mut layers_rect = None;
         let frame = Frame::NONE
             .fill(p.bg_panel)
             .stroke(Stroke::new(p.stroke_hairline, p.border_subtle))
@@ -519,9 +570,154 @@ impl MapView {
                     if fit && let Some(b) = all {
                         self.zoom_to(b);
                     }
-                    control(ui, p, Icon::Layers, "Map style: not available yet", false);
+                    let hint = format!("Map style: {}", self.style.name());
+                    let r = control(ui, p, Icon::Layers, &hint, true);
+                    if self.style_menu {
+                        ui.painter().rect_stroke(
+                            r.rect,
+                            p.radius_sm,
+                            Stroke::new(1.0, p.accent),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                    if r.clicked() {
+                        self.style_menu = !self.style_menu;
+                    }
+                    layers_rect = Some(r.rect);
                 });
             });
+        let anchor = layers_rect?;
+        if !self.style_menu {
+            return None;
+        }
+        self.style_menu_area(ui.ctx(), p, anchor)
+    }
+
+    /// The map style menu (canvas `MapCraft — Map style`, artboard 1), left of the controls.
+    fn style_menu_area(
+        &mut self,
+        ctx: &egui::Context,
+        p: &Palette,
+        anchor: Rect,
+    ) -> Option<MapAction> {
+        let mut action = None;
+        let has_key = self.key.is_some();
+        let shown = Area::new(Id::unique("map-style-menu"))
+            .order(Order::Foreground)
+            .pivot(Align2::RIGHT_TOP)
+            .fixed_pos(anchor.left_top() + egui::vec2(-p.space_2, 0.0))
+            .show(ctx, |ui| {
+                Frame::NONE
+                    .fill(p.bg_window)
+                    .stroke(Stroke::new(p.stroke_hairline, p.border_subtle))
+                    .corner_radius(p.radius_md)
+                    .shadow(p.elevation_popup)
+                    .inner_margin(Margin::same(4))
+                    .show(ui, |ui| {
+                        ui.set_width(292.0);
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.add_space(2.0);
+                        ui.label(RichText::new("  Map style").small().color(p.text_weak));
+                        for s in Style::ALL {
+                            let enabled = !s.needs_key() || has_key;
+                            let selected = s == self.style;
+                            let text = RichText::new(format!("{}\n", s.name())).color(if enabled {
+                                p.text_strong
+                            } else {
+                                p.text_disabled
+                            });
+                            let mut job = LayoutJob::default();
+                            text.append_to(
+                                &mut job,
+                                ui.style(),
+                                egui::FontSelection::Default,
+                                egui::Align::Min,
+                            );
+                            RichText::new(s.note(has_key))
+                                .small()
+                                .color(if enabled { p.text_weak } else { p.text_disabled })
+                                .append_to(
+                                    &mut job,
+                                    ui.style(),
+                                    egui::FontSelection::Default,
+                                    egui::Align::Min,
+                                );
+                            let b = Button::image_and_text(swatch(s), job)
+                                .selected(selected)
+                                .frame_when_inactive(false)
+                                .min_size(egui::vec2(284.0, 40.0));
+                            let r = ui.add_enabled(enabled, b);
+                            r.widget_info(|| {
+                                egui::WidgetInfo::selected(
+                                    egui::Role::RadioButton,
+                                    enabled,
+                                    selected,
+                                    s.name(),
+                                )
+                            });
+                            if selected {
+                                Icon::Check.image(16.0, p.accent).paint_at(
+                                    ui,
+                                    Rect::from_center_size(
+                                        r.rect.right_center() - egui::vec2(16.0, 0.0),
+                                        egui::vec2(16.0, 16.0),
+                                    ),
+                                );
+                            }
+                            if r.clicked() {
+                                action = Some(MapAction::Style(s));
+                            }
+                        }
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            let (note, button) = if has_key {
+                                ("MapTiler key set · free plan: 100k tiles a month", "Settings…")
+                            } else {
+                                (
+                                    "Satellite and Hybrid come from MapTiler, with your own free key.",
+                                    "Add a key…",
+                                )
+                            };
+                            ui.add_sized(
+                                [190.0, 30.0],
+                                egui::Label::new(RichText::new(note).small().color(p.text_weak)).wrap(),
+                            );
+                            if ui.button(button).clicked() {
+                                action = Some(MapAction::MapSettings);
+                            }
+                        });
+                    });
+            });
+        // A click elsewhere or Esc closes it; a choice does too.
+        let outside = ctx.input(|i| i.pointer.any_click())
+            && !shown
+                .response
+                .rect
+                .contains(ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default())
+            && !anchor.contains(ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default());
+        let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if action.is_some() || outside || esc {
+            self.style_menu = false;
+        }
+        action
+    }
+
+    /// MapTiler's logo bottom-left, above the scale bar, while its tiles show (its free plan
+    /// asks for it).
+    fn logo(&self, ui: &Ui, map: Rect) {
+        let (true, Some(svg)) = (self.style.needs_key(), &self.logo) else {
+            return;
+        };
+        let rect = Rect::from_min_size(
+            map.left_bottom() + egui::vec2(12.0, -60.0),
+            egui::vec2(88.0, 24.0),
+        );
+        egui::Image::new(egui::ImageSource::Bytes {
+            uri: "bytes://maptiler-logo.svg".into(),
+            bytes: egui::load::Bytes::Shared(svg.clone()),
+        })
+        .fit_to_exact_size(rect.size())
+        .paint_at(ui, rect);
     }
 
     /// A bar of a round length (1, 2 or 5 × 10ⁿ m) at most 100 px long, for the map's centre.
@@ -561,7 +757,7 @@ impl MapView {
     /// The provider's credit, always visible, flush bottom-right; "OpenStreetMap" links to the
     /// copyright page (required by every provider researched, design.md §2.3).
     fn attribution(&self, ui: &mut Ui, p: &Palette, map: Rect) {
-        let attribution = self.provider.attribution();
+        let attribution = self.style.attribution();
         let font = egui::FontId::proportional(11.0);
         let mut job = LayoutJob::default();
         let plain = egui::TextFormat::simple(font.clone(), p.map_scrim_light_text);
@@ -586,6 +782,11 @@ impl MapView {
         painter.rect_filled(rect, corner, p.map_scrim_light);
         painter.galley(rect.min + pad, galley, p.map_scrim_light_text);
         let response = ui.interact(rect, Id::unique("map-attribution"), Sense::click());
+        let text = format!(
+            "{}{}{}",
+            attribution.before, attribution.link, attribution.after
+        );
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, true, &text));
         if response.clicked() {
             ui.ctx().open_url(egui::OpenUrl::new_tab(attribution.url));
         }
@@ -613,6 +814,27 @@ fn control(ui: &mut Ui, p: &Palette, icon: Icon, hint: &str, enabled: bool) -> e
     } else {
         response.on_disabled_hover_text(hint)
     }
+}
+
+/// A small picture of a style for its menu row.
+fn swatch(s: Style) -> egui::Image<'static> {
+    let (a, b) = match s {
+        Style::Standard => ((0xf2, 0xef, 0xe9), (0xaa, 0xd3, 0xdf)),
+        Style::Topographic => ((0xe9, 0xee, 0xd8), (0xb9, 0x8f, 0x5a)),
+        Style::Satellite => ((0x56, 0x61, 0x3f), (0x2d, 0x39, 0x29)),
+        Style::Hybrid => ((0x56, 0x61, 0x3f), (0xff, 0xff, 0xff)),
+    };
+    let svg = format!(
+        "<svg xmlns='http://www.w3.org/2000/svg' width='44' height='30'>\
+         <rect width='44' height='30' rx='3' fill='rgb({},{},{})'/>\
+         <path d='M0 22 C12 14 24 26 44 10' stroke='rgb({},{},{})' stroke-width='4' fill='none'/></svg>",
+        a.0, a.1, a.2, b.0, b.1, b.2
+    );
+    egui::Image::new(egui::ImageSource::Bytes {
+        uri: format!("bytes://style-{}.svg", s.name()).into(),
+        bytes: egui::load::Bytes::Shared(Arc::from(svg.into_bytes())),
+    })
+    .fit_to_exact_size(egui::vec2(44.0, 30.0))
 }
 
 /// The card shown while there are no photos.

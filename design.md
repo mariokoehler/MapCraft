@@ -1508,7 +1508,7 @@ Milestones are rough and get refined as we go.
     design system and the theme.
 
 - **M10 — Map styles** (proposed 2026-11-15, the user's question; §3.5(f), canvas
-  `MapCraft — Map style`). The *Map style* control becomes a menu:
+  `MapCraft — Map style`, approved by the user; built 2026-11-15). The *Map style* control becomes a menu:
   - **Standard** (OpenStreetMap, as today) and **Topographic** (OpenTopoMap), no key.
   - **Satellite** and **Hybrid** (satellite with roads and names) from MapTiler, once the user
     pastes their own free MapTiler key in *Settings → Map*. Without a key they're listed,
@@ -1524,6 +1524,23 @@ Milestones are rough and get refined as we go.
     Standard's; the menu also lists *Topographic* even though OpenTopoMap guarantees no
     availability (a failing tile server shows as missing tiles, as for OSM).
   - Not in M10: other keyed providers, offline PMTiles, the cache's size limit (§3.5(d)).
+  - **As built:** `src/provider.rs` (`Style`: names, credits, caches `tiles`, `tiles-topo`,
+    `tiles-satellite`, `tiles-hybrid`, MapTiler's tile source, `check_key`), the menu and the
+    logo in `src/ui/map_view.rs`, *Settings → Map* in `src/ui/settings_dialog.rs`, the choice
+    and the key in `settings.toml` (`[map] style`, `maptiler_key`), the fallback in
+    `src/app.rs`. A MapTiler style is checked once when chosen and at start (one tile at zoom
+    0); its logo is loaded from `https://api.maptiler.com/resources/logo.svg` and kept beside
+    the satellite cache.
+  - **Checked with the user's key (2026-11-15):** the map ids `satellite` and `hybrid` answer
+    (`satellite-v2` doesn't; `hybrid-v4` does too), `tiles.json` says zoom 0–22, a wrong key
+    gets 403. OpenTopoMap answers at zoom 17 (and 18, likely enlarged); walkers stops it at 17.
+  - **The log:** walkers logs each failed tile with its URL, which holds the key and the area
+    viewed; `walkers::io::fetch` is turned off in `main.rs` whatever `RUST_LOG` says.
+  - **Checked** by unit tests (styles, caches, the key-less refusal, MapTiler's URLs), a
+    headless UI test (the menu, picking, *Add a key…*, saving a key, Satellite, removing the
+    key), and a trial with the user's key on scratch data: Satellite, Hybrid and Topographic in
+    the window, the logo and credits, the choice saved, and a wrong key falling back to
+    Standard with the toast (no key in the log).
 
 **Later:** a keyed tile provider and offline PMTiles (§3.5(b); walkers has a `pmtiles`
 feature, and its vector rendering needs the wgpu renderer, which eframe uses by default), the

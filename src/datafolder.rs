@@ -49,7 +49,8 @@ impl Kind {
         match self {
             Kind::Thumbnails => &["thumbs"],
             Kind::Previews => &["previews"],
-            Kind::Tiles => &["tiles"],
+            // One cache per map style (provider::Style::cache_folder).
+            Kind::Tiles => &["tiles", "tiles-topo", "tiles-satellite", "tiles-hybrid"],
             // `backups`: snapshots taken before migrations (library::Library::migrate).
             Kind::Library => &[
                 "library.sqlite",
