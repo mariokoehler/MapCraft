@@ -98,7 +98,7 @@ const CONTENT_WIDTH: f32 = 760.0 - 24.0 - 160.0 - 1.0 - 12.0 - 8.0;
 /// A section in the list on the left: icon and name, left-aligned, highlighted when shown.
 fn nav_item(ui: &mut Ui, p: &Palette, s: Section, on: bool) -> egui::Response {
     let (rect, r) = ui.allocate_exact_size(egui::vec2(160.0, 28.0), egui::Sense::click());
-    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, s.label()));
+    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, on, s.label()));
     let fill = if on {
         p.accent_subtle
     } else if r.hovered() {

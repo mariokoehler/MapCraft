@@ -127,10 +127,13 @@ enum DataTask {
 
 /// What the data folder's background work reports.
 enum DataEvent {
-    Counted(Usage, Option<u64>),
+    /// The usage, and the old folder's size and photos (after a move).
+    Counted(Usage, Option<(u64, Option<i64>)>),
     Progress(Progress),
     Copied(Result<(), CopyError>),
     Purged(Size, Vec<Kind>),
+    /// The thumbnails couldn't be marked as not made; nothing was deleted.
+    PurgeFailed,
     Removed(Result<(), String>),
 }
 
@@ -223,6 +226,8 @@ pub struct MapCraftApp {
     data_override: bool,
     data_usage: Option<Usage>,
     old_size: Option<u64>,
+    /// The photos in the old folder's library, to tell whether the new place has them all.
+    old_photos: Option<i64>,
     data_events: (Sender<DataEvent>, Receiver<DataEvent>),
     data_cancel: Arc<AtomicBool>,
     change_dialog: Option<ChangeDialog>,
@@ -311,6 +316,7 @@ impl MapCraftApp {
             data_override: config.data_override,
             data_usage: None,
             old_size: None,
+            old_photos: None,
             data_events: mpsc::channel(),
             data_cancel: Arc::new(AtomicBool::new(false)),
             change_dialog: None,
@@ -691,11 +697,13 @@ impl MapCraftApp {
         let Some(dialog) = &mut self.settings_dialog else {
             return;
         };
+        let here_ok =
+            self.lib.is_some() && self.old_photos.is_some_and(|n| self.counts.photos >= n);
         let old = self
             .settings
             .old_data_folder
             .as_deref()
-            .filter(|o| o.exists());
+            .filter(|o| here_ok && o.exists());
         let view = DataView {
             folder: &self.data_folder,
             usage: self.data_usage.as_ref(),
@@ -780,9 +788,12 @@ impl MapCraftApp {
         );
         std::thread::spawn(move || {
             let u = datafolder::usage(&data);
-            let old = old
-                .filter(|o| o.exists())
-                .map(|o| datafolder::usage(&o).total().bytes);
+            let old = old.filter(|o| o.exists()).map(|o| {
+                (
+                    datafolder::usage(&o).total().bytes,
+                    datafolder::library_photos(&o),
+                )
+            });
             let _ = tx.send(DataEvent::Counted(u, old));
             ctx.request_repaint();
         });
@@ -848,6 +859,7 @@ impl MapCraftApp {
             (ChangeAction::Cancel, ChangeStage::Pausing) => {
                 self.data_waiting = None;
                 self.change_dialog = None;
+                self.start_thumbs();
             }
             (ChangeAction::Cancel, _) => self.change_dialog = None,
             _ => {}
@@ -895,6 +907,10 @@ impl MapCraftApp {
         new.data_folder = Some(dir.clone());
         if moved {
             new.old_data_folder = Some(self.data_folder.clone());
+        } else if new.old_data_folder.as_deref().is_some_and(|o| {
+            datafolder::same_or_inside(&dir, o) || datafolder::same_or_inside(o, &dir)
+        }) {
+            new.old_data_folder = None;
         }
         let saved = match &self.settings_file {
             Some(f) => new.save_to(f).map_err(|e| e.to_string()),
@@ -955,7 +971,8 @@ impl MapCraftApp {
                     Ok(n) => info!("{n} thumbnails to be made again"),
                     Err(e) => {
                         error!("can't reset the thumbnails: {e}");
-                        let _ = tx.send(DataEvent::Purged(Size::default(), Vec::new()));
+                        let _ = tx.send(DataEvent::PurgeFailed);
+                        ctx.request_repaint();
                         return;
                     }
                 }
@@ -1023,7 +1040,8 @@ impl MapCraftApp {
                         d.size = Some(u.total().bytes);
                     }
                     self.data_usage = Some(u);
-                    self.old_size = old;
+                    self.old_size = old.map(|o| o.0);
+                    self.old_photos = old.and_then(|o| o.1);
                 }
                 DataEvent::Progress(p) => {
                     if let Some(d) = &mut self.change_dialog
@@ -1083,6 +1101,15 @@ impl MapCraftApp {
                         self.start_thumbs();
                     }
                     self.count_usage();
+                }
+                DataEvent::PurgeFailed => {
+                    self.toasts.push(toasts::note(
+                        Tone::Error,
+                        "Nothing was deleted",
+                        "MapCraft couldn’t update its library. Try again later.",
+                        None,
+                    ));
+                    self.start_thumbs();
                 }
                 DataEvent::Removed(r) => {
                     match r {
@@ -3200,5 +3227,33 @@ owhere\lightcraft.exe",
         h.state_mut().as_mut().unwrap().data_override = true;
         data_section(&mut h);
         h.get_by_label_contains("uses --data");
+    }
+
+    #[test]
+    fn the_old_data_is_offered_for_removal_only_when_this_library_has_it_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let (here, old) = (dir.path().join("here"), dir.path().join("old"));
+        imported(&here, 4);
+        imported(&old, 8);
+        let mut h = harness(&here);
+        settled(&mut h);
+        h.state_mut().as_mut().unwrap().settings.old_data_folder = Some(old.clone());
+        data_section(&mut h);
+        step_until(&mut h, "the old folder's count", |h| {
+            h.state().as_ref().unwrap().old_photos.is_some()
+        });
+        assert!(
+            h.query_by_label("Remove old data…").is_none(),
+            "the old library has more photos than this one: it may be the only good copy"
+        );
+        // An old folder with fewer photos than this library: offered.
+        let older = dir.path().join("older");
+        imported(&older, 2);
+        h.state_mut().as_mut().unwrap().settings.old_data_folder = Some(older);
+        data_section(&mut h);
+        step_until(&mut h, "the old folder's count", |h| {
+            h.state().as_ref().unwrap().old_photos == Some(2)
+        });
+        h.get_by_label("Remove old data…");
     }
 }

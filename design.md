@@ -1055,6 +1055,12 @@ Unconfirmed defaults awaiting review:
   ("Restart now" overrides); "Restart later" installs when MapCraft closes, without a
   restart (the banner says "restarts when it's done", which holds only while the dialog stays
   open); a failed swap starts the old version again.
+- M8 (data folder): switching copies, saves, restarts; not during an import or place download
+  (thumbnails pause); the same folder or one inside it is refused; a folder with other files
+  gets a `MapCraft` subfolder; a library there is only used, never overwritten; a network
+  folder gets a warning; the old copy stays until removed from Settings, offered only when
+  the library in use holds at least as many photos; Free up space ticks previews and map
+  tiles, not thumbnails; place names aren't offered; `--data` runs don't offer Change….
 - §3.2: the planned crates.
 - §2.8(f): the tree starts all ticked; leaving a folder out later removes its records; a folder
   that is, lies inside, or contains an existing source can't be added (it would duplicate

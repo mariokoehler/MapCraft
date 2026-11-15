@@ -511,6 +511,16 @@ mod tests {
             write_photo(&tx, src, None, &r).unwrap();
         }
         tx.commit().unwrap();
+        // A place index like the real one: a SQLite file in `geonames`, in WAL mode.
+        fs::create_dir_all(dir.join("geonames")).unwrap();
+        let places = Connection::open(dir.join("geonames/places.sqlite")).unwrap();
+        places
+            .execute_batch(
+                "PRAGMA journal_mode = WAL; CREATE TABLE place (name TEXT);
+                 INSERT INTO place VALUES ('Reykjavík'), ('Hamburg');",
+            )
+            .unwrap();
+        drop(places);
         for (d, f, len) in [
             ("thumbs/aa/bb", "1_256.jpg", 100),
             ("thumbs/aa/cc", "2_256.jpg", 50),
@@ -544,10 +554,10 @@ mod tests {
         );
         assert_eq!(u.get(Kind::Tiles).files, 1);
         assert!(u.get(Kind::Library).bytes > 0);
-        assert_eq!(u.get(Kind::Places), Size::default());
+        assert!(u.get(Kind::Places).files >= 1);
         assert_eq!(
             u.total().files,
-            4 + u.get(Kind::Library).files,
+            4 + u.get(Kind::Library).files + u.get(Kind::Places).files,
             "the foreign file isn't counted"
         );
         assert_eq!(bytes_text(4_820_000_000), "4.82 GB");
@@ -620,6 +630,10 @@ mod tests {
         data_folder(&from, 5);
         let before = Library::open(&from.join("library.sqlite")).unwrap();
         let ids: Vec<i64> = before.positions().unwrap().iter().map(|p| p.id).collect();
+        // The search thread keeps the place index open (with a write pending in its WAL).
+        let held = Connection::open(from.join("geonames/places.sqlite")).unwrap();
+        held.execute("INSERT INTO place VALUES ('Lisboa')", [])
+            .unwrap();
         let seen = std::sync::Mutex::new(Vec::new());
         copy(&from, &to, &|p| {
             seen.lock().unwrap().push(p.done.files);
@@ -636,6 +650,12 @@ mod tests {
             vec![7u8; 50]
         );
         assert!(to.join("tiles/content-v2/x").is_file());
+        let places = Connection::open(to.join("geonames/places.sqlite")).unwrap();
+        let n: i64 = places
+            .query_row("SELECT count(*) FROM place", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 3, "the copy holds the open index's latest write");
+        drop(held);
         assert!(seen.lock().unwrap().windows(2).all(|w| w[0] <= w[1]));
         // The source stays as it was (a copy, not a move).
         assert!(from.join("thumbs/aa/bb/1_256.jpg").is_file());
