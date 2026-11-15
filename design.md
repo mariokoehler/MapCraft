@@ -1138,7 +1138,9 @@ Milestones are rough and get refined as we go.
     milestone.
 - **M7 — Packaging, releases and updates** (built 2026-11-15; decided by the user that day:
   one exe, tag-triggered releases as in LaunchWindow, update check on by default, one-click
-  update with a confirmation). Not yet run on GitHub: the first push and tag need the user's
+  update with a confirmation). The workflow's rehearsal (Run workflow) passed on GitHub on
+  2026-11-15 in about 13 minutes: tests, the exe with icon and version, a checksum file the
+  updater reads, and the notices. No release is published yet: the first tag needs the user's
   go-ahead.
   - **One exe, no installer:** `mapcraft.exe` is the release file, run from any folder. Fonts,
     icons and tokens are already compiled in, SQLite is bundled, TLS is rustls; the C runtime
