@@ -582,6 +582,25 @@ What follows for the design (all **(user, 2026-11-14)**):
 - **(h) Track matching inside MapCraft (later).** The GPX step could move into MapCraft itself
   through LightCraft's `photo.autoTagTracklog`, which takes a GPX file and a camera clock offset.
   MapCraft would then *write* GPS, which §1.1 rules out for v1.
+- **(i) GPX tagging in LightCraft** (checked 2026-11-15 on LightCraft 0.21.1, its
+  `commands --json` and https://github.com/storytold/lightcraft README and `docs/whats-new.md`):
+  - In the GUI: *Auto-Tag from Tracklog* (pick a GPX file) for the selected photos. As a
+    command: `photo.autoTagTracklog {path | gpx, ids?, offset?, maxGap?, replace?, dryRun?}`.
+  - It matches by capture time and interpolates between track points. `offset` is the camera
+    clock's UTC offset for capture times without a zone (default UTC). `maxGap` (600 s) is the
+    largest gap it interpolates over. Photos with GPS are skipped unless `replace`.
+    `dryRun` previews the result. One undo step.
+  - The result reports what was tagged, interpolated or taken from the nearest point, and what
+    was skipped: no capture time, outside the track, already has GPS.
+  - The positions go into LightCraft's **catalogue**. They reach the files as XMP sidecars only
+    with *Automatically Write Changes into XMP* (`library.toggleAutoWriteXmp`) or *Save Metadata
+    to File* (`photo.saveMetadataToFile`). Sidecars are named `IMG_1.xmp` by default, which
+    MapCraft reads. A rescan in MapCraft then picks up the positions (`gps_source = xmp`).
+  - So a GPX workflow without Lightroom works today: LightCraft tags and writes sidecars,
+    MapCraft rescans. Writing sidecars into the user's photo library is the user's own step in
+    LightCraft; MapCraft never writes there (§1.1).
+  - *Fill Location from GPS* (`metadata.reverseGeocode`) fills city, state and country from GPS,
+    offline. LightCraft's README marks a Map view as not built yet.
 
 ## 3. Architecture
 
