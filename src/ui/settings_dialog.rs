@@ -92,6 +92,37 @@ fn kind_color(p: &Palette, k: Kind) -> egui::Color32 {
     }
 }
 
+/// The dialog is 760 px: its margins, the 160 px section list, the line and a gap leave this.
+const CONTENT_WIDTH: f32 = 760.0 - 24.0 - 160.0 - 1.0 - 12.0 - 8.0;
+
+/// A section in the list on the left: icon and name, left-aligned, highlighted when shown.
+fn nav_item(ui: &mut Ui, p: &Palette, s: Section, on: bool) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(160.0, 28.0), egui::Sense::click());
+    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, s.label()));
+    let fill = if on {
+        p.accent_subtle
+    } else if r.hovered() {
+        p.widget_hovered_weak
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    ui.painter().rect_filled(rect, p.radius_sm, fill);
+    let ink = if on { p.text_strong } else { p.text_normal };
+    let icon = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 8.0 + 8.0, rect.center().y),
+        egui::vec2(16.0, 16.0),
+    );
+    s.icon().image(16.0, ink).paint_at(ui, icon);
+    ui.painter().text(
+        egui::pos2(rect.left() + 32.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        s.label(),
+        egui::FontId::proportional(13.0),
+        ink,
+    );
+    r.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// The picker for the data folder (the apps use 0 and 1).
 const DATA_PICKER: usize = 2;
 
@@ -217,16 +248,7 @@ impl SettingsDialog {
                         ui.set_width(160.0);
                         ui.spacing_mut().item_spacing.y = 2.0;
                         for s in Section::ALL {
-                            let r = ui.add_sized(
-                                [160.0, 28.0],
-                                egui::Button::image_and_text(
-                                    s.icon().image(p.size_icon_sm, p.text_normal),
-                                    RichText::new(s.label()).color(p.text_normal),
-                                )
-                                .selected(s == section)
-                                .frame_when_inactive(false),
-                            );
-                            if r.clicked() {
+                            if nav_item(ui, p, s, s == section).clicked() {
                                 self.section = s;
                             }
                         }
@@ -238,6 +260,8 @@ impl SettingsDialog {
                     ui.painter().rect_filled(r, 0.0, p.border_subtle);
                     ui.add_space(p.space_3);
                     ui.vertical(|ui| {
+                        // A fixed column: the path field and the bar would widen the dialog.
+                        ui.set_width(CONTENT_WIDTH);
                         ui.set_min_height(440.0);
                         match section {
                             Section::Companions => {
@@ -420,30 +444,36 @@ impl SettingsDialog {
         });
         if let Some(u) = d.usage {
             usage_bar(ui, p, u);
-            egui::Grid::new("data-usage")
-                .num_columns(4)
-                .spacing([p.space_2, 6.0])
-                .show(ui, |ui| {
-                    for k in Kind::ALL {
-                        let s = u.get(k);
-                        let (r, _) =
-                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                        ui.painter().rect_filled(r, 3, kind_color(p, k));
+            ui.add_space(p.space_1);
+            for k in Kind::ALL {
+                let s = u.get(k);
+                let note = match k {
+                    Kind::Library => "photos and places on the map".to_owned(),
+                    Kind::Places => "search index".to_owned(),
+                    _ => format!("{} files", widgets::thousands(s.files as usize)),
+                };
+                // Fixed columns: dot, name, note, then the size at the right edge.
+                ui.horizontal(|ui| {
+                    ui.set_height(22.0);
+                    let (r, _) =
+                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().rect_filled(r, 3, kind_color(p, k));
+                    let cell = Layout::left_to_right(Align::Center);
+                    ui.allocate_ui_with_layout(egui::vec2(130.0, 20.0), cell, |ui| {
+                        ui.set_min_width(130.0);
                         ui.label(RichText::new(k.label()).color(p.text_normal));
-                        let note = match k {
-                            Kind::Library => "photos and places on the map".to_owned(),
-                            Kind::Places => "search index".to_owned(),
-                            _ => format!("{} files", widgets::thousands(s.files as usize)),
-                        };
+                    });
+                    ui.allocate_ui_with_layout(egui::vec2(220.0, 20.0), cell, |ui| {
+                        ui.set_min_width(220.0);
                         ui.label(RichText::new(note).small().color(p.text_weak));
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(datafolder::bytes_text(s.bytes)).color(p.text_strong),
-                            );
-                        });
-                        ui.end_row();
-                    }
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(datafolder::bytes_text(s.bytes)).color(p.text_strong),
+                        );
+                    });
                 });
+            }
         }
         ui.add_space(p.space_4);
         if widgets::secondary(ui, p, None, "Free up space…", d.usage.is_some()).clicked() {

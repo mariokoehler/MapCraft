@@ -71,6 +71,8 @@ user's first update test. M6
   (`src/filter.rs`), the panel, chips and no-match card (`src/ui/filters.rs`).
 - Companion apps: PhotoCraft launch and the LightCraft control-port client
   (`src/companions.rs`), the Settings dialog (`src/ui/settings_dialog.rs`), the panel's buttons.
+- The data folder: usage, change with move, free up space, remove old data
+  (`src/datafolder.rs`, `src/ui/data_dialogs.rs`, the Data folder section of Settings).
 - Releases: the tag-triggered workflow (`.github/workflows/release.yml`), the exe's icon and
   version (`build.rs`), the static C runtime (`.cargo/config.toml`), licence notices
   (`scripts/notices.ps1`, `about.toml`); self-update (`src/update.rs`,
@@ -191,6 +193,11 @@ committed):
   - `--perf` logs the frame time every 3 s;
   - `--make-demo <folder> [n]` writes generated photos;
   - `--fill-library <scratch data> <n>` writes synthetic rows;
+  - `--settings <file>` uses another settings file (kept across a restart). Trials of the
+    data folder use a scratch one whose `data_folder` is scratch: Change… rewrites the
+    settings file and the old data's removal deletes MapCraft's files from the old folder.
+  - `--open data` opens Settings on the Data folder section; `--open change-data=<folder>`
+    opens the Change dialog as if that folder had been picked (no system picker needed).
   - `--update-from <base url>` checks a pretend GitHub (`<base>/latest`, `<base>/dl/…`) instead
     of the real one. Try the updater only on a copy of the exe in the scratchpad, with
     `--data` scratch: it replaces the exe it runs from.

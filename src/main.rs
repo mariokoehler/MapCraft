@@ -38,6 +38,10 @@ fn main() -> eframe::Result {
         Some("strip") => Some(app::StartDialog::Strip),
         Some("filters") => Some(app::StartDialog::Filters(None)),
         Some("settings") => Some(app::StartDialog::Settings),
+        Some("data") => Some(app::StartDialog::DataFolder),
+        Some(s) if s.starts_with("change-data=") => Some(app::StartDialog::ChangeData(
+            std::path::PathBuf::from(&s["change-data=".len()..]),
+        )),
         Some(s) if s.starts_with("filters=") => {
             Some(app::StartDialog::Filters(s[8..].parse().ok()))
         }

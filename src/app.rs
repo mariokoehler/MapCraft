@@ -90,6 +90,10 @@ pub enum StartDialog {
     /// The filter panel open, or (with a year) that year's photos shown, the panel closed.
     Filters(Option<u32>),
     Settings,
+    /// Settings on its Data folder section.
+    DataFolder,
+    /// The Change data folder dialog, as if this folder had been picked.
+    ChangeData(PathBuf),
 }
 
 pub struct Config {
@@ -353,6 +357,16 @@ impl MapCraftApp {
                 app.filter_changed();
             }
             Some(StartDialog::Settings) => app.open_settings(ctx),
+            Some(StartDialog::DataFolder) => {
+                app.open_settings(ctx);
+                if let Some(s) = &mut app.settings_dialog {
+                    s.section = Section::Data;
+                }
+            }
+            Some(StartDialog::ChangeData(folder)) => {
+                app.count_usage();
+                app.pick_data_folder(&folder);
+            }
             None => {}
         }
         app
@@ -1003,6 +1017,11 @@ impl MapCraftApp {
         for e in events {
             match e {
                 DataEvent::Counted(u, old) => {
+                    if let Some(d) = &mut self.change_dialog
+                        && d.size.is_none()
+                    {
+                        d.size = Some(u.total().bytes);
+                    }
                     self.data_usage = Some(u);
                     self.old_size = old;
                 }

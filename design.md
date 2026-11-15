@@ -450,7 +450,8 @@ date, camera, lens, coordinates, and actions **(user, 2026-11-14)**:
 ### 2.7 Settings
 
 - **Data folder** (§3.3), with a "move data folder" action that copies and then switches
-  **(user, 2026-11-14)**.
+  **(user, 2026-11-14)**. Built in M8 (2026-11-15) with space used and Free up space; Settings
+  now has sections on the left (Companion apps, Updates, Data folder).
 - **Companion apps:** the paths to the two apps. Defaults: `C:\Program Files\PhotoCraft\` and
   `C:\Program Files\LightCraft\` (user, 2026-11-14). A "Test" button runs `--version`.
   - As built in M6 (2026-11-15): a Settings dialog (the gear in the top bar) with only this
@@ -1182,8 +1183,8 @@ Milestones are rough and get refined as we go.
     scratchpad, a pretend GitHub on a local port (`--update-from`), the buttons pressed
     through UI Automation. The exe was swapped and restarted with the same options.
 
-- **M8 — Data folder** (asked for by the user, 2026-11-15; released as v0.2.0, which is also
-  the user's first update test). In Settings:
+- **M8 — Data folder** (asked for by the user, 2026-11-15; built the same day, released as
+  v0.2.0, which is also the user's first update test). In Settings:
   - **Where it is,** with **Change…**: pick a folder, then either *move the data there* or
     *start empty there*; a folder that already holds a MapCraft library can be *used as it is*.
     The settings file stays in `%APPDATA%\MapCraft` (it records where the data folder is).
@@ -1205,8 +1206,21 @@ Milestones are rough and get refined as we go.
     - A run with `--data` shows usage and frees space but doesn't offer Change….
     - Freeing thumbnails resets their state in the library first, then deletes the files.
     - Dev flag `--settings <file>`: a scratch settings file for trials, kept across a restart.
-  - The look per the canvas `MapCraft — Data folder` (made 2026-11-15, awaiting review): the Settings dialog no longer
-    fits in one column, so it gets sections.
+  - The look per the canvas `MapCraft — Data folder` (approved by the user, 2026-11-15): the
+    Settings dialog no longer fits in one column, so it gets sections.
+  - **As built:** `src/datafolder.rs` (what MapCraft owns, usage, checking a picked folder,
+    copying, removing, freeing), `src/ui/settings_dialog.rs` (the sections),
+    `src/ui/data_dialogs.rs` (Change, Free up space, Remove old data), wired in `src/app.rs`.
+    A restart for a new folder goes through the updater's hand-off in `main` (`update::
+    request_restart`). Free space is checked before copying (Windows' `GetDiskFreeSpaceExW`),
+    a network folder by its drive type.
+  - **Checked** by unit tests (usage, the picked-folder cases, a copied library opening through
+    `Library::open` with the same ids, a cancelled copy leaving nothing, removing and freeing
+    only MapCraft's entries), headless UI tests (space used, freeing previews, freeing
+    thumbnails and making them again, a move that saves and restarts, refusals), and a trial
+    on 2026-11-15 with a scratch settings file and data: move, restart, the old-data banner,
+    removing it, and deleting map tiles under the running map (harmless: it keeps what it
+    has in memory).
 
 **Later:** a keyed tile provider and offline PMTiles (§3.5(b); walkers has a `pmtiles`
 feature, and its vector rendering needs the wgpu renderer, which eframe uses by default), the
