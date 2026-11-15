@@ -1143,8 +1143,11 @@ Milestones are rough and get refined as we go.
   one exe, tag-triggered releases as in LaunchWindow, update check on by default, one-click
   update with a confirmation). The workflow's rehearsal (Run workflow) passed on GitHub on
   2026-11-15 in about 13 minutes: tests, the exe with icon and version, a checksum file the
-  updater reads, and the notices. No release is published yet: the first tag needs the user's
-  go-ahead.
+  updater reads, and the notices.
+  - **v0.1.0 released 2026-11-15** (https://github.com/mariokoehler/MapCraft/releases/tag/v0.1.0).
+    The same day a copy of its code stamped 0.0.9 updated itself from that release over the real
+    GitHub: download, checksum, swap and restart all worked. The user runs it from
+    `E:\MapCraft`.
   - **One exe, no installer:** `mapcraft.exe` is the release file, run from any folder. Fonts,
     icons and tokens are already compiled in, SQLite is bundled, TLS is rustls; the C runtime
     is linked statically (`+crt-static` in `.cargo/config.toml`), so no VC++ redistributable

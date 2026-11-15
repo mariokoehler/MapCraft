@@ -28,8 +28,9 @@ but the app isn't sold or advertised (user, 2026-11-14).
 
 ## Current status (2026-11-15)
 
-**M7 built (2026-11-15): packaging, releases and self-update; the workflow's rehearsal passed
-on GitHub, no release published yet.** M6
+**v0.1.0 released (2026-11-15)**: M7 done, updating from GitHub checked with a 0.0.9 copy. The
+user runs the release from `E:\MapCraft`. Next: M8 (data folder), released as v0.2.0, the
+user's first update test. M6
 (companion apps) awaits the user's try. M5 is done (tried by the user).
 - Public GitHub repo: https://github.com/mariokoehler/MapCraft (since 2026-11-14), branch
   `main`. Commit doc changes too, so the history guards against overwrites from stale editor
