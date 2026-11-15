@@ -611,7 +611,8 @@ impl SettingsDialog {
                 crate::provider::MAPTILER_SIGN_UP,
             );
             ui.label(weak(
-                " and copy its default key. The free plan is for personal, non-commercial use \
+                ", then create a key in its API Keys menu and paste it here. The free plan is \
+                 for personal, non-commercial use \
                  and covers 100,000 map tiles a month; tiles you’ve seen come from MapCraft’s \
                  cache and don’t count.",
             ));

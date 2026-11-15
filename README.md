@@ -125,8 +125,9 @@ The layers button under the zoom controls (top right of the map) switches the ma
 | **Hybrid**: satellite with roads and place names | MapTiler | your own free MapTiler key |
 
 **Getting a MapTiler key:** make a free account at
-[cloud.maptiler.com](https://cloud.maptiler.com/) (a Google account works too), copy the
-default API key it shows, and paste it into *Settings → Map*. *Test key* checks it. MapTiler's
+[cloud.maptiler.com](https://cloud.maptiler.com/) (a Google account works too). Logged in, open
+the **API Keys** menu, create a new API key, and paste it into *Settings → Map* in MapCraft.
+*Test key* checks it. MapTiler's
 free plan is for personal, non-commercial use and covers 100,000 map tiles a month; tiles you've
 already looked at come from MapCraft's cache and don't count. If the key stops working or the
 month's tiles are used up, MapCraft says so and goes back to Standard.
