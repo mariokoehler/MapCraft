@@ -179,7 +179,10 @@ committed):
   asks (`--data` folders have their own).
 - `%LOCALAPPDATA%\MapCraft\library.sqlite` is created by the first normal start. From then on
   the migrations in `src/library/migrations/` are frozen: change the schema with a new numbered
-  file, never by editing an existing one.
+  file, never by editing an existing one (`design.md` §3.4).
+  - A new migration needs a fixture in `FIXTURES` (its schema's sample data) and, once the
+    version holding it is released, its hash in `RELEASED` (both in `src/library/mod.rs`
+    tests); the tests say so if one is missing or a released one changed.
 - The crate is a library (`src/lib.rs`, all modules) plus a thin binary (`src/main.rs`), so tests
   and the dev probes in `examples/` can use everything.
 - `mapcraft --data <folder>` runs the GUI on another data folder (trials never touch the real

@@ -750,6 +750,23 @@ photo(id, source_id, rel_dir, stem,        -- one photo = the files of one name 
   fingerprint of every file's name, size and time before and after importing.
 - **Mapped drives:** the UNC target of the user's mapped drive resolves and is readable
   (checked 2026-11-14). If the drive letter isn't mapped, the stored UNC path is used.
+- **Schema migrations** (like Flyway's versioned migrations; safeguards added 2026-11-15 at the
+  user's request): numbered SQL files in `src/library/migrations/`, compiled in; SQLite's
+  `user_version` counts those run. `Library::open` runs the missing ones in order, each in a
+  transaction, so a user who skips versions gets every step in between.
+  - A released migration never changes: `released_migrations_never_change` holds the SHA-256
+    of each (LF line endings), like Liquibase's checksums.
+  - Each migration is plain SQL that depends only on the schema at its point, never on today's
+    Rust code.
+  - Before migrating an existing library, a snapshot of it is kept as
+    `backups/library-schema-<n>.sqlite` in the data folder (part of the library for usage,
+    moves and removal). A failed backup is logged and the migration goes ahead (unconfirmed).
+  - A library from a newer MapCraft (a higher `user_version`) is refused and left untouched; a
+    toast says to update.
+  - `a_library_from_any_earlier_version_upgrades_with_its_photos` builds a library at every
+    schema version with sample photos and upgrades it to the current one.
+  - Settings are tolerant both ways (missing fields get defaults, unknown ones are ignored),
+    but an older version saving them drops fields it doesn't know.
 
 ### 3.5 Map providers & geocoding (researched 2026-11-14)
 

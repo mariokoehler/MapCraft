@@ -246,6 +246,17 @@ impl MapCraftApp {
         let mut toasts = Toasts::default();
         let lib = match Library::open(&db_path) {
             Ok(l) => Some(l),
+            Err(e) if crate::library::is_too_new(&e) => {
+                error!("can't open the library: {e}");
+                toasts.replace(vec![toasts::note(
+                    Tone::Error,
+                    "This library needs a newer MapCraft",
+                    "A newer version of MapCraft opened it last. Update MapCraft to open it \
+                     (Settings → Updates); nothing was changed.",
+                    Some(("Settings…", ToastAction::OpenSettings)),
+                )]);
+                None
+            }
             Err(e) => {
                 error!("can't open the library: {e}");
                 toasts.replace(vec![toasts::for_failure(&format!(

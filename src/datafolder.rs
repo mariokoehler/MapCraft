@@ -50,7 +50,13 @@ impl Kind {
             Kind::Thumbnails => &["thumbs"],
             Kind::Previews => &["previews"],
             Kind::Tiles => &["tiles"],
-            Kind::Library => &["library.sqlite", "library.sqlite-wal", "library.sqlite-shm"],
+            // `backups`: snapshots taken before migrations (library::Library::migrate).
+            Kind::Library => &[
+                "library.sqlite",
+                "library.sqlite-wal",
+                "library.sqlite-shm",
+                "backups",
+            ],
             Kind::Places => &["geonames"],
         }
     }
@@ -338,8 +344,20 @@ fn copy_all(
                 if src.is_file() {
                     snapshot(&src, &to.join("library.sqlite"))
                         .map_err(|e| failed("the library", &e))?;
-                    done.add(usage_of(from, kind));
+                    // The library's own files (the snapshot holds the WAL's content too).
+                    for e in ["library.sqlite", "library.sqlite-wal", "library.sqlite-shm"] {
+                        done.add(size_of(&from.join(e)));
+                    }
                 }
+                // The backups are databases too: each goes through a snapshot.
+                copy_tree(
+                    &from.join("backups"),
+                    &to.join("backups"),
+                    kind,
+                    &mut done,
+                    total,
+                    progress,
+                )?;
             }
             _ => {
                 for e in kind.entries() {
@@ -354,14 +372,6 @@ fn copy_all(
         total,
     });
     Ok(())
-}
-
-fn usage_of(dir: &Path, kind: Kind) -> Size {
-    let mut s = Size::default();
-    for e in kind.entries() {
-        s.add(size_of(&dir.join(e)));
-    }
-    s
 }
 
 /// A consistent copy of a SQLite database, taken through SQLite while others may have it open.
@@ -511,6 +521,16 @@ mod tests {
             write_photo(&tx, src, None, &r).unwrap();
         }
         tx.commit().unwrap();
+        // A backup from a migration, as Library::migrate keeps it.
+        fs::create_dir_all(dir.join("backups")).unwrap();
+        Connection::open(dir.join("library.sqlite"))
+            .unwrap()
+            .execute(
+                "VACUUM INTO ?1",
+                [dir.join("backups/library-schema-1.sqlite")
+                    .to_string_lossy()],
+            )
+            .unwrap();
         // A place index like the real one: a SQLite file in `geonames`, in WAL mode.
         fs::create_dir_all(dir.join("geonames")).unwrap();
         let places = Connection::open(dir.join("geonames/places.sqlite")).unwrap();
@@ -655,6 +675,10 @@ mod tests {
             .query_row("SELECT count(*) FROM place", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 3, "the copy holds the open index's latest write");
+        assert!(
+            to.join("backups/library-schema-1.sqlite").is_file(),
+            "backups go along"
+        );
         drop(held);
         assert!(seen.lock().unwrap().windows(2).all(|w| w[0] <= w[1]));
         // The source stays as it was (a copy, not a move).
@@ -691,6 +715,7 @@ mod tests {
         assert!(d.join("thumbs").exists() && has_library(&d));
         remove_owned(&d, true).unwrap();
         assert!(!has_library(&d) && !d.join("thumbs").exists());
+        assert!(!d.join("backups").exists(), "the backups are the library's");
         assert!(d.join("someone-elses.txt").is_file(), "not ours: kept");
         assert!(d.is_dir(), "not empty, so the folder stays");
     }

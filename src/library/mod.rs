@@ -18,6 +18,32 @@ use crate::import::scope::Scope;
 pub use rusqlite::Error;
 pub type Result<T> = rusqlite::Result<T>;
 
+/// A library whose schema is newer than this MapCraft knows: a newer version opened it. It's
+/// refused and left untouched, since the code here doesn't know what changed.
+/// (Carried in rusqlite's general boxed-error variant, so `Library::open` keeps its error type.)
+#[derive(Debug)]
+pub struct TooNew {
+    pub found: i64,
+    pub known: usize,
+}
+
+impl std::fmt::Display for TooNew {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the library was made by a newer MapCraft (schema {}; this version knows {})",
+            self.found, self.known
+        )
+    }
+}
+
+impl std::error::Error for TooNew {}
+
+/// Whether opening failed because a newer MapCraft made the library.
+pub fn is_too_new(e: &Error) -> bool {
+    matches!(e, Error::ToSqlConversionFailure(b) if b.is::<TooNew>())
+}
+
 /// The schema migrations, in order. `PRAGMA user_version` records how many have run.
 const MIGRATIONS: [&str; 2] = [
     include_str!("migrations/0001_init.sql"),
@@ -203,10 +229,23 @@ impl Library {
         Ok(lib)
     }
 
+    /// Brings the schema up to date: every migration the library hasn't had yet, in order, each
+    /// in its own transaction (design.md §3.4). A library skipped over several versions gets
+    /// all the steps in between. Before changing an existing library, a snapshot of it is kept
+    /// in `backups/`. A library from a newer MapCraft is refused and left as it is.
     fn migrate(&self) -> Result<()> {
         let done: i64 = self
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if done as usize > MIGRATIONS.len() {
+            return Err(Error::ToSqlConversionFailure(Box::new(TooNew {
+                found: done,
+                known: MIGRATIONS.len(),
+            })));
+        }
+        if done > 0 && (done as usize) < MIGRATIONS.len() {
+            self.backup(done);
+        }
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(done as usize) {
             self.conn.execute_batch(&format!(
                 "BEGIN; {sql}\nPRAGMA user_version = {}; COMMIT;",
@@ -214,6 +253,31 @@ impl Library {
             ))?;
         }
         Ok(())
+    }
+
+    /// Keeps a snapshot of the library as it is before a migration, as
+    /// `backups/library-schema-<n>.sqlite` beside it (the same snapshot a data folder move uses).
+    /// A failed backup is logged and the migration goes ahead: MapCraft must still start.
+    fn backup(&self, schema: i64) {
+        let Some(path) = self.conn.path().filter(|p| !p.is_empty()) else {
+            return; // in memory (tests)
+        };
+        let Some(dir) = Path::new(path).parent().map(|d| d.join("backups")) else {
+            return;
+        };
+        let target = dir.join(format!("library-schema-{schema}.sqlite"));
+        let r = std::fs::create_dir_all(&dir)
+            .map_err(|e| e.to_string())
+            .and_then(|()| {
+                let _ = std::fs::remove_file(&target);
+                self.conn
+                    .execute("VACUUM INTO ?1", [target.to_string_lossy()])
+                    .map_err(|e| e.to_string())
+            });
+        match r {
+            Ok(_) => tracing::info!("library backed up before migrating from schema {schema}"),
+            Err(e) => tracing::error!("can't back up the library before migrating: {e}"),
+        }
     }
 
     pub fn add_source(
@@ -990,6 +1054,149 @@ mod tests {
                 .unwrap();
             assert_eq!(got, crate::import::scan::ext_of(n), "{n}");
         }
+    }
+
+    /// The migrations as released (design.md §3.4): their text must never change, or a library
+    /// that already ran one would differ from one that runs it now. A new migration is added
+    /// here when the version holding it is released. Hashed with LF line endings, as git stores
+    /// them (a Windows checkout may have CRLF).
+    const RELEASED: [(&str, &str); 2] = [
+        (
+            "0001_init.sql",
+            "08dd742c12ad09e9cd2ff9d79596d10023704b76f65b531a2487b8cbfa5d6143",
+        ),
+        (
+            "0002_original_ext.sql",
+            "8ab44d63a182080e5b0c7c8167bdd3aba150c49cd1f8ed092ae692d4d2b7a909",
+        ),
+    ];
+
+    #[test]
+    fn released_migrations_never_change() {
+        use sha2::{Digest, Sha256};
+        assert!(RELEASED.len() <= MIGRATIONS.len());
+        for (i, (name, want)) in RELEASED.iter().enumerate() {
+            let text = MIGRATIONS[i].replace("\r\n", "\n");
+            let got: String = Sha256::digest(text.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            assert_eq!(
+                &got, want,
+                "migration {name} was released and must not be edited: add a new numbered one"
+            );
+        }
+    }
+
+    /// Sample data as each schema version holds it: index `v - 1` is valid right after
+    /// migration `v`. A new migration needs a fixture here (the test below says so).
+    const FIXTURES: [&str; 2] = [
+        "INSERT INTO source (id, root_path, label, added_at) VALUES (1, 'C:\\P', 'P', '');
+         INSERT INTO photo (id, source_id, rel_dir, rel_dir_key, stem, stem_key, original_name,
+                            files_sig, file_size, file_mtime, lat, lon, taken_at, camera_make,
+                            camera_model, thumb_state)
+         VALUES (7, 1, 'trip', 'trip', 'IMG_1', 'img_1', 'IMG_1.CR2', 1, 10, 0, 64.1, -21.9,
+                 '2012-08-18T18:45:38', 'Canon', 'Canon EOS 5D Mark III', 'ok'),
+                (9, 1, 'trip', 'trip', 'IMG_2', 'img_2', 'IMG_2.jpg', 2, 10, 0, 63.8, -22.7,
+                 '2012-08-19T10:00:00', 'Canon', 'Canon EOS 5D Mark III', 'ok');",
+        "INSERT INTO source (id, root_path, label, added_at) VALUES (1, 'C:\\P', 'P', '');
+         INSERT INTO photo (id, source_id, rel_dir, rel_dir_key, stem, stem_key, original_name,
+                            original_ext, files_sig, file_size, file_mtime, lat, lon, taken_at,
+                            camera_make, camera_model, thumb_state)
+         VALUES (7, 1, 'trip', 'trip', 'IMG_1', 'img_1', 'IMG_1.CR2', 'cr2', 1, 10, 0, 64.1,
+                 -21.9, '2012-08-18T18:45:38', 'Canon', 'Canon EOS 5D Mark III', 'ok'),
+                (9, 1, 'trip', 'trip', 'IMG_2', 'img_2', 'IMG_2.jpg', 'jpg', 2, 10, 0, 63.8,
+                 -22.7, '2012-08-19T10:00:00', 'Canon', 'Canon EOS 5D Mark III', 'ok');",
+    ];
+
+    /// A library at schema `v` with the fixture's photos, as a file (migrations back up files).
+    fn library_at(dir: &Path, v: usize) -> PathBuf {
+        let path = dir.join(format!("v{v}")).join("library.sqlite");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        for sql in &MIGRATIONS[..v] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", v as i64).unwrap();
+        conn.execute_batch(FIXTURES[v - 1]).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_library_from_any_earlier_version_upgrades_with_its_photos() {
+        assert_eq!(
+            FIXTURES.len(),
+            MIGRATIONS.len(),
+            "a new migration needs a fixture of the data at its schema"
+        );
+        let t = tempfile::tempdir().unwrap();
+        for v in 1..=MIGRATIONS.len() {
+            let path = library_at(t.path(), v);
+            let lib = Library::open(&path).unwrap();
+            let ids: Vec<i64> = lib.positions().unwrap().iter().map(|p| p.id).collect();
+            assert_eq!(ids, [7, 9], "from schema {v}: the photos and their ids");
+            let f = lib.facets().unwrap();
+            assert_eq!(f.cameras.len(), 1, "from schema {v}");
+            assert_eq!(
+                f.types,
+                [("RAW", 1), ("JPEG", 1)],
+                "from schema {v}: the file types"
+            );
+            let backup = path
+                .parent()
+                .unwrap()
+                .join("backups")
+                .join(format!("library-schema-{v}.sqlite"));
+            assert_eq!(
+                backup.exists(),
+                v < MIGRATIONS.len(),
+                "from schema {v}: a backup only when something migrates"
+            );
+        }
+    }
+
+    #[test]
+    fn the_backup_is_the_library_before_the_migration() {
+        let t = tempfile::tempdir().unwrap();
+        let path = library_at(t.path(), 1);
+        Library::open(&path).unwrap();
+        let backup = path
+            .parent()
+            .unwrap()
+            .join("backups/library-schema-1.sqlite");
+        let b = Connection::open(&backup).unwrap();
+        let v: i64 = b
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 1);
+        let n: i64 = b
+            .query_row("SELECT count(*) FROM photo", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2);
+        // A new library has nothing to back up.
+        let fresh = t.path().join("fresh").join("library.sqlite");
+        Library::open(&fresh).unwrap();
+        assert!(!fresh.parent().unwrap().join("backups").exists());
+    }
+
+    #[test]
+    fn a_library_from_a_newer_version_is_refused_and_left_alone() {
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join("library.sqlite");
+        Library::open(&path).unwrap();
+        let newer = MIGRATIONS.len() as i64 + 3;
+        Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "user_version", newer)
+            .unwrap();
+        let e = Library::open(&path).err().expect("refused");
+        assert!(is_too_new(&e));
+        assert!(e.to_string().contains("newer MapCraft"), "{e}");
+        let v: i64 = Connection::open(&path)
+            .unwrap()
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, newer, "untouched");
     }
 
     #[test]
