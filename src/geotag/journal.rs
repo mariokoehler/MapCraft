@@ -178,8 +178,13 @@ pub fn run(
         });
         match r {
             Ok((bytes, back)) => {
+                let after = sha(&bytes);
+                // On disk at once, so a run cut short (the window closed) can still be undone.
+                if let Err(e) = append_done(&path, t.photo, &after) {
+                    tracing::error!("can't note a written sidecar in the journal: {e}");
+                }
                 if let Some(e) = journal.entries.iter_mut().find(|e| e.photo == t.photo) {
-                    e.after = Some(sha(&bytes));
+                    e.after = Some(after);
                 }
                 report.written.push(Written {
                     photo: t.photo,
@@ -201,15 +206,79 @@ pub fn run(
     journal.entries.retain(|e| e.after.is_some());
     if journal.entries.is_empty() {
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(done_path(&path));
     } else {
-        if let Err(e) = journal.save(&path) {
-            // The first save holds every earlier content; undo still has what it needs, but
-            // can't tell which were written. Logged; the files themselves are fine.
-            tracing::error!("can't finish the geotag journal: {e}");
+        match journal.save(&path) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(done_path(&path));
+            }
+            // The first save holds every earlier content and the `.done` file what was
+            // written: undo still has what it needs.
+            Err(e) => tracing::error!("can't finish the geotag journal: {e}"),
         }
         report.journal = Some(path);
     }
     report
+}
+
+/// Beside a journal: one line per sidecar written so far (`photo<TAB>sha256`), appended as
+/// each is written, until the journal itself records them.
+fn done_path(journal: &Path) -> PathBuf {
+    journal.with_extension("done")
+}
+
+fn append_done(journal: &Path, photo: i64, after: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(done_path(journal))
+        .map_err(|e| e.to_string())?;
+    writeln!(f, "{photo}\t{after}").map_err(|e| e.to_string())?;
+    f.sync_data().map_err(|e| e.to_string())
+}
+
+/// The newest journal in a data folder, with a line saying what it holds
+/// ("12 photos, 2025-06-12 14:02 UTC"), for Undo after the toast is gone.
+pub fn latest(data: &Path) -> Option<(PathBuf, String)> {
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for e in std::fs::read_dir(data.join(DIR)).ok()?.flatten() {
+        let p = e.path();
+        if p.extension().is_some_and(|x| x == "json")
+            && let Ok(m) = e.metadata().and_then(|m| m.modified())
+            && newest.as_ref().is_none_or(|(t, _)| m > *t)
+        {
+            newest = Some((m, p));
+        }
+    }
+    let (_, path) = newest?;
+    let j = load_with_done(&path).ok()?;
+    let n = j.entries.iter().filter(|e| e.after.is_some()).count();
+    if n == 0 {
+        return None;
+    }
+    let made = j.made.trim_end_matches('Z').replace('T', " ");
+    let when = made.get(..16).unwrap_or(&made).to_owned();
+    Some((
+        path,
+        format!("{n} photo{}, {when} UTC", if n == 1 { "" } else { "s" }),
+    ))
+}
+
+/// The journal with what its `.done` file says was written.
+fn load_with_done(path: &Path) -> Result<Journal, String> {
+    let mut j = Journal::load(path)?;
+    if let Ok(done) = std::fs::read_to_string(done_path(path)) {
+        for line in done.lines() {
+            if let Some((photo, after)) = line.split_once('\t')
+                && let Ok(photo) = photo.parse::<i64>()
+                && let Some(e) = j.entries.iter_mut().find(|e| e.photo == photo)
+            {
+                e.after = Some(after.trim().to_owned());
+            }
+        }
+    }
+    Ok(j)
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -223,7 +292,7 @@ pub struct Undone {
 /// Restores every sidecar of a journal that still holds what was written, then removes the
 /// journal if all were.
 pub fn undo(path: &Path) -> Result<Undone, String> {
-    let journal = Journal::load(path)?;
+    let journal = load_with_done(path)?;
     let mut out = Undone::default();
     for e in &journal.entries {
         let Some(after) = &e.after else { continue };
@@ -250,6 +319,7 @@ pub fn undo(path: &Path) -> Result<Undone, String> {
     }
     if out.skipped.is_empty() {
         let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(done_path(path));
     }
     Ok(out)
 }
@@ -327,6 +397,41 @@ mod tests {
         assert_eq!(u.restored.len(), 1);
         assert!(!photos.join("D.xmp").exists());
         assert!(!r.journal.unwrap().exists());
+    }
+
+    #[test]
+    fn a_run_cut_short_can_still_be_undone() {
+        let d = tempfile::tempdir().unwrap();
+        let data = d.path().join("data");
+        let t = Task {
+            photo: 1,
+            path: d.path().join("A.xmp"),
+            gps: gps(1.0),
+            prior: Prior::default(),
+        };
+        let r = run(
+            std::slice::from_ref(&t),
+            &data,
+            &|_, _| {},
+            &AtomicBool::new(false),
+        );
+        let path = r.journal.unwrap();
+        assert!(
+            !done_path(&path).exists(),
+            "the finished journal holds it all"
+        );
+        // As if the window closed before the journal was finished: only the first save and
+        // the `.done` line.
+        let mut j = Journal::load(&path).unwrap();
+        let after = j.entries[0].after.take().unwrap();
+        j.save(&path).unwrap();
+        append_done(&path, 1, &after).unwrap();
+        assert_eq!(latest(&data).unwrap().0, path);
+        assert!(latest(&data).unwrap().1.starts_with("1 photo, "));
+        let u = undo(&path).unwrap();
+        assert_eq!(u.restored.len(), 1);
+        assert!(!t.path.exists() && !path.exists() && !done_path(&path).exists());
+        assert!(latest(&data).is_none());
     }
 
     #[test]

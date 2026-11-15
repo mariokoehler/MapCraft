@@ -162,15 +162,25 @@ impl MapCraftApp {
     /// Thumbnails for the candidates that have none, before the library's (design.md §2.9(g)).
     fn thumbs_for_candidates(&mut self) {
         let Some(s) = &self.geotag else { return };
-        self.thumbs_for = s
+        // Those on the track or near it: the pool reaches a day either way, mostly unseen.
+        let near: std::collections::HashSet<i64> = s
+            .matched
+            .on
+            .iter()
+            .map(|o| o.0)
+            .chain(s.matched.outside.iter().map(|o| o.0))
+            .collect();
+        let want: Vec<i64> = s
             .photos
             .iter()
-            .filter(|p| p.thumb == crate::library::Thumb::Pending)
+            .filter(|p| p.thumb == crate::library::Thumb::Pending && near.contains(&p.id))
             .map(|p| p.id)
+            .filter(|id| !self.thumbs_for.contains(id))
             .collect();
-        if self.thumbs_for.is_empty() {
+        if want.is_empty() {
             return;
         }
+        self.thumbs_for.extend(want);
         if let Some(t) = &self.thumbs {
             t.cancel(); // it restarts with the candidates first
             self.restart_thumbs = true;
@@ -206,6 +216,8 @@ impl MapCraftApp {
         if let Some(s) = &mut self.geotag {
             s.selected = self.map.selected();
         }
+        // Photos the shift brought onto the track get their thumbnails too.
+        self.thumbs_for_candidates();
     }
 
     /// Re-reads the candidates (their thumbnails; the re-tag option), keeping the settings.
@@ -267,6 +279,10 @@ impl MapCraftApp {
             }
             return;
         }
+        if matches!(a, GeoAction::UndoLast) {
+            self.undo_geotag();
+            return;
+        }
         if matches!(a, GeoAction::CancelWrite) {
             if let Some(w) = &self.geo_work {
                 w.cancel.store(true, Ordering::Relaxed);
@@ -321,7 +337,10 @@ impl MapCraftApp {
                 s.changed = true;
             }
             GeoAction::Write => self.geo_confirm = s.ticked() > 0,
-            GeoAction::Leave | GeoAction::AddFile | GeoAction::CancelWrite => {}
+            GeoAction::Leave
+            | GeoAction::AddFile
+            | GeoAction::CancelWrite
+            | GeoAction::UndoLast => {}
         }
         if reload {
             self.geotag_reload();
@@ -571,12 +590,12 @@ impl MapCraftApp {
 
     /// Undoes the last write (the result toast's Undo).
     pub(super) fn undo_geotag(&mut self) {
-        let Some(path) = self.geo_journal.take() else {
+        if self.geo_work.is_some() || self.job.is_some() {
+            return; // the toast's Undo stays for later
+        }
+        let Some((path, _)) = self.geo_last.take() else {
             return;
         };
-        if self.geo_work.is_some() {
-            return;
-        }
         let (tx, rx) = mpsc::channel();
         let ctx = self.ctx.clone();
         std::thread::Builder::new()
@@ -680,7 +699,7 @@ impl MapCraftApp {
         if n > 0 {
             text.push_str(" Undo restores the sidecars as they were.");
         }
-        self.geo_journal = r.journal;
+        self.geo_last = journal::latest(&self.data_folder);
         let tone = if failed == 0 {
             Tone::Success
         } else {
@@ -729,6 +748,7 @@ impl MapCraftApp {
                         }
                     ));
                 }
+                self.geo_last = journal::latest(&self.data_folder);
                 self.toasts.replace(vec![toasts::note(
                     if u.skipped.is_empty() {
                         Tone::Success

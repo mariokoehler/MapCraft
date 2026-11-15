@@ -188,6 +188,20 @@ impl MapView {
         self.points = points;
     }
 
+    /// Where a position is on screen, as last drawn (tests click there).
+    #[cfg(test)]
+    pub fn screen_of(&self, lat: f64, lon: f64) -> egui::Pos2 {
+        let v = Projector::new(self.last_rect, &MercatorProjection, &self.memory, self.home)
+            .project(lat_lon(lat, lon));
+        egui::pos2(v.x, v.y)
+    }
+
+    /// Centres the map on a position (tests).
+    #[cfg(test)]
+    pub fn center_at(&mut self, lat: f64, lon: f64) {
+        self.memory.center_at(lat_lon(lat, lon));
+    }
+
     #[cfg(test)]
     pub fn set_zoom(&mut self, zoom: f64) {
         let _ = self.memory.set_zoom(zoom);
@@ -889,7 +903,8 @@ impl Plugin for Photos<'_> {
         }
 
         // Tagging mode: each marker's tick, over everything (registered last, so on top).
-        if let Some(off) = self.off {
+        // While picking a spot they're hidden: the click belongs to the track.
+        if let Some(off) = self.off.filter(|_| !self.picking) {
             for m in &shown {
                 let ids: Vec<i64> = if m.count > 1 {
                     c.members(level, m.level_index)

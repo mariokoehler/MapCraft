@@ -26,6 +26,8 @@ pub enum GeoAction {
     WriteAlt(bool),
     Write,
     CancelWrite,
+    /// Undo the newest write (its journal), after its toast is gone.
+    UndoLast,
 }
 
 /// How many "outside the track" photos are listed by name.
@@ -73,6 +75,7 @@ pub fn show(
     p: &Palette,
     s: &Session,
     writing: Option<(usize, usize)>,
+    last: Option<&str>,
 ) -> Option<GeoAction> {
     let mut action = None;
     // Header.
@@ -159,6 +162,23 @@ pub fn show(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
+                    if let Some(last) = last {
+                        section(ui, p, "Last written", |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(last).color(p.text_normal));
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if widgets::secondary(ui, p, None, "Undo it", true)
+                                            .clicked()
+                                        {
+                                            action = Some(GeoAction::UndoLast);
+                                        }
+                                    },
+                                );
+                            });
+                        });
+                    }
                     track_section(ui, p, s, &mut action);
                     if s.track.has_times() {
                         shift_section(ui, p, s, &mut action);

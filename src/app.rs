@@ -245,7 +245,8 @@ pub struct MapCraftApp {
     geo_confirm: bool,
     geo_leave: bool,
     geo_work: Option<geotag::GeoWork>,
-    geo_journal: Option<PathBuf>,
+    /// The newest journal and what it holds, for Undo (from the toast or the panel).
+    geo_last: Option<(PathBuf, String)>,
     thumbs_for: Vec<i64>,
     /// The thumbnail job was stopped to start again with `thumbs_for` first.
     restart_thumbs: bool,
@@ -353,7 +354,7 @@ impl MapCraftApp {
             geo_confirm: false,
             geo_leave: false,
             geo_work: None,
-            geo_journal: None,
+            geo_last: crate::geotag::journal::latest(&config.data_folder),
             thumbs_for: Vec::new(),
             restart_thumbs: false,
         };
@@ -1850,7 +1851,8 @@ impl MapCraftApp {
                 .show_separator_line(false)
                 .frame(Frame::NONE.fill(p.bg_panel))
                 .show(ui, |ui| {
-                    geo_action = crate::ui::geotag_panel::show(ui, &p, s, writing);
+                    let last = self.geo_last.as_ref().map(|l| l.1.as_str());
+                    geo_action = crate::ui::geotag_panel::show(ui, &p, s, writing, last);
                 });
             let r = shown.response.rect;
             ui.painter().vline(
@@ -3466,12 +3468,15 @@ owhere\lightcraft.exe",
             app.thumbs.is_none() && app.map.grouped()
         });
         let s = session(&mut h);
-        assert!(
-            s.photos
-                .iter()
-                .all(|p| p.thumb != crate::library::Thumb::Pending),
-            "the candidates got thumbnails though they have no position"
-        );
+        for p in &s.photos {
+            let far = p.original_name == "EVE_00.jpg";
+            assert_eq!(
+                p.thumb == crate::library::Thumb::Pending,
+                far,
+                "{}: near the track a thumbnail, further than the margin none",
+                p.original_name
+            );
+        }
         // Zoomed in, the photos are apart; untick TAG_03.
         h.state_mut().as_mut().unwrap().map.set_zoom(17.0);
         h.run_steps(3);
@@ -3591,5 +3596,150 @@ owhere\lightcraft.exe",
         h.run_steps(3);
         assert!(h.state().as_ref().unwrap().geotag.is_none());
         h.get_by_label("Tag photos from a GPX track…");
+    }
+
+    /// A click (press and release) at a screen position.
+    fn click_at(h: &mut Harness<'static, Option<MapCraftApp>>, pos: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.event(egui::Event::PointerMoved(pos));
+        h.run_steps(1);
+        h.event(button(true));
+        h.run_steps(1);
+        h.event(button(false));
+        h.run_steps(3);
+    }
+
+    #[test]
+    fn the_zone_buttons_taken_here_the_strip_and_undo_from_the_panel() {
+        let dir = tempfile::tempdir().unwrap();
+        let photos = tagging_library(dir.path());
+        // Two more at one spot: their group never splits, so it opens a strip.
+        for name in ["SAME_A.jpg", "SAME_B.jpg"] {
+            let jpeg = crate::demo::photo_with(0.0, 0.0, "2025:06:12 10:50:00", 0.7, None);
+            std::fs::write(photos.join(name), jpeg).unwrap();
+        }
+        {
+            let mut lib = Library::open(&dir.path().join("library.sqlite")).unwrap();
+            let src = lib.sources().unwrap()[0].id;
+            crate::import::run(&mut lib, src, &Default::default(), 2, |_| {}).unwrap();
+        }
+        let gpx = gpx_file(dir.path(), true);
+        let mut h = harness_with(dir.path(), Some(StartDialog::Geotag(gpx.clone())));
+        h.run_steps(3);
+        utc_plus_2(&mut h);
+        step_until(&mut h, "the candidates' thumbnails", |h| {
+            let app = h.state().as_ref().unwrap();
+            app.thumbs.is_none() && app.map.grouped()
+        });
+        h.get_by_label("8 on the track, 8 ticked");
+
+        // The zone's buttons: an hour later, the photos fall before the track.
+        h.get_by_label("+1 h").click();
+        h.run_steps(3);
+        h.get_by_label("UTC+3:00");
+        h.get_by_label("0 on the track, 0 ticked");
+        h.get_by_label("−1 h").click();
+        h.run_steps(3);
+        h.get_by_label("8 on the track, 8 ticked");
+
+        // "Taken here": TAG_02 (10:21 on its clock) was really taken where the track was at
+        // 08:25 UTC, four minutes later: the correction becomes −4 min.
+        {
+            let app = h.state_mut().as_mut().unwrap();
+            app.map.set_zoom(17.0);
+            app.map.center_at(47.0115, 8.0);
+        }
+        h.run_steps(3);
+        step_until(&mut h, "TAG_02's marker", |h| {
+            h.query_by_label("Photo TAG_02.jpg").is_some()
+        });
+        h.get_by_label("Photo TAG_02.jpg").click();
+        h.run_steps(3);
+        h.get_by_label("Set from a photo’s place…").click();
+        h.run_steps(3);
+        assert!(session(&mut h).picking);
+        let spot = h
+            .state()
+            .as_ref()
+            .unwrap()
+            .map
+            .screen_of(47.0 + 25.0 * 0.0005, 8.0);
+        click_at(&mut h, spot);
+        let s = session(&mut h);
+        assert!(!s.picking);
+        assert_eq!((s.shift.zone, s.shift.correction), (7200, -240));
+        h.get_by_label("UTC+1:56");
+        h.get_by_label("Undo").click();
+        h.run_steps(3);
+        h.get_by_label("UTC+2:00");
+
+        // The strip of the two at one spot, and a tick in it.
+        {
+            let app = h.state_mut().as_mut().unwrap();
+            app.map.center_at(47.025, 8.0);
+        }
+        h.run_steps(3);
+        step_until(&mut h, "the group at one spot", |h| {
+            h.query_by_label("Group of 2 photos").is_some()
+        });
+        h.get_by_label("Group of 2 photos").click();
+        step_until(&mut h, "the strip", |h| {
+            h.query_all_by_label("Untick this photo").count() == 2
+        });
+        h.query_all_by_label("Untick this photo")
+            .next()
+            .unwrap()
+            .click();
+        h.run_steps(3);
+        h.get_by_label("8 on the track, 7 ticked");
+        h.get_by_label("Tick this photo");
+
+        // Write, then undo from the panel of a later session (the toast gone).
+        h.get_by_label("Write positions to 7 photos…").click();
+        h.run_steps(3);
+        h.get_by_label("Write positions").click();
+        step_until(&mut h, "the write", |h| {
+            let app = h.state().as_ref().unwrap();
+            app.geo_work.is_none() && app.geotag.is_none()
+        });
+        assert_eq!(
+            std::fs::read_dir(&photos)
+                .unwrap()
+                .filter(|e| e
+                    .as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "xmp"))
+                .count(),
+            7,
+            "TAG_01's sidecar was there already and is updated: 6 new, 1 updated"
+        );
+        h.state_mut().as_mut().unwrap().toasts.replace(Vec::new());
+        h.state_mut().as_mut().unwrap().start_geotag(vec![gpx]);
+        h.run_steps(3);
+        h.get_by_label("Last written");
+        h.get_by_label("Undo it").click();
+        step_until(&mut h, "the undo", |h| {
+            h.state().as_ref().unwrap().geo_work.is_none()
+                && h.query_by_label("Geotagging undone").is_some()
+        });
+        let left = std::fs::read_dir(&photos)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "xmp")
+            })
+            .count();
+        assert_eq!(left, 1, "only TAG_01's own sidecar, as it was");
+        assert!(h.query_by_label("Last written").is_none());
     }
 }

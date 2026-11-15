@@ -739,6 +739,27 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
 - **(k) Privacy.** Positions are personal data (§3.8): the log has counts only, never the GPX
   path, names or coordinates; the GPX file isn't copied into the data folder. Trials and tests
   use generated tracks and photos in scratch folders, never the user's library (CLAUDE.md).
+- **(m) As built (2026-11-15), where it differs from the above:**
+  - Gaps and segment breaks aren't dashed; each segment is one line (a dashed line marks only
+    a track without times).
+  - The clock correction is the slider only (±30 min); larger errors go through the zone.
+  - "Taken here": select the photo (its marker or in the strip), then *Set from a photo's
+    place…* in the panel; not from the hover card.
+  - Not built: limiting the candidates to one source, the count of candidates whose files are
+    missing (they're left out silently), and the faded current position with a line for
+    re-tagged photos.
+  - The groups are rebuilt on every shift change (fast enough for hundreds of photos), not
+    200 ms after it settles.
+  - A sidecar another app changed between reading and writing isn't merged again: it's left
+    alone and listed as failed.
+  - Thumbnails are made only for the photos on the track or within the margin, and for those
+    the shift brings onto it, not for the whole pool.
+  - Undo: the result toast's *Undo*, and *Undo it* under "Last written" at the top of the
+    panel of a later session (the newest journal); not in Settings. Each written sidecar is
+    noted in the journal (a `.done` file beside it) as it's written, so a run cut short by
+    closing the window can still be undone.
+  - The track's colour is a constant (`TRACK` in `src/ui/map_view.rs`); the token `map-track`
+    isn't in the design system or `tokens.json` yet.
 - **(l) Not in M9.** Placing photos by hand (dragging one onto the map), matching against a
   track without times (for example by walking speed), more track formats (FIT, KML, TCX), and a
   shift that changes during the track (a trip across a time zone: tag it in two passes).
@@ -1441,9 +1462,11 @@ Milestones are rough and get refined as we go.
     times; leaving), and a trial on 2026-11-15: the debug build on scratch data with 22
     generated photos and a copy of the user's Komoot track, buttons pressed through UI
     Automation: a group unticked, 12 sidecars written, then undone.
-  - Checks to make while building: the XMP Exif schema's coordinate grammar in CIPA DC-010
-    (https://exiftool.org/TagNames/XMP.html names it as the spec, checked 2026-11-15);
-    LightCraft reading `name.xmp` for a JPEG.
+  - Still open: the XMP Exif schema's coordinate grammar in CIPA DC-010
+    (https://exiftool.org/TagNames/XMP.html names it as the spec, checked 2026-11-15; the
+    written form is the one in the user's Lightroom sidecars and reads back through our
+    reader); whether LightCraft reads `name.xmp` for a JPEG; the `map-track` token in the
+    design system and the theme.
 
 **Later:** a keyed tile provider and offline PMTiles (§3.5(b); walkers has a `pmtiles`
 feature, and its vector rendering needs the wgpu renderer, which eframe uses by default), the
