@@ -1508,7 +1508,7 @@ Milestones are rough and get refined as we go.
     design system and the theme.
 
 - **M10 — Map styles** (proposed 2026-11-15, the user's question; §3.5(f), canvas
-  `MapCraft — Map style`, approved by the user; built 2026-11-15). The *Map style* control becomes a menu:
+  `MapCraft — Map style`, approved by the user; built 2026-11-15, released as v0.4.0). The *Map style* control becomes a menu:
   - **Standard** (OpenStreetMap, as today) and **Topographic** (OpenTopoMap), no key.
   - **Satellite** and **Hybrid** (satellite with roads and names) from MapTiler, once the user
     pastes their own free MapTiler key in *Settings → Map*. Without a key they're listed,

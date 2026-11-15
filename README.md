@@ -15,6 +15,7 @@ and merges nearby photos into groups that split as you zoom in.
 - [Screenshots](#screenshots)
 - [Download and install](#download-and-install)
 - [Getting started](#getting-started)
+- [Map styles](#map-styles)
 - [Geotagging from a GPX track](#geotagging-from-a-gpx-track)
 - [Updates](#updates)
 - [Privacy](#privacy)
@@ -37,6 +38,8 @@ and merges nearby photos into groups that split as you zoom in.
 - **RAW-friendly.** A RAW file and its JPEG count as one photo. Thumbnails come from the RAW's
   embedded preview, so even large libraries are fast to build.
 - **GPS from EXIF or XMP sidecars**, for JPEG, TIFF, DNG, CR2, RAF and more.
+- **Map styles**: OpenStreetMap, a topographic map with contour lines, and satellite imagery
+  (with your own free MapTiler key).
 - **Geotagging from a GPX track**: photos without a position that were taken while a track
   was recorded appear along it; adjust the time shift until they sit where they were taken,
   untick the ones you don't want, and write the positions to XMP sidecars.
@@ -110,6 +113,27 @@ matter).
 
 Photos without a GPS position are counted in the top bar but can't be shown on the map.
 
+## Map styles
+
+The layers button under the zoom controls (top right of the map) switches the map's style:
+
+| Style | From | Needs |
+| --- | --- | --- |
+| **Standard** | [OpenStreetMap](https://www.openstreetmap.org/) | nothing |
+| **Topographic**: contour lines, hiking paths, terrain | [OpenTopoMap](https://opentopomap.org/) | nothing |
+| **Satellite** | [MapTiler](https://www.maptiler.com/) | your own free MapTiler key |
+| **Hybrid**: satellite with roads and place names | MapTiler | your own free MapTiler key |
+
+**Getting a MapTiler key:** make a free account at
+[cloud.maptiler.com](https://cloud.maptiler.com/) (a Google account works too), copy the
+default API key it shows, and paste it into *Settings → Map*. *Test key* checks it. MapTiler's
+free plan is for personal, non-commercial use and covers 100,000 map tiles a month; tiles you've
+already looked at come from MapCraft's cache and don't count. If the key stops working or the
+month's tiles are used up, MapCraft says so and goes back to Standard.
+
+The key stays on your PC, in `%APPDATA%\MapCraft\settings.toml`; MapCraft never writes it to
+its log. Each style keeps its own tile cache in the data folder.
+
 ## Geotagging from a GPX track
 
 Recorded a walk or a trip with a GPS device or a phone app (Komoot, Garmin, Strava, …)? MapCraft
@@ -161,8 +185,9 @@ are.
 
 Your photos and their locations stay on your computer. MapCraft connects to:
 
-- **OpenStreetMap's tile servers**, to draw the map (the requests show which area you look at,
-  not your photos);
+- **The map's tile servers**: OpenStreetMap's, or OpenTopoMap's or MapTiler's when you pick
+  those styles (the requests show which area you look at, not your photos; MapTiler's also
+  carry your key);
 - **GitHub**, once per start, to ask for the latest release (it can be turned off);
 - **geonames.org**, only when you ask for the place index to be downloaded.
 
@@ -188,8 +213,7 @@ team that makes them.
 - **Videos** aren't imported.
 - **HEIC files** and RAW files without an embedded preview get a placeholder instead of a
   thumbnail.
-- **The map** uses OpenStreetMap's tiles, so it needs an internet connection; tiles you've seen
-  are cached.
+- **The map** needs an internet connection for its tiles; tiles you've seen are cached.
 
 See [`design.md`](design.md) for the concept, the architecture, open questions and the roadmap.
 
@@ -236,7 +260,9 @@ additional terms or conditions.
 ### Third-party material
 
 - Map data © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors (ODbL). Place
-  names from [GeoNames](https://www.geonames.org/) (CC BY 4.0).
+  names from [GeoNames](https://www.geonames.org/) (CC BY 4.0). The Topographic style ©
+  [OpenTopoMap](https://opentopomap.org/) (CC-BY-SA), with SRTM elevation data; Satellite and
+  Hybrid © [MapTiler](https://www.maptiler.com/copyright/).
 - [IBM Plex](https://github.com/IBM/plex) Sans and Mono fonts, © IBM Corp., under the SIL Open
   Font License 1.1 ([`assets/fonts/OFL.txt`](assets/fonts/OFL.txt)).
 - [Lucide](https://lucide.dev) icons, © Lucide Icons and Contributors, under the ISC licence
