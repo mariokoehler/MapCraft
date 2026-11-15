@@ -1431,7 +1431,7 @@ Milestones are rough and get refined as we go.
     removing it, and deleting map tiles under the running map (harmless: it keeps what it
     has in memory).
 - **M9 — Geotagging from GPX tracks** (proposed 2026-11-15 by the user; §2.9, canvas
-  `MapCraft — Geotagging`; built 2026-11-15, awaiting the user's try). The first feature that writes next to the photos, so §1.1 changes:
+  `MapCraft — Geotagging`; built 2026-11-15 and released as v0.3.0, awaiting the user's try). The first feature that writes next to the photos, so §1.1 changes:
   MapCraft may write GPS into XMP sidecars when the user confirms it, never the originals.
   - **Steps:**
     1. The GPX reader with unit tests on generated tracks (segments, no times, offsets,

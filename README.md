@@ -15,6 +15,7 @@ and merges nearby photos into groups that split as you zoom in.
 - [Screenshots](#screenshots)
 - [Download and install](#download-and-install)
 - [Getting started](#getting-started)
+- [Geotagging from a GPX track](#geotagging-from-a-gpx-track)
 - [Updates](#updates)
 - [Privacy](#privacy)
 - [Companion apps](#companion-apps)
@@ -27,13 +28,18 @@ and merges nearby photos into groups that split as you zoom in.
 
 - **Your photos stay where they are.** MapCraft only records their paths, on local drives or
   network shares (SMB), and keeps a small thumbnail of each in its own data folder. It never
-  copies, moves, renames or writes to your photos, and never adds sidecar files next to them.
+  copies, moves, renames or writes to your photos. The one exception is geotagging, and only
+  when you confirm it: it writes GPS positions into XMP sidecar files next to the photos,
+  never into the photos themselves, and can undo that.
 - **Thumbnails on the map.** Photos close to each other merge into a group with a count; zoom
   in and the groups split. Click a group to zoom to it, or to see its photos in a strip when
   they were all taken at the same spot.
 - **RAW-friendly.** A RAW file and its JPEG count as one photo. Thumbnails come from the RAW's
   embedded preview, so even large libraries are fast to build.
 - **GPS from EXIF or XMP sidecars**, for JPEG, TIFF, DNG, CR2, RAF and more.
+- **Geotagging from a GPX track**: photos without a position that were taken while a track
+  was recorded appear along it; adjust the time shift until they sit where they were taken,
+  untick the ones you don't want, and write the positions to XMP sidecars.
 - **Search** for places (an offline index of towns and cities from GeoNames, downloaded once on
   request) or for photos by file name, folder, date or camera.
 - **Filters** by date (with a histogram), source folder, camera and file type (RAW, DNG, TIFF,
@@ -104,6 +110,40 @@ matter).
 
 Photos without a GPS position are counted in the top bar but can't be shown on the map.
 
+## Geotagging from a GPX track
+
+Recorded a walk or a trip with a GPS device or a phone app (Komoot, Garmin, Strava, …)? MapCraft
+can place the photos you took without GPS along that track, by their capture time.
+
+1. Click **Tag photos from a GPX track…** (the route icon, top right) and pick one or more
+   `.gpx` files. Several files, for example one per day, become one timeline.
+2. The track appears on the map with the photos taken during it: those without a position,
+   taken within 3 hours of the track (the margin can be changed in the panel).
+3. **Set the time shift.** GPX times are in UTC; camera clocks usually show local time and
+   drift a little. Pick the photos' time zone and fine-tune the camera clock correction; the
+   photos slide along the track as you do. If you know where a photo was taken, select it,
+   click **Set from a photo's place…**, then click that spot on the track.
+4. **Untick** photos or groups that shouldn't get a position (a tick on each marker, and on
+   each photo in a group's strip).
+5. Click **Write positions…** and confirm. MapCraft writes the position into each photo's XMP
+   sidecar (`IMG_1234.xmp`): an existing sidecar keeps everything else in it, and the photo
+   files themselves are never changed.
+
+**Undo** is in the result's message, and under *Last written* the next time you open
+geotagging; it restores the sidecars as they were (a sidecar another program changed since is
+left alone).
+
+Good to know:
+
+- **The track needs times.** Routes planned on a website usually have none; tracks recorded
+  by a device or app do. MapCraft says so when a file has no times.
+- **Pauses:** where recording stopped and you stayed put (lunch, a viewpoint), photos taken
+  meanwhile get that spot.
+- **Lightroom Classic** shows the new positions after *Metadata → Read Metadata from Files*,
+  and only for camera RAW files: for JPEG, TIFF and DNG it reads the file's own metadata, not
+  the sidecar. **LightCraft** may overwrite the sidecars if it writes its own.
+- Try it on a copy of a folder first if you like: the photos' folders must be writable.
+
 ## Updates
 
 MapCraft checks GitHub for a newer release when it starts. If there is one, it says so; click
@@ -144,7 +184,7 @@ team that makes them.
 ## Limitations
 
 - **Windows only.**
-- **Photos without GPS** aren't placed on the map yet; there's no manual placement.
+- **Photos without GPS** can be placed from a GPX track, but not by hand yet.
 - **Videos** aren't imported.
 - **HEIC files** and RAW files without an embedded preview get a placeholder instead of a
   thumbnail.
