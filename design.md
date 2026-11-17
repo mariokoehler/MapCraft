@@ -614,7 +614,8 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
 `MapCraft — Geotagging`. Points marked **(unconfirmed)** are defaults proposed here.
 
 - **(a) Starting it.** *Tag photos from a GPX track…* (a button in the top bar, beside Add
-  folder) opens a file picker for one or more `.gpx` files. Several files are one timeline, for
+  folder) opens a file picker for one or more `.gpx` files or NMEA logs (`.log`, `.nmea`;
+  *All files* too, since the content decides, (b)). Several files are one timeline, for
   example a hike recorded one file per day.
   - Not while an import runs (it changes the photos being matched), as in M8.
   - The map switches to **tagging mode**: the library's photos with a position are dimmed
@@ -640,6 +641,24 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
     20 m of each other: Komoot keeps one segment across a pause.
   - Distance (along the track), duration, the first and last time, and the segments are shown
     in the panel.
+  - **NMEA 0183 logs** (added 2026-11-17, the user's old logger files): what GPS loggers write
+    as text, one `$…*hh` sentence per line. The content decides the reader, not the extension:
+    a file whose first non-blank character is `<` is GPX, anything else is tried as NMEA
+    (`geotag::read_track`). Field layout from https://gpsd.gitlab.io/gpsd/NMEA.html
+    (verified 2026-11-17).
+    - `RMC` gives the points: UTC time, status (only `A`, valid), position, date `ddmmyy`.
+      `GGA` adds the altitude to the `RMC` of the same time of day, written before or after it.
+      Any talker (`GP`, `GN`, `GL`, …); other sentences and lines (Sony's `@Sonygps…` header)
+      are skipped; a wrong checksum skips the line, a missing one doesn't.
+    - Two-digit years: 80–99 are 19xx, 00–79 are 20xx **(unconfirmed)**.
+    - A log is one segment; its gaps become pauses or breaks like a GPX's. A log with only
+      `GGA` has no dates: drawn, matched with nothing, like a route **(unconfirmed)**.
+    - The track's name is the file name without its extension.
+    - **The user's logs** (checked 2026-11-17, aggregates only): 30 files of a Sony logger
+      (`@Sonygps/ver1.0/wgs-84`, `WG<yyyyMMddHHmmss>.log`) from 2008–2010; only `GGA`, `GSA`,
+      `GSV`, `RMC`, `VTG`; every checksum valid, every fix valid; a fix every 15 s, 135 gaps
+      over a minute; 14,333 points in all, none dropped. That the times are UTC follows from
+      NMEA; the user's first try with photos of a known place confirms it.
 - **(c) The track on the map.** A polyline, 3.5 px in a new token `map-track` (a blue,
   `#1f6fd0`, proposed: the accent orange clashes with OSM's roads and the selection) with a
   white halo; start (green) and end (red) dots, and pause marks (d). A break between `trkseg`s, or a gap longer than the max gap (d), is dashed.
@@ -1300,7 +1319,9 @@ Unconfirmed defaults awaiting review:
   past a segment's ends; a 10 min max gap; a longer gap with ends within 50 m is a pause; the shift's default from the photos' offsets, else
   this PC's zone; own offsets plus only the fine correction; candidates within a 3 h margin of the
   track at the current shift (1, 3, 6 or 12 h in the panel); filters off in tagging mode; ticks on by default; regrouping 200 ms after the shift
-  settles; a new sidecar named `name.xmp`; the undo journal in the data folder.
+  settles; a new sidecar named `name.xmp`; the undo journal in the data folder. NMEA logs
+  (§2.9(b), 2026-11-17): two-digit years 80–99 are 19xx; a log with only `GGA` is a track
+  without times.
 - M10 (proposed): the four styles, the key in Settings, a cache per style, the fallback to
   Standard on a refused key, the choice remembered.
 - §3.2: the planned crates.
@@ -1501,6 +1522,11 @@ Milestones are rough and get refined as we go.
     times; leaving), and a trial on 2026-11-15: the debug build on scratch data with 22
     generated photos and a copy of the user's Komoot track, buttons pressed through UI
     Automation: a group unticked, 12 sidecars written, then undone.
+  - **NMEA logs** (2026-11-17, §2.9(b)): `src/geotag/nmea.rs` and `geotag::read_track`, which
+    the app and `gpx_probe` use. The labels say "GPS track" and "track file" instead of "GPX".
+    Checked by unit tests on generated sentences (checksums, both GGA orders, `GN`, a warning
+    fix, south and west, midnight, GGA only, telling the formats apart) and by `gpx_probe` on
+    the user's 30 logs (read-only, aggregates only).
   - Still open: the XMP Exif schema's coordinate grammar in CIPA DC-010
     (https://exiftool.org/TagNames/XMP.html names it as the spec, checked 2026-11-15; the
     written form is the one in the user's Lightroom sidecars and reads back through our

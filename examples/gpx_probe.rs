@@ -1,22 +1,22 @@
-//! Reads GPX files as tagging does and prints aggregates only (points, times, length, pauses):
+//! Reads track files (GPX or NMEA logs) as tagging does and prints aggregates only (points, times, length, pauses):
 //! never names or coordinates. `cargo run --release --example gpx_probe -- <file.gpx>…`
 
-use mapcraft::geotag::{DEFAULT_MAX_GAP, Track, gpx, time};
+use mapcraft::geotag::{DEFAULT_MAX_GAP, Track, read_track, time};
 
 fn main() {
     let mut files = Vec::new();
     for path in std::env::args().skip(1) {
-        let text = match std::fs::read_to_string(&path) {
+        let text = match std::fs::read(&path) {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("can't read a file: {e}");
                 std::process::exit(1);
             }
         };
-        match gpx::parse(&text) {
+        match read_track(&text) {
             Ok(g) => files.push((g, String::new())),
             Err(e) => {
-                eprintln!("not readable as GPX: {e}");
+                eprintln!("not readable as a track: {e}");
                 std::process::exit(1);
             }
         }

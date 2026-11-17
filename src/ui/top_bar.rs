@@ -36,7 +36,7 @@ pub enum TopBarAction {
     /// The Filters button opened or closed its panel.
     Filters,
     Settings,
-    /// Tag photos from a GPX track (design.md §2.9).
+    /// Tag photos from a GPS track (design.md §2.9).
     Geotag,
 }
 
@@ -104,9 +104,9 @@ pub fn show(
             }
             if counts.photos > 0 {
                 let hint = match (tagging.on, tagging.blocked) {
-                    (true, _) => "Tag photos from a GPX track…: tagging is open",
+                    (true, _) => "Tag photos from a GPS track…: tagging is open",
                     (false, Some(why)) => why,
-                    (false, None) => "Tag photos from a GPX track…",
+                    (false, None) => "Tag photos from a GPS track…",
                 };
                 let ok = !tagging.on && tagging.blocked.is_none();
                 if widgets::ghost(ui, p, Icon::Route, hint, ok).clicked() {

@@ -77,7 +77,7 @@ photos (XMP sidecars only, after a confirmation, with undo): trials only on scra
   (`src/companions.rs`), the Settings dialog (`src/ui/settings_dialog.rs`), the panel's buttons.
 - The data folder: usage, change with move, free up space, remove old data
   (`src/datafolder.rs`, `src/ui/data_dialogs.rs`, the Data folder section of Settings).
-- Geotagging from GPX tracks: `src/geotag/` (reader, matching, sidecar writer, journal,
+- Geotagging from GPX tracks and NMEA logs: `src/geotag/` (readers, matching, sidecar writer, journal,
   session), `src/ui/geotag_panel.rs`, tagging mode in `src/ui/map_view.rs`, `src/app/geotag.rs`.
 - Map styles (M10): `src/provider.rs` (`Style`, MapTiler key check), the style menu in
   `src/ui/map_view.rs`, *Settings → Map*.
@@ -210,11 +210,11 @@ committed):
   - `--settings <file>` uses another settings file (kept across a restart). Trials of the
     data folder use a scratch one whose `data_folder` is scratch: Change… rewrites the
     settings file and the old data's removal deletes MapCraft's files from the old folder.
-  - `--open geotag=<file.gpx>` starts tagging mode with that track. Try it only with
+  - `--open geotag=<file.gpx>` starts tagging mode with that track (an NMEA log works too). Try it only with
     `--data` scratch and photos made by `cargo run --example geotag_demo -- <folder> "<first
     YYYY:MM:DD HH:MM:SS>" <minutes apart> <n>` (imported with `--import`): Write positions
-    writes sidecars into the photo folders. `gpx_probe -- <file.gpx>` prints a track's
-    aggregates.
+    writes sidecars into the photo folders. `gpx_probe -- <file.gpx|file.log>` prints a
+    track's aggregates.
   - `--open data` opens Settings on the Data folder section; `--open change-data=<folder>`
     opens the Change dialog as if that folder had been picked (no system picker needed).
   - `--update-from <base url>` checks a pretend GitHub (`<base>/latest`, `<base>/dl/…`) instead

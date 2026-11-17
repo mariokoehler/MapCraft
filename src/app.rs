@@ -96,7 +96,7 @@ pub enum StartDialog {
     DataFolder,
     /// The Change data folder dialog, as if this folder had been picked.
     ChangeData(PathBuf),
-    /// Tagging mode with this GPX file (design.md §2.9).
+    /// Tagging mode with this track file (design.md §2.9).
     Geotag(PathBuf),
 }
 
@@ -3582,7 +3582,7 @@ owhere\lightcraft.exe",
         let gpx = gpx_file(dir.path(), true);
         let mut h = harness_with(dir.path(), Some(StartDialog::Geotag(gpx)));
         h.run_steps(3);
-        h.get_by_label("Tag from a GPX track");
+        h.get_by_label("Tag from a GPS track");
         h.get_by_label("Test walk");
         utc_plus_2(&mut h);
         h.get_by_label("UTC+2:00");
@@ -3721,7 +3721,7 @@ owhere\lightcraft.exe",
         h.get_by_label("Leave").click();
         h.run_steps(3);
         assert!(h.state().as_ref().unwrap().geotag.is_none());
-        h.get_by_label("Tag photos from a GPX track…");
+        h.get_by_label("Tag photos from a GPS track…");
     }
 
     /// A click (press and release) at a screen position.

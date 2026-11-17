@@ -1,9 +1,11 @@
-//! Geotagging from GPX tracks (design.md §2.9, M9): read tracks, match photos by capture time,
+//! Geotagging from GPS tracks (design.md §2.9, M9): read tracks, match photos by capture time,
 //! and write the positions to XMP sidecars. This module is the part without UI: the track and
-//! its matching (here), GPX (`gpx`), times (`time`) and the sidecars (`sidecar`).
+//! its matching (here), GPX (`gpx`), NMEA logs (`nmea`), times (`time`) and the sidecars
+//! (`sidecar`).
 
 pub mod gpx;
 pub mod journal;
+pub mod nmea;
 pub mod session;
 pub mod sidecar;
 pub mod time;
@@ -11,6 +13,18 @@ pub mod time;
 use std::collections::HashSet;
 
 pub use gpx::Point;
+
+/// Reads a track file, GPX or an NMEA log, told apart by its content (not its extension):
+/// XML starts with `<`. An error never quotes the file's text (it holds positions).
+pub fn read_track(bytes: &[u8]) -> Result<gpx::Gpx, String> {
+    let body = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    if body.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'<') {
+        let text = std::str::from_utf8(bytes).map_err(|_| "not UTF-8 text".to_owned())?;
+        gpx::parse(text)
+    } else {
+        nmea::parse(&String::from_utf8_lossy(body))
+    }
+}
 
 /// A photo is placed at a segment's end if its time is at most this far before or after it.
 pub const END_SLACK: f64 = 120.0;
@@ -42,7 +56,7 @@ pub struct Pause {
     pub to: f64,
 }
 
-/// One or more GPX files as one timeline (design.md §2.9(a), (b)).
+/// One or more track files as one timeline (design.md §2.9(a), (b)).
 #[derive(Debug, Clone, Default)]
 pub struct Track {
     /// The first file's name (its `<name>`, else the file name), and how many files.
@@ -59,7 +73,7 @@ pub struct Track {
 }
 
 impl Track {
-    /// `files`: each GPX with the name to use when it has none of its own.
+    /// `files`: each track file with the name to use when it has none of its own.
     pub fn new(files: Vec<(gpx::Gpx, String)>) -> Self {
         let mut t = Track {
             files: files.len(),

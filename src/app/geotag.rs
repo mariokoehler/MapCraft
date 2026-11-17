@@ -1,4 +1,4 @@
-//! Tagging mode in the app (design.md §2.9): starting a session from GPX files, keeping the map
+//! Tagging mode in the app (design.md §2.9): starting a session from track files, keeping the map
 //! in step with it, the confirmation, writing on a background thread, and Undo.
 
 use std::collections::HashMap;
@@ -12,7 +12,7 @@ use tracing::{error, info};
 use super::MapCraftApp;
 use crate::geotag::journal::{self, Prior, Report, Task, Undone};
 use crate::geotag::session::Session;
-use crate::geotag::{Track, gpx, time};
+use crate::geotag::{self, Track, gpx, time};
 use crate::import::reachable_root;
 use crate::ui::geotag_panel::GeoAction;
 use crate::ui::map_view::TagLayer;
@@ -36,14 +36,15 @@ pub struct GeoWork {
 }
 
 impl MapCraftApp {
-    /// The GPX file picker (none in tests: they start sessions directly).
+    /// The track file picker: GPX and NMEA logs (none in tests: they start sessions directly).
     pub(super) fn pick_gpx(&self) -> Option<Vec<PathBuf>> {
         if !self.launch {
             return None;
         }
         rfd::FileDialog::new()
-            .set_title("Tag photos from a GPX track")
-            .add_filter("GPX tracks", &["gpx", "GPX"])
+            .set_title("Tag photos from a GPS track")
+            .add_filter("GPS tracks (GPX, NMEA)", &["gpx", "nmea", "log"])
+            .add_filter("All files", &["*"])
             .pick_files()
     }
 
@@ -60,7 +61,7 @@ impl MapCraftApp {
         }
     }
 
-    /// Reads GPX files into a track; a file that can't be read says so in a toast.
+    /// Reads track files (GPX or NMEA) into a track; a file that can't be read says so in a toast.
     fn read_tracks(&mut self, files: &[PathBuf]) -> Vec<(gpx::Gpx, String)> {
         let mut out = Vec::new();
         for f in files {
@@ -68,17 +69,20 @@ impl MapCraftApp {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            let stem = f
+                .file_stem()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
             let read = std::fs::read(f)
                 .map_err(|e| e.to_string())
-                .and_then(|b| String::from_utf8(b).map_err(|_| "not UTF-8 text".to_owned()))
-                .and_then(|t| gpx::parse(&t));
+                .and_then(|b| geotag::read_track(&b));
             match read {
-                Ok(g) => out.push((g, name.trim_end_matches(".gpx").to_owned())),
+                Ok(g) => out.push((g, stem)),
                 Err(e) => {
-                    error!("can't read a GPX file: {e}");
+                    error!("can't read a track file: {e}");
                     self.toasts.push(toasts::note(
                         Tone::Error,
-                        "Can’t read the GPX file",
+                        "Can’t read the track file",
                         &format!("{name}: {e}"),
                         None,
                     ));
@@ -88,7 +92,7 @@ impl MapCraftApp {
         out
     }
 
-    /// Starts tagging mode with these GPX files, or (with a session open) adds them to its
+    /// Starts tagging mode with these track files, or (with a session open) adds them to its
     /// track. Ticks and the shift stay when files are added.
     pub fn start_geotag(&mut self, files: Vec<PathBuf>) {
         if self.geotag_blocked().is_some() && self.geotag.is_none() {

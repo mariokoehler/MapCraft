@@ -95,7 +95,7 @@ pub fn show(
     ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.label(
-                RichText::new("Tag from a GPX track")
+                RichText::new("Tag from a GPS track")
                     .family(egui::FontFamily::Name(SEMIBOLD.into()))
                     .size(15.0)
                     .color(p.text_strong),
@@ -196,7 +196,7 @@ fn track_section(ui: &mut Ui, p: &Palette, s: &Session, action: &mut Option<GeoA
         let t = &s.track;
         ui.add(egui::Label::new(RichText::new(&t.name).color(p.text_strong)).truncate());
         if t.files > 1 {
-            weak(ui, p, &format!("{} GPX files as one timeline", t.files));
+            weak(ui, p, &format!("{} track files as one timeline", t.files));
         }
         let shift = s.shift.total() as f64;
         match t.span() {
@@ -263,7 +263,8 @@ fn track_section(ui: &mut Ui, p: &Palette, s: &Session, action: &mut Option<GeoA
             );
         }
         ui.add_space(p.space_1);
-        if widgets::secondary(ui, p, Some(Icon::Plus), "Add another GPX file…", true).clicked() {
+        if widgets::secondary(ui, p, Some(Icon::Plus), "Add another track file…", true).clicked()
+        {
             *action = Some(GeoAction::AddFile);
         }
     });

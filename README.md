@@ -16,7 +16,7 @@ and merges nearby photos into groups that split as you zoom in.
 - [Download and install](#download-and-install)
 - [Getting started](#getting-started)
 - [Map styles](#map-styles)
-- [Geotagging from a GPX track](#geotagging-from-a-gpx-track)
+- [Geotagging from a GPS track](#geotagging-from-a-gps-track)
 - [Updates](#updates)
 - [Privacy](#privacy)
 - [Companion apps](#companion-apps)
@@ -40,7 +40,7 @@ and merges nearby photos into groups that split as you zoom in.
 - **GPS from EXIF or XMP sidecars**, for JPEG, TIFF, DNG, CR2, RAF and more.
 - **Map styles**: OpenStreetMap, a topographic map with contour lines, and satellite imagery
   (with your own free MapTiler key).
-- **Geotagging from a GPX track**: photos without a position that were taken while a track
+- **Geotagging from a GPS track** (GPX or NMEA log): photos without a position that were taken while a track
   was recorded appear along it; adjust the time shift until they sit where they were taken,
   untick the ones you don't want, and write the positions to XMP sidecars.
 - **Search** for places (an offline index of towns and cities from GeoNames, downloaded once on
@@ -135,16 +135,17 @@ month's tiles are used up, MapCraft says so and goes back to Standard.
 The key stays on your PC, in `%APPDATA%\MapCraft\settings.toml`; MapCraft never writes it to
 its log. Each style keeps its own tile cache in the data folder.
 
-## Geotagging from a GPX track
+## Geotagging from a GPS track
 
 Recorded a walk or a trip with a GPS device or a phone app (Komoot, Garmin, Strava, …)? MapCraft
 can place the photos you took without GPS along that track, by their capture time.
 
-1. Click **Tag photos from a GPX track…** (the route icon, top right) and pick one or more
-   `.gpx` files. Several files, for example one per day, become one timeline.
+1. Click **Tag photos from a GPS track…** (the route icon, top right) and pick one or more
+   `.gpx` files or NMEA logs (the text files older GPS loggers write, often `.log` or
+   `.nmea`). Several files, for example one per day, become one timeline.
 2. The track appears on the map with the photos taken during it: those without a position,
    taken within 3 hours of the track (the margin can be changed in the panel).
-3. **Set the time shift.** GPX times are in UTC; camera clocks usually show local time and
+3. **Set the time shift.** Track times are in UTC; camera clocks usually show local time and
    drift a little. Pick the photos' time zone and fine-tune the camera clock correction; the
    photos slide along the track as you do. If you know where a photo was taken, select it,
    click **Set from a photo's place…**, then click that spot on the track.
@@ -210,7 +211,7 @@ team that makes them.
 ## Limitations
 
 - **Windows only.**
-- **Photos without GPS** can be placed from a GPX track, but not by hand yet.
+- **Photos without GPS** can be placed from a GPS track, but not by hand yet.
 - **Videos** aren't imported.
 - **HEIC files** and RAW files without an embedded preview get a placeholder instead of a
   thumbnail.
