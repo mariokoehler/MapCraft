@@ -21,6 +21,9 @@ pub struct Point {
 pub struct Gpx {
     pub name: Option<String>,
     pub segments: Vec<Vec<Point>>,
+    /// Read from an NMEA log: old loggers' altitude is often poor, so it isn't written by
+    /// default (design.md §2.9(b)).
+    pub nmea: bool,
 }
 
 impl Gpx {

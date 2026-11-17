@@ -70,6 +70,8 @@ pub struct Track {
     pub dropped: usize,
     pub points: usize,
     pub length_m: f64,
+    /// Some file is an NMEA log (`Gpx::nmea`).
+    pub nmea: bool,
 }
 
 impl Track {
@@ -83,6 +85,7 @@ impl Track {
             if t.name.is_empty() {
                 t.name = g.name.clone().unwrap_or(fallback);
             }
+            t.nmea |= g.nmea;
             for seg in g.segments {
                 t.points += seg.len();
                 t.length_m += seg
@@ -410,6 +413,7 @@ mod tests {
             gpx::Gpx {
                 name: None,
                 segments: vec![pts],
+                nmea: false,
             },
             "walk.gpx".into(),
         )])
@@ -577,10 +581,12 @@ mod tests {
         let late = gpx::Gpx {
             name: Some("Day 2".into()),
             segments: vec![seg(2.0, Some(2000.0))],
+            nmea: false,
         };
         let early = gpx::Gpx {
             name: None,
             segments: vec![seg(1.0, Some(1000.0))],
+            nmea: false,
         };
         let tr = Track::new(vec![(late, "b.gpx".into()), (early, "a.gpx".into())]);
         assert_eq!((tr.name.as_str(), tr.files), ("Day 2", 2));
@@ -588,6 +594,7 @@ mod tests {
         let route = gpx::Gpx {
             name: None,
             segments: vec![seg(1.0, None), seg(2.0, None)],
+            nmea: false,
         };
         let r = Track::new(vec![(route, "route.gpx".into())]);
         assert!(!r.has_times());

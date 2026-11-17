@@ -418,6 +418,13 @@ fn matching_section(ui: &mut Ui, p: &Palette, s: &Session, action: &mut Option<G
         if ui.checkbox(&mut alt, "Write the altitude too").changed() {
             *action = Some(GeoAction::WriteAlt(alt));
         }
+        if s.track.nmea {
+            weak(
+                ui,
+                p,
+                "Off by default for NMEA logs: old GPS loggers’ altitude is often poor.",
+            );
+        }
     });
 }
 

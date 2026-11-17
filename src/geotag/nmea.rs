@@ -176,6 +176,7 @@ pub fn parse(text: &str) -> Result<Gpx, String> {
     Ok(Gpx {
         name: None,
         segments: vec![points],
+        nmea: true,
     })
 }
 #[cfg(test)]
@@ -217,6 +218,7 @@ mod tests {
         log += &line("GPGGA,000010,3352.1300,S,15112.5600,W,0,00,,,M,,M,,");
         let g = parse(&log).unwrap();
         assert_eq!(g.name, None);
+        assert!(g.nmea, "altitude off by default");
         assert_eq!(g.segments.len(), 1);
         let p = &g.segments[0];
         assert_eq!(p.len(), 2, "the V fix and the bad checksum are skipped");

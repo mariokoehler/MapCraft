@@ -50,6 +50,7 @@ fn naive(t: f64) -> String {
 
 impl Session {
     pub fn new(files: Vec<PathBuf>, track: Track, photos: Vec<GeoPhoto>, undated: i64) -> Self {
+        let write_alt = !track.nmea;
         let mut s = Session {
             files,
             track,
@@ -63,7 +64,7 @@ impl Session {
             max_gap_min: (DEFAULT_MAX_GAP / 60.0) as u32,
             margin_h: DEFAULT_MARGIN,
             retag: false,
-            write_alt: true,
+            write_alt,
             off: HashSet::new(),
             matched: Matched::default(),
             selected: None,
@@ -302,9 +303,21 @@ mod tests {
             gpx::Gpx {
                 name: None,
                 segments: vec![pts],
+                nmea: false,
             },
             "t.gpx".into(),
         )])
+    }
+
+    #[test]
+    fn an_nmea_log_writes_no_altitude_by_default() {
+        let photos = vec![photo(1, "2025-06-12T10:02:00", Some("+02:00"))];
+        let mut t = track();
+        assert!(Session::new(Vec::new(), t.clone(), photos.clone(), 0).write_alt);
+        t.nmea = true;
+        let s = Session::new(Vec::new(), t, photos, 0);
+        assert!(!s.write_alt);
+        assert_eq!(s.writes()[0].1.alt, None);
     }
 
     #[test]

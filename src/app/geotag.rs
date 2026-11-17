@@ -142,7 +142,8 @@ impl MapCraftApp {
             session.max_gap_min = old.max_gap_min;
             session.margin_h = old.margin_h;
             session.retag = old.retag;
-            session.write_alt = old.write_alt;
+            // An NMEA log added to a GPX session turns altitude off, as a new session would.
+            session.write_alt = old.write_alt && (old.track.nmea || !session.track.nmea);
             session.off = old.off;
             session.changed = true;
             session.rematch();

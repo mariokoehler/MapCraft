@@ -660,8 +660,9 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
       (`@Sonygps/ver1.0/wgs-84`, `WG<yyyyMMddHHmmss>.log`) from 2008–2010; only `GGA`, `GSA`,
       `GSV`, `RMC`, `VTG`; every checksum valid, every fix valid; a fix every 15 s, 135 gaps
       over a minute; 14,333 points in all, none dropped. Their altitudes are poor (−241 to
-      437 m, 9 % below zero), and altitude is written by default: switch it off in the panel
-      for these logs, or make that the default for NMEA (open, §4). That the times are UTC follows from
+      437 m, 9 % below zero). So *Write the altitude too* starts off for a track with an NMEA
+      log (user, 2026-11-17), with a line in the panel saying why; adding an NMEA log to a
+      GPX session turns it off too. That the times are UTC follows from
       NMEA; the user's first try with photos of a known place confirms it.
 - **(c) The track on the map.** A polyline, 3.5 px in a new token `map-track` (a blue,
   `#1f6fd0`, proposed: the accent orange clashes with OSM's roads and the selection) with a
@@ -1325,8 +1326,7 @@ Unconfirmed defaults awaiting review:
   track at the current shift (1, 3, 6 or 12 h in the panel); filters off in tagging mode; ticks on by default; regrouping 200 ms after the shift
   settles; a new sidecar named `name.xmp`; the undo journal in the data folder. NMEA logs
   (§2.9(b), 2026-11-17): two-digit years 80–99 are 19xx; a log with only `GGA` is a track
-  without times; altitude written as for GPX (open: off by default for NMEA, since old
-  loggers' altitude is poor?).
+  without times.
 - M10 (proposed): the four styles, the key in Settings, a cache per style, the fallback to
   Standard on a refused key, the choice remembered.
 - §3.2: the planned crates.
@@ -1527,7 +1527,7 @@ Milestones are rough and get refined as we go.
     times; leaving), and a trial on 2026-11-15: the debug build on scratch data with 22
     generated photos and a copy of the user's Komoot track, buttons pressed through UI
     Automation: a group unticked, 12 sidecars written, then undone.
-  - **NMEA logs** (2026-11-17, §2.9(b)): `src/geotag/nmea.rs` and `geotag::read_track`, which
+  - **NMEA logs** (2026-11-17, §2.9(b), released as v0.5.0): `src/geotag/nmea.rs` and `geotag::read_track`, which
     the app and `gpx_probe` use. The labels say "GPS track" and "track file" instead of "GPX".
     Checked by unit tests on generated sentences (checksums, both GGA orders, `GN`, a warning
     fix, south and west, midnight, GGA only, telling the formats apart) and by `gpx_probe` on
