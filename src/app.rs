@@ -2933,13 +2933,13 @@ mod tests {
     fn the_empty_map_offers_to_add_a_folder() {
         let dir = tempfile::tempdir().unwrap();
         let mut h = harness(dir.path());
-        h.run();
+        h.run_steps(3); // not run(): the marker loader repaints when a thumbnail arrives
         h.get_by_label("No photos on the map yet");
         // Two "Add folder…" buttons: the top bar's and the card's; either opens the dialog.
         let buttons: Vec<_> = h.get_all_by_label("Add folder…").collect();
         assert_eq!(buttons.len(), 2);
         buttons[1].click();
-        h.run();
+        h.run_steps(3); // not run(): the marker loader repaints when a thumbnail arrives
         h.get_by_label("Add photo folder");
         h.get_by_label("Choose a folder to see what's in it.");
     }
@@ -2968,7 +2968,7 @@ mod tests {
             &h.state().as_ref().unwrap().sources,
             &ctx,
         ));
-        h.run();
+        h.run_steps(3); // not run(): the marker loader repaints when a thumbnail arrives
         assert_eq!(
             h.get_all_by_label("Sources").count(),
             2,
