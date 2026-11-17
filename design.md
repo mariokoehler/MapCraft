@@ -613,7 +613,7 @@ It replaces today's detour through Lightroom (§2.8) or LightCraft (§2.8(i)), a
 feature that writes next to the user's photos (§1.1). The look is on the canvas
 `MapCraft — Geotagging`. Points marked **(unconfirmed)** are defaults proposed here.
 
-- **(a) Starting it.** *Tag photos from a GPX track…* (a button in the top bar, beside Add
+- **(a) Starting it.** *Tag photos from a GPS track…* (a button in the top bar, beside Add
   folder) opens a file picker for one or more `.gpx` files or NMEA logs (`.log`, `.nmea`;
   *All files* too, since the content decides, (b)). Several files are one timeline, for
   example a hike recorded one file per day.
@@ -647,7 +647,9 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
     (`geotag::read_track`). Field layout from https://gpsd.gitlab.io/gpsd/NMEA.html
     (verified 2026-11-17).
     - `RMC` gives the points: UTC time, status (only `A`, valid), position, date `ddmmyy`.
-      `GGA` adds the altitude to the `RMC` of the same time of day, written before or after it.
+      `GGA` adds the altitude to the neighbouring `RMC` of the same time of day, written
+      before or after it. A log with sentences but no valid position is refused with a toast
+      (a logger that never got a fix).
       Any talker (`GP`, `GN`, `GL`, …); other sentences and lines (Sony's `@Sonygps…` header)
       are skipped; a wrong checksum skips the line, a missing one doesn't.
     - Two-digit years: 80–99 are 19xx, 00–79 are 20xx **(unconfirmed)**.
@@ -657,7 +659,9 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
     - **The user's logs** (checked 2026-11-17, aggregates only): 30 files of a Sony logger
       (`@Sonygps/ver1.0/wgs-84`, `WG<yyyyMMddHHmmss>.log`) from 2008–2010; only `GGA`, `GSA`,
       `GSV`, `RMC`, `VTG`; every checksum valid, every fix valid; a fix every 15 s, 135 gaps
-      over a minute; 14,333 points in all, none dropped. That the times are UTC follows from
+      over a minute; 14,333 points in all, none dropped. Their altitudes are poor (−241 to
+      437 m, 9 % below zero), and altitude is written by default: switch it off in the panel
+      for these logs, or make that the default for NMEA (open, §4). That the times are UTC follows from
       NMEA; the user's first try with photos of a known place confirms it.
 - **(c) The track on the map.** A polyline, 3.5 px in a new token `map-track` (a blue,
   `#1f6fd0`, proposed: the accent orange clashes with OSM's roads and the selection) with a
@@ -1321,7 +1325,8 @@ Unconfirmed defaults awaiting review:
   track at the current shift (1, 3, 6 or 12 h in the panel); filters off in tagging mode; ticks on by default; regrouping 200 ms after the shift
   settles; a new sidecar named `name.xmp`; the undo journal in the data folder. NMEA logs
   (§2.9(b), 2026-11-17): two-digit years 80–99 are 19xx; a log with only `GGA` is a track
-  without times.
+  without times; altitude written as for GPX (open: off by default for NMEA, since old
+  loggers' altitude is poor?).
 - M10 (proposed): the four styles, the key in Settings, a cache per style, the fallback to
   Standard on a refused key, the choice remembered.
 - §3.2: the planned crates.

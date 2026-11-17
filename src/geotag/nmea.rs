@@ -6,8 +6,6 @@
 //! altitude for the same time of day. Any talker (`GP`, `GN`, `GL`, …) is read. A log is one
 //! segment: the logger's gaps become pauses or breaks in the matching (`Track`).
 
-use std::collections::HashMap;
-
 use super::gpx::{Gpx, Point};
 use super::time;
 
@@ -100,12 +98,14 @@ fn key(tod: f64) -> i64 {
     (tod * 100.0).round() as i64
 }
 
-/// Reads an NMEA log. Fails only when the text holds no NMEA sentence at all.
+/// Reads an NMEA log. Fails when the text holds no NMEA sentence, or no valid position.
 pub fn parse(text: &str) -> Result<Gpx, String> {
     let mut sentences = 0usize;
-    let mut rmc: Vec<(f64, Point)> = Vec::new(); // (time of day, point with its UTC time)
+    let mut rmc: Vec<(i64, Point)> = Vec::new(); // (time-of-day key, point with its UTC time)
     let mut gga: Vec<Point> = Vec::new(); // in file order, without a time (GGA has no date)
-    let mut ele: HashMap<i64, f64> = HashMap::new();
+    // A GGA's altitude waiting for the RMC of the same fix (loggers write either one first).
+    // Only neighbours pair up, so a log longer than a day can't mix up its days.
+    let mut pending: Option<(i64, f64)> = None;
     for line in text.lines() {
         let Some(f) = sentence(line) else { continue };
         let kind = f[0].get(2..).filter(|_| f[0].len() == 5);
@@ -123,16 +123,16 @@ pub fn parse(text: &str) -> Result<Gpx, String> {
                 ) else {
                     continue;
                 };
+                let k = key(tod);
+                let ele = pending.take().filter(|(pk, _)| *pk == k).map(|(_, a)| a);
                 let t = day as f64 * 86_400.0 + tod;
-                rmc.push((
-                    tod,
-                    Point {
-                        lat,
-                        lon,
-                        ele: None,
-                        t: Some(t),
-                    },
-                ));
+                let p = Point {
+                    lat,
+                    lon,
+                    ele,
+                    t: Some(t),
+                };
+                rmc.push((k, p));
             }
             Some("GGA") => {
                 // 1 time, 2–5 position, 6 quality (0 = no fix), 9 altitude (m)
@@ -143,8 +143,12 @@ pub fn parse(text: &str) -> Result<Gpx, String> {
                     continue;
                 };
                 let alt = f.get(9).and_then(|s| s.parse::<f64>().ok());
-                if let (Some(tod), Some(a)) = (f.get(1).and_then(|s| time_of_day(s)), alt) {
-                    ele.insert(key(tod), a);
+                if let (Some(k), Some(a)) = (f.get(1).and_then(|s| time_of_day(s)).map(key), alt) {
+                    match rmc.last_mut() {
+                        // The RMC of this fix came first.
+                        Some((rk, p)) if *rk == k && p.ele.is_none() => p.ele = Some(a),
+                        _ => pending = Some((k, a)),
+                    }
                 }
                 gga.push(Point {
                     lat,
@@ -163,20 +167,17 @@ pub fn parse(text: &str) -> Result<Gpx, String> {
         // Only GGA: positions without a date can't be matched, but the track is still drawn.
         gga
     } else {
-        rmc.into_iter()
-            .map(|(tod, p)| Point {
-                ele: ele.get(&key(tod)).copied(),
-                ..p
-            })
-            .collect()
+        rmc.into_iter().map(|(_, p)| p).collect()
     };
-    let mut g = Gpx::default();
-    if !points.is_empty() {
-        g.segments.push(points);
+    if points.is_empty() {
+        // A logger writes sentences before it has a fix; with none at all, say so.
+        return Err("an NMEA log without a valid position".to_owned());
     }
-    Ok(g)
+    Ok(Gpx {
+        name: None,
+        segments: vec![points],
+    })
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +231,19 @@ mod tests {
     }
 
     #[test]
+    fn altitudes_pair_with_their_own_day() {
+        // The same time of day on two days, and a GGA whose RMC never came.
+        let log = line("GPGGA,120000,4807.0380,N,01131.0000,E,1,05,1.5,100.0,M,,M,,")
+            + &line("GPRMC,120000,A,4807.0380,N,01131.0000,E,0,0,010109,,,A")
+            + &line("GPGGA,110000,4807.0380,N,01131.0000,E,1,05,1.5,999.0,M,,M,,")
+            + &line("GPRMC,120000,A,4807.0380,N,01131.0000,E,0,0,020109,,,A")
+            + &line("GPGGA,120000,4807.0380,N,01131.0000,E,1,05,1.5,200.0,M,,M,,");
+        let g = parse(&log).unwrap();
+        let e: Vec<_> = g.segments[0].iter().map(|p| p.ele).collect();
+        assert_eq!(e, [Some(100.0), Some(200.0)]);
+    }
+
+    #[test]
     fn only_gga_has_no_times() {
         let log = line("GPGGA,120000,4807.0380,N,01131.0000,E,1,05,1.5,519.5,M,,M,,")
             + &line("GPGGA,120015,4807.0480,N,01131.0100,E,1,05,1.5,520.0,M,,M,,");
@@ -272,7 +286,10 @@ mod tests {
     fn not_nmea() {
         assert!(parse("hello\nworld").is_err());
         assert!(parse("").is_err());
-        let empty = parse(&line("GPRMC,120000,V,,,,,,,010109,,,N")).unwrap();
-        assert_eq!(empty.points(), 0);
+        let err = parse(&line("GPRMC,120000,V,,,,,,,010109,,,N")).unwrap_err();
+        assert!(
+            err.contains("without a valid position"),
+            "a log before the first fix"
+        );
     }
 }
