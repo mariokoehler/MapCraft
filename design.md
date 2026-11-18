@@ -828,6 +828,9 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
     `rdf:Description`. Besides the six we write (i), that covers `GPSMapDatum`, `GPSVersionId`,
     `GPSImgDirection`, `GPSSpeed` and the rest. Everything else stays byte for byte, as in a
     merge. The test: `xmp::read_gps` finds nothing afterwards, and every other byte survives.
+    `read_gps` matches those names in any namespace. So if a position still reads back after
+    stripping (a GPS property under another namespace), the sidecar is left alone and listed as
+    failed.
   - **An emptied sidecar is deleted** if nothing is left but the wrapper (`x:xmpmeta`,
     `rdf:RDF`, `rdf:Description` with only `rdf:about` and namespace declarations)
     **(unconfirmed)**. Otherwise it's kept without the GPS.
@@ -842,6 +845,10 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
       `undo` skips a missing file as "the sidecar is gone".
     - *Undo* is in the result toast. Later, *Last removed · Undo it* at the top of the removal
       panel undoes the newest removal journal, as *Last written* does for tagging (m).
+    - `journal::latest` takes the kind, so the tagging panel never offers a removal, nor the
+      other way round.
+    - Open: the photos whose position was removed have left the map, so the later Undo is
+      reached only through another photo's *Remove position…* (§4).
   - **The library afterwards:** each changed photo is re-read on the writer thread as a rescan
     would (the sidecar, then the original's EXIF: one more open per photo on the NAS). So it
     gets the file's own position or none, with the matching `gps_source`. The photo's file
@@ -1346,7 +1353,8 @@ Not blocking v1:
   - A MapCraft-only "hide this position" for photos whose position is inside the file.
   - Box-selecting photos on the map, for tagging and removal alike.
   - A history of every geotagging journal in Settings, each with Undo, instead of only the
-    newest.
+    newest. It would also give the later Undo of a removal a place that doesn't need a photo
+    on the map: today it's reached only through another photo's *Remove position…*.
 
 Product:
 - **Where the photos live:** what NAS and share layout, mapped drive letters or UNC (§2.1(a),
