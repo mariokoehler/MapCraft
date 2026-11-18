@@ -877,6 +877,11 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
     - Opening it zooms to the scope's photos, with room above the top ones for their markers.
     - The panel's button is the design system's danger button (`widgets::danger`); the icon is
       Lucide's `map-pin-off`.
+    - The result toast has *Undo* but not the canvas's *Show the N* (the photos now placed by
+      their own file).
+    - A sidecar with no GPS to cut is never deleted, even if it's only the wrapper.
+    - The library is updated in one transaction (`Library::set_gps_all`), for tagging and its
+      Undo too. No write starts while an undo runs.
     - Dev flag `--open remove` opens it from the first photo with a sidecar position. Probe
       `examples/strip_probe.rs` tells, read-only, what stripping a folder's sidecars would do.
       On the folder that prompted M11 (2026-11-18): all 241 sidecars with a position would be

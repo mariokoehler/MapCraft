@@ -175,6 +175,16 @@ impl PlacedPhoto {
     }
 }
 
+/// A photo's position as `Library::set_gps_all` records it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GpsRow {
+    pub id: i64,
+    pub pos: Option<(f64, f64)>,
+    pub alt: Option<f64>,
+    pub gps_source: Option<String>,
+    pub sidecar_name: Option<String>,
+}
+
 /// Which photos removal mode shows (design.md §2.9(n)).
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlacedIn<'a> {
@@ -865,6 +875,29 @@ impl Library {
             [],
             |r| r.get(0),
         )
+    }
+
+    /// `set_gps` for many photos in one transaction (a few hundred updates one by one would
+    /// each wait for the disk).
+    pub fn set_gps_all(&mut self, rows: &[GpsRow]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE photo SET lat = ?2, lon = ?3, alt = ?4, gps_source = ?5, sidecar_name = ?6
+                 WHERE id = ?1",
+            )?;
+            for r in rows {
+                stmt.execute(rusqlite::params![
+                    r.id,
+                    r.pos.map(|p| p.0),
+                    r.pos.map(|p| p.1),
+                    r.alt,
+                    r.gps_source,
+                    r.sidecar_name,
+                ])?;
+            }
+        }
+        tx.commit()
     }
 
     /// Records a position written to a photo's sidecar, or puts the earlier one back (undo).

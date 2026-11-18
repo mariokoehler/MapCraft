@@ -374,6 +374,11 @@ pub fn content(before: Option<&[u8]>, g: &Gps) -> Result<Vec<u8>, String> {
 /// in every `rdf:Description`. Everything else stays byte for byte. `None`: nothing would be
 /// left but the wrapper, so the sidecar can go. `Ok(Some(doc))` unchanged if it held no GPS.
 pub fn strip(doc: &str) -> Result<Option<String>, String> {
+    strip_counted(doc).map(|(out, _)| out)
+}
+
+/// `strip`, and whether anything was cut.
+fn strip_counted(doc: &str) -> Result<(Option<String>, bool), String> {
     struct Tag {
         span: (usize, usize),
         attrs: Vec<Attr>,
@@ -479,14 +484,15 @@ pub fn strip(doc: &str) -> Result<Option<String>, String> {
             _ => merged.push(c),
         }
     }
+    let cut = !merged.is_empty();
     let mut out = doc.to_owned();
     for (a, b) in merged.into_iter().rev() {
         out.replace_range(a..b, "");
     }
     if only_wrapper(&out)? {
-        return Ok(None);
+        return Ok((None, cut));
     }
-    Ok(Some(out))
+    Ok((Some(out), cut))
 }
 
 /// Whether a document holds nothing but the XMP wrapper (`x:xmpmeta`, `rdf:RDF`,
@@ -529,22 +535,23 @@ fn only_wrapper(doc: &str) -> Result<bool, String> {
 
 /// What a sidecar becomes without its GPS (design.md §2.9(n)): `Ok(None)` to delete it, else
 /// its new bytes (the BOM kept). Checked: no position may read back afterwards, so a GPS
-/// property under another namespace leaves the sidecar alone. `Err` too when it held no GPS
-/// to remove (nothing to write).
+/// property under another namespace leaves the sidecar alone. `Err(NO_GPS)` when it held no
+/// GPS to remove: nothing is written, and an empty sidecar isn't deleted either.
 pub fn stripped(before: &[u8]) -> Result<Option<Vec<u8>>, String> {
     let (bom, rest) = match before.strip_prefix(BOM) {
         Some(r) => (BOM, r),
         None => (&before[..0], before),
     };
     let text = std::str::from_utf8(rest).map_err(|_| "the sidecar isn't UTF-8")?;
-    let Some(out) = strip(text)? else {
+    let (out, cut) = strip_counted(text)?;
+    if !cut {
+        return Err(NO_GPS.to_owned());
+    }
+    let Some(out) = out else {
         return Ok(None);
     };
     if xmp::read_gps(&out)?.is_some() {
         return Err("a position remains that MapCraft can’t remove".to_owned());
-    }
-    if out == text {
-        return Err(NO_GPS.to_owned());
     }
     Ok(Some([bom, out.as_bytes()].concat()))
 }
@@ -714,7 +721,7 @@ mod tests {
 
     /// An older tool's form: other property names, another prefix, elements with nested
     /// content, a packet wrapper. Made up for the test (no real file's content).
-    const OLD: &str = "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"Old Tool 1.0\">\n <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n  <rdf:Description rdf:about=\"\" xmlns:e=\"http://ns.adobe.com/exif/1.0/\"\n    e:GPSVersionId=\"2.2.0.0\"\n    e:GPSMapDatum=\"WGS-84\"\n    e:GPSLatitude=\"53,37.40N\">\n   <e:GPSLongitude>11,24.90E</e:GPSLongitude>\n   <e:GPSAltitude>1200/100</e:GPSAltitude>\n   <e:GPSDestBearing><rdf:Alt><rdf:li>12/1</rdf:li></rdf:Alt></e:GPSDestBearing>\n  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>";
+    const OLD: &str = "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"Old Tool 1.0\">\n <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n  <rdf:Description rdf:about=\"\" xmlns:e=\"http://ns.adobe.com/exif/1.0/\"\n    e:GPSVersionId=\"2.2.0.0\"\n    e:GPSMapDatum=\"WGS-84\"\n    e:GPSLatitude=\"64,8.12N\">\n   <e:GPSLongitude>21,53.71W</e:GPSLongitude>\n   <e:GPSAltitude>1200/100</e:GPSAltitude>\n   <e:GPSDestBearing><rdf:Alt><rdf:li>12/1</rdf:li></rdf:Alt></e:GPSDestBearing>\n  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>";
 
     #[test]
     fn an_older_tools_sidecar_is_emptied_and_deleted() {
@@ -742,6 +749,9 @@ mod tests {
         let other = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"\" xmlns:o=\"http://example.com/other/\" o:GPSLatitude=\"1,0.0N\" o:GPSLongitude=\"2,0.0E\"/></rdf:RDF></x:xmpmeta>";
         assert!(stripped(other.as_bytes()).is_err());
         assert_eq!(stripped(LR.as_bytes()).unwrap_err(), NO_GPS);
+        // A sidecar that is only the wrapper held no GPS: it isn't deleted.
+        let empty = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"\"/></rdf:RDF></x:xmpmeta>";
+        assert_eq!(stripped(empty.as_bytes()).unwrap_err(), NO_GPS);
         assert!(stripped(b"\xff\xfe junk").is_err());
         assert!(stripped(b"<x:xmpmeta><rdf:RDF>").is_err());
     }

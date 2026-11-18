@@ -14,6 +14,7 @@ use crate::geotag::journal::{self, Kind, Prior, Report, Task, Undone};
 use crate::geotag::session::Session;
 use crate::geotag::{self, Track, gpx, time};
 use crate::import::reachable_root;
+use crate::library::GpsRow;
 use crate::ui::geotag_panel::GeoAction;
 use crate::ui::map_view::TagLayer;
 use crate::ui::toasts::{self, ToastAction};
@@ -347,7 +348,7 @@ impl MapCraftApp {
                 s.write_alt = b;
                 s.changed = true;
             }
-            GeoAction::Write => self.geo_confirm = s.ticked() > 0,
+            GeoAction::Write => self.geo_confirm = s.ticked() > 0 && self.geo_work.is_none(),
             GeoAction::Leave
             | GeoAction::AddFile
             | GeoAction::CancelWrite
@@ -537,6 +538,9 @@ impl MapCraftApp {
 
     /// Writes the ticked photos' positions on a background thread (design.md §2.9(i)).
     fn start_write(&mut self) {
+        if self.geo_work.is_some() {
+            return; // an undo still runs
+        }
         let Some(s) = &self.geotag else { return };
         let writes = s.writes();
         if writes.is_empty() {
@@ -664,18 +668,21 @@ impl MapCraftApp {
 
     /// The write finished: the library records what was written, and the map returns.
     fn written(&mut self, r: Report) {
-        if let Some(lib) = &self.lib {
-            for w in &r.written {
-                if let Err(e) = lib.set_gps(
-                    w.photo,
-                    w.position.map(|g| (g.lat, g.lon)),
-                    w.position.and_then(|g| g.alt),
-                    Some("xmp"),
-                    Some(&w.sidecar_name),
-                ) {
-                    error!("can't record a written position: {e}");
-                }
-            }
+        let rows: Vec<GpsRow> = r
+            .written
+            .iter()
+            .map(|w| GpsRow {
+                id: w.photo,
+                pos: w.position.map(|g| (g.lat, g.lon)),
+                alt: w.position.and_then(|g| g.alt),
+                gps_source: Some("xmp".to_owned()),
+                sidecar_name: Some(w.sidecar_name.clone()),
+            })
+            .collect();
+        if let Some(lib) = &mut self.lib
+            && let Err(e) = lib.set_gps_all(&rows)
+        {
+            error!("can't record the written positions: {e}");
         }
         let (n, failed) = (r.written.len(), r.failed.len());
         let created = r.written.iter().filter(|w| w.created).count();
@@ -741,18 +748,21 @@ impl MapCraftApp {
     fn undone(&mut self, r: Result<Undone, String>, kind: Kind) {
         match r {
             Ok(u) => {
-                if let Some(lib) = &self.lib {
-                    for (id, prior) in &u.restored {
-                        if let Err(e) = lib.set_gps(
-                            *id,
-                            prior.lat.zip(prior.lon),
-                            prior.alt,
-                            prior.gps_source.as_deref(),
-                            prior.sidecar_name.as_deref(),
-                        ) {
-                            error!("can't restore a position: {e}");
-                        }
-                    }
+                let rows: Vec<GpsRow> = u
+                    .restored
+                    .iter()
+                    .map(|(id, prior)| GpsRow {
+                        id: *id,
+                        pos: prior.lat.zip(prior.lon),
+                        alt: prior.alt,
+                        gps_source: prior.gps_source.clone(),
+                        sidecar_name: prior.sidecar_name.clone(),
+                    })
+                    .collect();
+                if let Some(lib) = &mut self.lib
+                    && let Err(e) = lib.set_gps_all(&rows)
+                {
+                    error!("can't restore the positions: {e}");
                 }
                 info!(
                     "geotagging undone: {} restored, {} skipped",

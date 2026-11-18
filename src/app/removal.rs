@@ -15,7 +15,7 @@ use super::geotag::{GeoEvent, GeoWork};
 use crate::geotag::journal::{self, Kind, Prior, Report, Task};
 use crate::geotag::removal::{Removal, Scope};
 use crate::import::{position_of, reachable_root};
-use crate::library::{PlacedIn, PlacedPhoto};
+use crate::library::{GpsRow, PlacedIn, PlacedPhoto};
 use crate::metadata::Gps;
 use crate::ui::map_view::{MapAction, TagLayer};
 use crate::ui::remove_panel::RemoveAction;
@@ -179,7 +179,9 @@ impl MapCraftApp {
             }
             RemoveAction::TickAll => r.tick_all(),
             RemoveAction::UntickAll => r.untick_all(),
-            RemoveAction::Remove => self.rm_confirm = r.ticked() > 0,
+            RemoveAction::Remove => {
+                self.rm_confirm = r.ticked() > 0 && self.geo_work.is_none();
+            }
             RemoveAction::CancelWrite => {
                 if let Some(w) = &self.geo_work {
                     w.cancel.store(true, Ordering::Relaxed);
@@ -322,6 +324,9 @@ impl MapCraftApp {
     /// Removes the ticked photos' GPS on a background thread, then reads each changed photo
     /// again as a rescan would (design.md §2.9(n)).
     fn start_remove(&mut self) {
+        if self.geo_work.is_some() {
+            return; // an undo still runs
+        }
         let Some(r) = &self.removal else { return };
         let todo = r.removals();
         if todo.is_empty() {
@@ -412,27 +417,29 @@ impl MapCraftApp {
     /// returns.
     pub(super) fn removed(&mut self, r: Report, reread: Vec<(i64, Option<String>, Reread)>) {
         let mut from_file = 0;
-        if let Some(lib) = &self.lib {
-            for (id, sidecar, read) in &reread {
-                let (gps, src) = match read {
-                    Ok(v) => *v,
-                    Err(e) => {
-                        // The sidecar's position is gone for certain; a rescan reads the rest.
-                        error!("can't read a photo again after removing its position: {e}");
-                        (None, None)
-                    }
-                };
-                from_file += usize::from(src == Some("exif"));
-                if let Err(e) = lib.set_gps(
-                    *id,
-                    gps.map(|g| (g.lat, g.lon)),
-                    gps.and_then(|g| g.alt),
-                    src,
-                    sidecar.as_deref(),
-                ) {
-                    error!("can't record a removed position: {e}");
+        let mut rows = Vec::new();
+        for (id, sidecar, read) in reread {
+            let (gps, src) = match read {
+                Ok(v) => v,
+                Err(e) => {
+                    // The sidecar's position is gone for certain; a rescan reads the rest.
+                    error!("can't read a photo again after removing its position: {e}");
+                    (None, None)
                 }
-            }
+            };
+            from_file += usize::from(src == Some("exif"));
+            rows.push(GpsRow {
+                id,
+                pos: gps.map(|g| (g.lat, g.lon)),
+                alt: gps.and_then(|g| g.alt),
+                gps_source: src.map(str::to_owned),
+                sidecar_name: sidecar,
+            });
+        }
+        if let Some(lib) = &mut self.lib
+            && let Err(e) = lib.set_gps_all(&rows)
+        {
+            error!("can't record the removed positions: {e}");
         }
         let (n, failed) = (r.written.len(), r.failed.len());
         let deleted = r.written.iter().filter(|w| w.deleted).count();

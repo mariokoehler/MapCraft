@@ -4059,7 +4059,7 @@ owhere\lightcraft.exe",
         std::fs::write(trip.join("FILE.jpg"), &in_file).unwrap();
         std::fs::write(trip.join("BOTH.jpg"), &in_file).unwrap();
         std::fs::write(trip.join("BOTH.xmp"), create(&gps(47.2))).unwrap();
-        let elsewhere = crate::demo::photo_with(0.0, 0.0, "2025:06:13 10:00:00", 0.8, None);
+        let elsewhere = crate::demo::photo_with(0.0, 0.0, "2025:07:13 10:00:00", 0.8, None);
         std::fs::write(photos.join("other").join("O_00.jpg"), elsewhere).unwrap();
         std::fs::write(photos.join("other").join("O_00.xmp"), create(&gps(45.0))).unwrap();
         let mut lib = Library::open(&dir.join("library.sqlite")).unwrap();
@@ -4206,6 +4206,14 @@ owhere\lightcraft.exe",
         h.get_by_label("On the map now").click();
         h.run_steps(3);
         h.get_by_label("1 ticked of 6 with a position from a sidecar");
+        // With a filter set (June only), the other folder's July photo drops out.
+        {
+            let app = h.state_mut().as_mut().unwrap();
+            app.filter.dates = Some((202506, 202506));
+            app.removal_reload();
+        }
+        h.run_steps(3);
+        h.get_by_label("1 ticked of 5 with a position from a sidecar");
         h.get_by_label("Untick all").click();
         h.run_steps(3);
         // Esc: the selection first, then (with changes) the question.
