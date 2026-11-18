@@ -1685,8 +1685,8 @@ Milestones are rough and get refined as we go.
     Standard with the toast (no key in the log).
 
 - **M11 — Removing positions** (proposed 2026-11-18, the user's request; §2.9(n), canvas
-  `MapCraft — Remove position`, approved by the user the same day; built 2026-11-18, not yet
-  released, awaiting the user's try). The reverse of M9: take a wrong position off photos whose
+  `MapCraft — Remove position`, approved by the user the same day; built and released as
+  v0.6.0 on 2026-11-18, awaiting the user's try). The reverse of M9: take a wrong position off photos whose
   position comes from a sidecar, whoever wrote it.
   - **Steps:**
     1. The sidecar side: `sidecar::strip` (every `exif:GPS*`, both forms, every
