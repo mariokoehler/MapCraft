@@ -34,6 +34,8 @@ tests the update 0.1.0 → 0.2.0. M6
 (companion apps) awaits the user's try. M5 is done (tried by the user).
 **v0.5.0 released (2026-11-17)**: geotagging reads NMEA logs too (the user's old Sony
 logger files; altitude off by default for them), `design.md` §2.9(b); awaits the user's try.
+**M11 proposed (2026-11-18)**: removing positions from sidecars, `design.md` §2.9(n), canvas
+`MapCraft — Remove position`; awaits the user's review.
 **v0.4.0 released (2026-11-15)**: M10 (map styles: Standard, Topographic, MapTiler
 Satellite and Hybrid with the user's own key). v0.3.0 the same day: M9 (geotagging from GPX, `design.md` §2.9), from the
 canvas `MapCraft — Geotagging`; it awaits the user's try. It's the first feature that writes next to

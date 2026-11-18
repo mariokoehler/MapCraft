@@ -46,7 +46,8 @@ in Adobe Lightroom Classic, as a standalone Windows desktop app (user, 2026-11-1
   it, not even an XMP file **(user, 2026-11-14)**. Writing GPS back (for example after manual
   placement or GPX tagging) would be a later, explicit feature. M9 proposes that feature
   (2026-11-15, §2.9): GPS written into XMP sidecars when the user confirms it, never into the
-  originals, with an undo journal.
+  originals, with an undo journal. M11 proposes the reverse (2026-11-18, §2.9(n)): a position
+  in a sidecar, whoever wrote it, can be removed the same way.
 - **Single user, single machine, one library** **(user, 2026-11-14)**. There is no sync and no
   server.
 
@@ -448,6 +449,7 @@ date, camera, lens, coordinates, and actions **(user, 2026-11-14)**:
   - The source's online state: checking it needs the NAS, and the panel reads only the library.
   - The exposure row: the import doesn't read exposure values yet.
 - The preview is made when the photo is first selected, then kept.
+- *Remove position…* in the *Location* section (M11, proposed, §2.9(n)).
 
 ### 2.7 Settings
 
@@ -787,6 +789,72 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
 - **(l) Not in M9.** Placing photos by hand (dragging one onto the map), matching against a
   track without times (for example by walking speed), more track formats (FIT, KML, TCX), and a
   shift that changes during the track (a trip across a time zone: tag it in two passes).
+- **(n) Removing positions (M11, proposed 2026-11-18).** The user's case: photos placed in the
+  wrong spot, with no way to take the position off again. The case that prompted it was a
+  folder whose sidecars were tagged by another tool in 2008. It isn't covered by the journal,
+  because MapCraft never wrote those sidecars: their spelling (`GPSVersionId`, `GPSMapDatum`)
+  isn't ours, and they are dated from that year (checked read-only, 2026-11-18). So the
+  feature works on any sidecar position, not only on our own writes. The look is on the canvas
+  `MapCraft — Remove position`. Points marked **(unconfirmed)** are defaults proposed here.
+  - **Which photos.** Only those whose position comes from a sidecar (`gps_source = 'xmp'`).
+    A position inside the photo file (`'exif'`) can't be removed: originals stay untouched
+    (§1.1). Such photos show the action disabled, with the reason on hover.
+  - **Starting it.** In the detail panel's *Location* section, *Remove position…*. It opens
+    **removal mode**, as tagging mode does (a):
+    - The photos in scope are shown with ticks, and the selected photo is ticked.
+    - The library's other photos are dimmed.
+    - A panel on the right holds the scope, the counts and the button.
+    - Esc or *Cancel* leaves; with ticks changed, it asks first.
+  - Not while an import runs, nor in tagging mode.
+  - **The scope:** *This folder* (the selected photo's folder, the default) or *On the map now*
+    (every photo the filters let through) **(unconfirmed)**. Only photos with a sidecar position
+    get a tick. The others in scope are drawn dimmed, without a tick.
+  - **Ticking:**
+    - Ticks work as in (h): a group's tick sets all its members, and the strip shows its
+      members with their own ticks.
+    - *Tick all* and *Untick all* in the panel.
+    - Only the selected photo starts ticked **(unconfirmed)**: removing is the riskier
+      direction.
+    - The panel counts: "12 ticked of 241 with a sidecar position · 16 more have it inside the
+      file".
+  - **The confirmation** names how many sidecars change, the folders, and that only the GPS
+    properties go. It also says:
+    - A photo whose file also holds a position shows that one instead. The library can't tell
+      in advance (it keeps only the winning position), so the result toast reports the count.
+    - Lightroom's catalogue and LightCraft's *Automatically Write Changes into XMP* may put the
+      position back, as in (j).
+  - **What's removed:** every property of the EXIF namespace (`http://ns.adobe.com/exif/1.0/`)
+    whose name starts with `GPS`, in either form (attribute or element) and in every
+    `rdf:Description`. Besides the six we write (i), that covers `GPSMapDatum`, `GPSVersionId`,
+    `GPSImgDirection`, `GPSSpeed` and the rest. Everything else stays byte for byte, as in a
+    merge. The test: `xmp::read_gps` finds nothing afterwards, and every other byte survives.
+  - **An emptied sidecar is deleted** if nothing is left but the wrapper (`x:xmpmeta`,
+    `rdf:RDF`, `rdf:Description` with only `rdf:about` and namespace declarations)
+    **(unconfirmed)**. Otherwise it's kept without the GPS.
+  - **Safely, as in (i):** a temporary file, then a rename; `sidecar::replace` with the content
+    read before, so a sidecar another app changed meanwhile is left alone and listed as failed.
+    Each failure is counted; the others go on.
+  - **Undo:** the same journal as tagging (`geotag/<time>.json`).
+    - A `kind` field (`"tag"` or `"remove"`) is read with a default of `"tag"`, so journals
+      written by 0.3–0.5 still load.
+    - `after` stays the hash of what was written. For a deleted sidecar it is the marker
+      `"deleted"`. Undo then expects the file to be absent and writes `before` back; today
+      `undo` skips a missing file as "the sidecar is gone".
+    - *Undo* is in the result toast. Later, *Last removed · Undo it* at the top of the removal
+      panel undoes the newest removal journal, as *Last written* does for tagging (m).
+  - **The library afterwards:** each changed photo is re-read on the writer thread as a rescan
+    would (the sidecar, then the original's EXIF: one more open per photo on the NAS). So it
+    gets the file's own position or none, with the matching `gps_source`. The photo's file
+    signature isn't recomputed, as in (i), and a test checks that a rescan agrees. Undo puts
+    back the earlier values recorded in the journal (`Prior`).
+  - **Privacy (k):** the log has counts only.
+  - **Not in M11:**
+    - Hiding a position inside the file in MapCraft only (a library flag, needs a migration).
+    - Box-selecting photos on the map.
+    - A history of every journal with its own Undo.
+    - Placing a photo by hand (l).
+
+    They are listed in §4.
 
 ## 3. Architecture
 
@@ -1274,6 +1342,11 @@ egui.
 
 Not blocking v1:
 - **Videos:** left out of v1 (§2.8(d)); wanted later?
+- **After removing positions (§2.9(n)), wanted later?**
+  - A MapCraft-only "hide this position" for photos whose position is inside the file.
+  - Box-selecting photos on the map, for tagging and removal alike.
+  - A history of every geotagging journal in Settings, each with Undo, instead of only the
+    newest.
 
 Product:
 - **Where the photos live:** what NAS and share layout, mapped drive letters or UNC (§2.1(a),
@@ -1327,6 +1400,10 @@ Unconfirmed defaults awaiting review:
   settles; a new sidecar named `name.xmp`; the undo journal in the data folder. NMEA logs
   (§2.9(b), 2026-11-17): two-digit years 80–99 are 19xx; a log with only `GGA` is a track
   without times.
+- §2.9(n) / M11 (proposed): the scopes *This folder* (default) and *On the map now*; only the
+  selected photo starts ticked; every `exif:GPS*` property is removed; a sidecar left with
+  nothing but its wrapper is deleted; changed photos are re-read on the writer thread; the
+  journal's `kind` and the `"deleted"` marker; the later Undo only for the newest removal.
 - M10 (proposed): the four styles, the key in Settings, a cache per style, the fallback to
   Standard on a refused key, the choice remembered.
 - §3.2: the planned crates.
@@ -1572,6 +1649,25 @@ Milestones are rough and get refined as we go.
     key), and a trial with the user's key on scratch data: Satellite, Hybrid and Topographic in
     the window, the logo and credits, the choice saved, and a wrong key falling back to
     Standard with the toast (no key in the log).
+
+- **M11 — Removing positions** (proposed 2026-11-18, the user's request; §2.9(n), canvas
+  `MapCraft — Remove position`, awaiting review). The reverse of M9: take a wrong position off
+  photos whose position comes from a sidecar, whoever wrote it.
+  - **Steps:**
+    1. The sidecar side: `sidecar::strip` (every `exif:GPS*`, both forms, every
+       `rdf:Description`; an emptied wrapper means delete). Unit tests on generated
+       sidecars in our form, Lightroom's form and the 2008 tool's form: nothing left for
+       `read_gps`, every other byte kept.
+    2. The journal: `kind` with a default, the `"deleted"` marker, Undo of a deletion. A test
+       that a 0.5.0 journal still loads and undoes.
+    3. Re-reading the changed photos into the library, and a test that a rescan agrees.
+    4. Removal mode: entering from the detail panel, the scope, ticks (reusing tagging mode's
+       ticks on markers and in the strip), the panel, the confirmation, the result toast with
+       Undo, *Last removed · Undo it*.
+    5. Headless UI tests, then a trial on generated photos in a scratch folder, then the
+       user's try.
+  - **At release:** the README says MapCraft can also remove GPS from sidecars.
+  - No migration is needed.
 
 **Later:** a keyed tile provider and offline PMTiles (§3.5(b); walkers has a `pmtiles`
 feature, and its vector rendering needs the wgpu renderer, which eframe uses by default), the
