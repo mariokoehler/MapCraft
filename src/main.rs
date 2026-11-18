@@ -35,6 +35,7 @@ fn main() -> eframe::Result {
     let open = match flag("--open").map(String::as_str) {
         Some("sources") => Some(app::StartDialog::Sources),
         Some("details") => Some(app::StartDialog::Details),
+        Some("remove") => Some(app::StartDialog::Remove),
         Some("strip") => Some(app::StartDialog::Strip),
         Some("filters") => Some(app::StartDialog::Filters(None)),
         Some("settings") => Some(app::StartDialog::Settings),

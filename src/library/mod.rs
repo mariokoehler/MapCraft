@@ -139,6 +139,51 @@ pub struct GeoPhoto {
     pub original_name: String,
 }
 
+/// A photo with a position that removal mode may take it off (design.md §2.9(n)).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedPhoto {
+    pub id: i64,
+    pub lat: f64,
+    pub lon: f64,
+    pub alt: Option<f64>,
+    /// `"xmp"` (removable) or `"exif"` (inside the file).
+    pub gps_source: Option<String>,
+    pub thumb: Thumb,
+    /// The capture time as a sortable number, `yyyymmddhhmmss` (0 when undated).
+    pub taken: i64,
+    pub root: PathBuf,
+    pub unc: Option<String>,
+    pub rel_dir: String,
+    pub original_name: String,
+    pub preview_name: Option<String>,
+    pub sidecar_name: Option<String>,
+}
+
+impl PlacedPhoto {
+    pub fn removable(&self) -> bool {
+        self.gps_source.as_deref() == Some("xmp")
+    }
+
+    pub fn point(&self) -> PhotoPoint {
+        PhotoPoint {
+            id: self.id,
+            lat: self.lat,
+            lon: self.lon,
+            thumb: self.thumb,
+            taken: self.taken,
+        }
+    }
+}
+
+/// Which photos removal mode shows (design.md §2.9(n)).
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlacedIn<'a> {
+    /// The folder of this photo (its source and `rel_dir`).
+    FolderOf(i64),
+    /// Every photo the filter lets through.
+    Shown(&'a Filter),
+}
+
 /// A photo's position, for drawing it on the map.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PhotoPoint {
@@ -761,6 +806,56 @@ impl Library {
             })
         })?
         .collect()
+    }
+
+    /// The present photos with a position in `scope`, for removal mode (design.md §2.9(n)).
+    pub fn placed(&self, scope: PlacedIn<'_>) -> Result<Vec<PlacedPhoto>> {
+        let (cond, params) = match scope {
+            PlacedIn::FolderOf(id) => (
+                " AND p.source_id = (SELECT source_id FROM photo WHERE id = :around)
+                  AND p.rel_dir = (SELECT rel_dir FROM photo WHERE id = :around)"
+                    .to_owned(),
+                vec![(":around".to_owned(), rusqlite::types::Value::Integer(id))],
+            ),
+            PlacedIn::Shown(filter) => {
+                let w = filter.sql("p.");
+                (w.sql, w.params)
+            }
+        };
+        self.query_named(
+            &format!(
+                "SELECT p.id, p.lat, p.lon, p.alt, p.gps_source, p.thumb_state,
+                        coalesce(CAST(replace(replace(replace(substr(p.taken_at, 1, 19),
+                            '-', ''), 'T', ''), ':', '') AS INTEGER), 0),
+                        s.root_path, s.unc_path, p.rel_dir, p.original_name, p.preview_name,
+                        p.sidecar_name
+                 FROM photo p JOIN source s ON s.id = p.source_id
+                 WHERE +p.lat IS NOT NULL AND p.state = 'ok'{cond}
+                 ORDER BY p.id"
+            ),
+            &params,
+            |r| {
+                Ok(PlacedPhoto {
+                    id: r.get(0)?,
+                    lat: r.get(1)?,
+                    lon: r.get(2)?,
+                    alt: r.get(3)?,
+                    gps_source: r.get(4)?,
+                    thumb: match r.get_ref(5)?.as_str()? {
+                        THUMB_OK => Thumb::Ok,
+                        THUMB_FAILED => Thumb::Failed,
+                        _ => Thumb::Pending,
+                    },
+                    taken: r.get(6)?,
+                    root: PathBuf::from(r.get::<_, String>(7)?),
+                    unc: r.get(8)?,
+                    rel_dir: r.get(9)?,
+                    original_name: r.get(10)?,
+                    preview_name: r.get(11)?,
+                    sidecar_name: r.get(12)?,
+                })
+            },
+        )
     }
 
     /// Present photos without a position and without a capture time: no track can place them.

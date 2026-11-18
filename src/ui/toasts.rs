@@ -22,6 +22,8 @@ pub enum ToastAction {
     ReleaseNotes,
     /// Undo the last geotagging (design.md §2.9(i)).
     UndoGeotag,
+    /// Undo the last removal of positions (design.md §2.9(n)).
+    UndoRemoval,
     /// Settings on its Map section (the MapTiler key, design.md M10).
     OpenMapSettings,
 }

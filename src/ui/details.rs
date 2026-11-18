@@ -179,6 +179,8 @@ pub enum PanelAction {
     Open,
     PhotoCraft,
     LightCraft,
+    /// *Remove position…* (design.md §2.9(n)): removal mode from this photo.
+    RemovePosition,
 }
 
 /// Whether the companion buttons work for this photo: `None` if so, else why not (their hover
@@ -212,6 +214,7 @@ impl DetailPanel {
         d: &PhotoDetail,
         preview: PreviewFace<'_>,
         apps: &CompanionButtons,
+        remove_blocked: Option<&str>,
     ) -> Option<PanelAction> {
         let mut action = None;
         // Header: title and close.
@@ -302,7 +305,9 @@ impl DetailPanel {
                             }
                         });
                     });
-                self.sections(ui, p, d);
+                if self.sections(ui, p, d, remove_blocked) {
+                    action = Some(PanelAction::RemovePosition);
+                }
             });
         action
     }
@@ -350,7 +355,14 @@ impl DetailPanel {
         }
     }
 
-    fn sections(&mut self, ui: &mut Ui, p: &Palette, d: &PhotoDetail) {
+    /// The sections; true if *Remove position…* was clicked.
+    fn sections(
+        &mut self,
+        ui: &mut Ui,
+        p: &Palette,
+        d: &PhotoDetail,
+        remove_blocked: Option<&str>,
+    ) -> bool {
         let mut file = Vec::new();
         file.push(("Name", Value::Strong(d.original_name.clone())));
         let (head, tail) = folder_parts(&d.root, &d.rel_dir);
@@ -387,6 +399,7 @@ impl DetailPanel {
             location.push(("From", Value::Plain(gps_source_text(s).to_owned())));
         }
 
+        let placed = !location.is_empty();
         let all = [("File", file), ("Capture", capture), ("Location", location)];
         let n = all.len();
         for (i, (title, rows)) in all.into_iter().enumerate() {
@@ -395,6 +408,42 @@ impl DetailPanel {
             }
             self.section(ui, p, title, &rows, i + 1 < n);
         }
+        // Location is last: its button goes under it, while it's open.
+        if !placed || self.collapsed.contains("Location") {
+            return false;
+        }
+        let why = remove_blocked.or(match d.gps_source.as_deref() {
+            Some("xmp") => None,
+            _ => Some("This position is inside the photo file. MapCraft doesn’t change originals."),
+        });
+        let mut clicked = false;
+        Frame::NONE
+            .inner_margin(Margin {
+                left: p.space_3 as i8,
+                right: p.space_3 as i8,
+                top: 0,
+                bottom: p.space_3 as i8,
+            })
+            .show(ui, |ui| {
+                let r = widgets::secondary(
+                    ui,
+                    p,
+                    Some(Icon::MapPinOff),
+                    "Remove position…",
+                    why.is_none(),
+                );
+                match why {
+                    None => {
+                        clicked = r
+                            .on_hover_text("Take the position out of its XMP sidecar")
+                            .clicked();
+                    }
+                    Some(why) => {
+                        r.on_disabled_hover_text(why);
+                    }
+                }
+            });
+        clicked
     }
 
     fn section(

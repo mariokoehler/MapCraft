@@ -377,32 +377,16 @@ fn read_photo(root: &Path, g: &Group) -> Result<PhotoRecord, String> {
     // cache serves the head twice); on the NAS each open costs a disk seek.
     let mut file = File::open(dir.join(&g.original.name)).map_err(|e| e.to_string())?;
     let quick_hash = quick_hash(&mut file, g.original.size).map_err(|e| e.to_string())?;
-    let (mut m, mut error) = match metadata::read_image_from(file) {
-        Ok(m) => (m, None),
-        Err(ReadError::Io(e)) => return Err(e),
-        Err(e @ ReadError::Format(_)) => (Metadata::default(), Some(e.to_string())),
-    };
-    if let Some(p) = &g.preview
-        && (error.is_some() || m.taken_at.is_none())
-    {
-        match metadata::read_image(&dir.join(&p.name)) {
-            Ok(pm) => fill_gaps(&mut m, pm), // usable through its JPEG; a RAW error stays noted
-            Err(ReadError::Io(e)) => return Err(e),
-            Err(ReadError::Format(_)) => {}
-        }
-    }
-    let mut gps_source = m.gps.map(|_| "exif");
-    if let Some(sc) = &g.sidecar {
-        let xml = std::fs::read(dir.join(&sc.name)).map_err(|e| e.to_string())?;
-        match xmp::read_gps(&String::from_utf8_lossy(&xml)) {
-            Ok(Some(gps)) => {
-                m.gps = Some(gps);
-                gps_source = Some("xmp");
-            }
-            Ok(None) => {}
-            Err(e) => error = error.or(Some(format!("sidecar: {e}"))),
-        }
-    }
+    let ReadOut {
+        m,
+        gps_source,
+        error,
+    } = read_metadata(
+        &dir,
+        file,
+        g.preview.as_ref().map(|p| p.name.as_str()),
+        g.sidecar.as_ref().map(|s| s.name.as_str()),
+    )?;
     Ok(PhotoRecord {
         rel_dir: g.rel_dir.clone(),
         stem: g.stem.clone(),
@@ -427,6 +411,69 @@ fn read_photo(root: &Path, g: &Group) -> Result<PhotoRecord, String> {
         orientation: m.orientation,
         read_error: error,
     })
+}
+
+/// A photo's metadata as the import records it, with where its position came from and the
+/// first format problem.
+struct ReadOut {
+    m: Metadata,
+    gps_source: Option<&'static str>,
+    error: Option<String>,
+}
+
+/// The rules of `read_photo` for the metadata: the original (already open), its preview JPEG
+/// when needed, then the sidecar's position, which wins.
+fn read_metadata(
+    dir: &Path,
+    original: File,
+    preview: Option<&str>,
+    sidecar: Option<&str>,
+) -> Result<ReadOut, String> {
+    let (mut m, mut error) = match metadata::read_image_from(original) {
+        Ok(m) => (m, None),
+        Err(ReadError::Io(e)) => return Err(e),
+        Err(e @ ReadError::Format(_)) => (Metadata::default(), Some(e.to_string())),
+    };
+    if let Some(p) = preview
+        && (error.is_some() || m.taken_at.is_none())
+    {
+        match metadata::read_image(&dir.join(p)) {
+            Ok(pm) => fill_gaps(&mut m, pm), // usable through its JPEG; a RAW error stays noted
+            Err(ReadError::Io(e)) => return Err(e),
+            Err(ReadError::Format(_)) => {}
+        }
+    }
+    let mut gps_source = m.gps.map(|_| "exif");
+    if let Some(sc) = sidecar {
+        let xml = std::fs::read(dir.join(sc)).map_err(|e| e.to_string())?;
+        match xmp::read_gps(&String::from_utf8_lossy(&xml)) {
+            Ok(Some(gps)) => {
+                m.gps = Some(gps);
+                gps_source = Some("xmp");
+            }
+            Ok(None) => {}
+            Err(e) => error = error.or(Some(format!("sidecar: {e}"))),
+        }
+    }
+    Ok(ReadOut {
+        m,
+        gps_source,
+        error,
+    })
+}
+
+/// A photo's position and where it comes from (`"xmp"`, `"exif"`), read as a rescan reads it
+/// (design.md §2.9(n)): after its sidecar's GPS was removed, the file's own position shows.
+/// `dir` is the photo's folder; `Err` when a file can't be read.
+pub fn position_of(
+    dir: &Path,
+    original: &str,
+    preview: Option<&str>,
+    sidecar: Option<&str>,
+) -> Result<(Option<metadata::Gps>, Option<&'static str>), String> {
+    let file = File::open(dir.join(original)).map_err(|e| e.to_string())?;
+    let r = read_metadata(dir, file, preview, sidecar)?;
+    Ok((r.m.gps, r.gps_source))
 }
 
 fn fill_gaps(m: &mut Metadata, from: Metadata) {

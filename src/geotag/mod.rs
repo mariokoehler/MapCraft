@@ -6,6 +6,7 @@
 pub mod gpx;
 pub mod journal;
 pub mod nmea;
+pub mod removal;
 pub mod session;
 pub mod sidecar;
 pub mod time;

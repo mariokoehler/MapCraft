@@ -76,6 +76,7 @@ impl Strip {
         wanted: &mut Vec<i64>,
         selected: Option<i64>,
         off: Option<&std::collections::HashSet<i64>>,
+        locked: Option<&std::collections::HashSet<i64>>,
     ) -> Option<StripAction> {
         let mut action = None;
         let pages = self.photos.len().div_ceil(PAGE).max(1);
@@ -137,7 +138,16 @@ impl Strip {
                                 if r.clicked() {
                                     action = Some(StripAction::Select(id));
                                 }
-                                if let Some(off) = off {
+                                let fixed = locked.is_some_and(|l| l.contains(&id));
+                                if fixed {
+                                    // Removal mode: its position is inside the file, no tick.
+                                    ui.painter().rect_filled(
+                                        r.rect,
+                                        2,
+                                        p.map_marker_frame.gamma_multiply(0.55),
+                                    );
+                                }
+                                if let Some(off) = off.filter(|_| !fixed) {
                                     let unticked = off.contains(&id);
                                     if unticked {
                                         ui.painter().rect_filled(

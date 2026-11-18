@@ -41,9 +41,11 @@ pub enum TopBarAction {
 }
 
 /// Tagging mode as the top bar sees it: on (everything else waits), or why it can't start.
+/// `removing`: removal mode is on instead (design.md §2.9(n)); the bar waits as for tagging.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Tagging {
     pub on: bool,
+    pub removing: bool,
     pub blocked: Option<&'static str>,
 }
 
@@ -64,7 +66,7 @@ pub fn show(
     filters: BarFilters<'_>,
     tagging: Tagging,
 ) -> Option<TopBarAction> {
-    let free = !tagging.on; // in tagging mode the rest of the bar waits
+    let free = !tagging.on && !tagging.removing; // in either mode the rest of the bar waits
     let mut action = None;
     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
         ui.add_space(p.space_2);
@@ -105,10 +107,13 @@ pub fn show(
             if counts.photos > 0 {
                 let hint = match (tagging.on, tagging.blocked) {
                     (true, _) => "Tag photos from a GPS track…: tagging is open",
+                    _ if tagging.removing => {
+                        "Tag photos from a GPS track…: removing positions is open"
+                    }
                     (false, Some(why)) => why,
                     (false, None) => "Tag photos from a GPS track…",
                 };
-                let ok = !tagging.on && tagging.blocked.is_none();
+                let ok = free && tagging.blocked.is_none();
                 if widgets::ghost(ui, p, Icon::Route, hint, ok).clicked() {
                     action = Some(TopBarAction::Geotag);
                 }

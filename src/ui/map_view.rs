@@ -64,6 +64,8 @@ pub struct TagLayer {
     pub pauses: Vec<(f64, f64)>,
     pub background: Vec<(f64, f64)>,
     pub off: HashSet<i64>,
+    /// Photos drawn faded without a tick (removal mode: their position is inside the file).
+    pub locked: HashSet<i64>,
     pub picking: bool,
 }
 
@@ -348,12 +350,14 @@ impl MapView {
         let _ = self.memory.set_zoom(fit_zoom(b, self.last_rect.size()));
     }
 
-    /// The area of every photo on the map, if there are any; in tagging mode, the track's.
+    /// The area of every photo on the map, if there are any; in tagging mode, the track's
+    /// (removal mode has no track: its photos').
     pub fn all_bounds(&self) -> Option<Bounds> {
         if let Some(t) = &self.tag {
             let mut it = t.lines.iter().flatten();
-            let first = it.next()?;
-            return Some(it.fold(Bounds::around(first.0, first.1), |b, p| b.include(p.0, p.1)));
+            if let Some(first) = it.next() {
+                return Some(it.fold(Bounds::around(first.0, first.1), |b, p| b.include(p.0, p.1)));
+            }
         }
         let mut it = self.points.iter();
         let first = it.next()?;
@@ -406,6 +410,7 @@ impl MapView {
             selected_node,
             strip: self.strip.as_ref(),
             off: self.tag.as_ref().map(|t| &t.off),
+            locked: self.tag.as_ref().map(|t| &t.locked),
             picking: self.tag.as_ref().is_some_and(|t| t.picking),
             out: &mut out,
         };
@@ -456,6 +461,7 @@ impl MapView {
                 &mut self.wanted_names,
                 self.selected,
                 self.tag.as_ref().map(|t| &t.off),
+                self.tag.as_ref().map(|t| &t.locked),
             );
             match a {
                 Some(StripAction::Close) => self.strip = None,
@@ -909,6 +915,8 @@ struct Photos<'a> {
     strip: Option<&'a Strip>,
     /// Tagging mode: the unticked photos (every marker gets a tick).
     off: Option<&'a HashSet<i64>>,
+    /// Removal mode: photos that can't be ticked (a marker of only those gets none).
+    locked: Option<&'a HashSet<i64>>,
     /// Tagging mode, picking a spot: markers take no clicks.
     picking: bool,
     out: &'a mut PhotosOut,
@@ -1128,7 +1136,7 @@ impl Plugin for Photos<'_> {
         // While picking a spot they're hidden: the click belongs to the track.
         if let Some(off) = self.off.filter(|_| !self.picking) {
             for m in &shown {
-                let ids: Vec<i64> = if m.count > 1 {
+                let mut ids: Vec<i64> = if m.count > 1 {
                     c.members(level, m.level_index)
                         .iter()
                         .map(|&i| pts[i as usize].id)
@@ -1136,6 +1144,16 @@ impl Plugin for Photos<'_> {
                 } else {
                     vec![m.rep.id]
                 };
+                if let Some(locked) = self.locked {
+                    ids.retain(|id| !locked.contains(id));
+                    if ids.is_empty() {
+                        // Only photos whose position is inside the file: faded, no tick.
+                        if !m.dot {
+                            markers::fade(ui, p, m.pos);
+                        }
+                        continue;
+                    }
+                }
                 let unticked = ids.iter().filter(|id| off.contains(id)).count();
                 let state = match unticked {
                     0 => Check::On,

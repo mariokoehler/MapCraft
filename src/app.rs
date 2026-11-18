@@ -41,6 +41,7 @@ use crate::ui::widgets::{self, Tone, thousands};
 use crate::update::{self, CheckStatus, DownloadError, Release, Updater, Version};
 
 mod geotag;
+mod removal;
 
 /// Parallel metadata readers per import (design.md §3.4, user-confirmed).
 const READERS: usize = 4;
@@ -98,6 +99,8 @@ pub enum StartDialog {
     ChangeData(PathBuf),
     /// Tagging mode with this track file (design.md §2.9).
     Geotag(PathBuf),
+    /// Removal mode from the first photo whose position comes from a sidecar (§2.9(n)).
+    Remove,
 }
 
 pub struct Config {
@@ -256,6 +259,12 @@ pub struct MapCraftApp {
     geo_work: Option<geotag::GeoWork>,
     /// The newest journal and what it holds, for Undo (from the toast or the panel).
     geo_last: Option<(PathBuf, String)>,
+    /// Removal mode (design.md §2.9(n)): the session while it's on, its dialogs, and the newest
+    /// removal journal (for Undo). Its write runs as `geo_work`.
+    removal: Option<crate::geotag::removal::Removal>,
+    rm_confirm: bool,
+    rm_leave: bool,
+    rm_last: Option<(PathBuf, String)>,
     thumbs_for: Vec<i64>,
     /// The thumbnail job was stopped to start again with `thumbs_for` first.
     restart_thumbs: bool,
@@ -364,7 +373,17 @@ impl MapCraftApp {
             geo_confirm: false,
             geo_leave: false,
             geo_work: None,
-            geo_last: crate::geotag::journal::latest(&config.data_folder),
+            geo_last: crate::geotag::journal::latest(
+                &config.data_folder,
+                crate::geotag::journal::Kind::Tag,
+            ),
+            removal: None,
+            rm_confirm: false,
+            rm_leave: false,
+            rm_last: crate::geotag::journal::latest(
+                &config.data_folder,
+                crate::geotag::journal::Kind::Remove,
+            ),
             thumbs_for: Vec::new(),
             restart_thumbs: false,
         };
@@ -421,6 +440,15 @@ impl MapCraftApp {
                 app.pick_data_folder(&folder);
             }
             Some(StartDialog::Geotag(file)) => app.start_geotag(vec![file]),
+            Some(StartDialog::Remove) => {
+                let first = app.lib.as_ref().and_then(|l| {
+                    let all = l.placed(crate::library::PlacedIn::Shown(&Filter::default()));
+                    all.ok()?.into_iter().find(|p| p.removable()).map(|p| p.id)
+                });
+                if let Some(id) = first {
+                    app.start_removal(id);
+                }
+            }
             None => {}
         }
         app
@@ -534,8 +562,8 @@ impl MapCraftApp {
                 self.counts = counts;
                 self.facets = facets;
                 match lib.positions_shown(&self.filter) {
-                    // In tagging mode the map shows the session's photos (design.md §2.9).
-                    Ok(points) if self.geotag.is_some() => self.shown = points.len(),
+                    // In tagging or removal mode the map shows the session's photos.
+                    Ok(points) if self.mode_open() => self.shown = points.len(),
                     Ok(points) => {
                         self.shown = points.len();
                         self.map.set_filtered(self.filter.is_active());
@@ -564,6 +592,14 @@ impl MapCraftApp {
         if self.geotag.is_some() {
             self.geotag_reload();
         }
+        if self.removal.is_some() {
+            self.removal_reload();
+        }
+    }
+
+    /// Tagging or removal mode is on: the map shows that mode's photos, the bar waits.
+    fn mode_open(&self) -> bool {
+        self.geotag.is_some() || self.removal.is_some()
     }
 
     /// The filter changed: the map, the counts and search follow it.
@@ -917,7 +953,7 @@ impl MapCraftApp {
     fn data_blocked(&self) -> Option<&'static str> {
         if self.data_override {
             Some("This run uses --data, so the data folder can’t be changed here.")
-        } else if self.geotag.is_some() || self.geo_work.is_some() {
+        } else if self.mode_open() || self.geo_work.is_some() {
             Some("Geotagging is open. Change the data folder when it’s done.")
         } else if self.job.is_some() {
             Some("An import is running. Change the data folder when it’s done.")
@@ -1303,6 +1339,8 @@ impl MapCraftApp {
             Some("Positions are being written".into())
         } else if self.geotag.is_some() {
             Some("Geotagging is open".into())
+        } else if self.removal.is_some() {
+            Some("Removing positions is open".into())
         } else if self.thumbs.is_some() {
             Some("Thumbnails are being made".into())
         } else {
@@ -1839,6 +1877,7 @@ impl MapCraftApp {
         let mut bar_action = None;
         let tagging = top_bar::Tagging {
             on: self.geotag.is_some(),
+            removing: self.removal.is_some(),
             blocked: self.geotag_blocked(),
         };
         let bar = Panel::top("top-bar")
@@ -1885,7 +1924,7 @@ impl MapCraftApp {
             self.filters.open = false;
         }
         // The filter panel takes Esc first while open, before the strip and the selection.
-        if self.geotag.is_none()
+        if !self.mode_open()
             && self.filters.panel(
                 &ctx,
                 &p,
@@ -1915,7 +1954,9 @@ impl MapCraftApp {
             || self.remove_old_open
             || self.lc_add.is_some()
             || self.geo_confirm
-            || self.geo_leave;
+            || self.geo_leave
+            || self.rm_confirm
+            || self.rm_leave;
 
         // Keys: Ctrl+I shows or hides the panel, Esc closes the strip or clears the selection.
         if !dialog_open && !ctx.egui_wants_keyboard_input() {
@@ -1928,6 +1969,10 @@ impl MapCraftApp {
             if self.geotag.is_some() {
                 if esc && self.geo_work.is_none() {
                     self.geotag_escape();
+                }
+            } else if self.removal.is_some() {
+                if esc && self.geo_work.is_none() {
+                    self.removal_escape();
                 }
             } else {
                 if ctrl_i && self.detail.is_some() {
@@ -1974,7 +2019,35 @@ impl MapCraftApp {
         if let Some(a) = geo_action {
             self.geotag_action(a);
         }
-        if self.geotag.is_none()
+        // Removal mode's panel likewise (design.md §2.9(n)).
+        let mut rm_action = None;
+        if let Some(r) = &self.removal {
+            let writing = self
+                .geo_work
+                .as_ref()
+                .filter(|w| !w.undo)
+                .map(|w| w.progress.unwrap_or((0, 0)));
+            let shown = Panel::right("remove")
+                .exact_size(p.size_panel)
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(Frame::NONE.fill(p.bg_panel))
+                .show(ui, |ui| {
+                    let last = self.rm_last.as_ref().map(|l| l.1.as_str());
+                    rm_action = crate::ui::remove_panel::show(ui, &p, r, writing, last);
+                });
+            let r = shown.response.rect;
+            ui.painter().vline(
+                r.left() + p.stroke_hairline / 2.0,
+                r.y_range(),
+                Stroke::new(p.stroke_hairline, p.border_subtle),
+            );
+        }
+        if let Some(a) = rm_action {
+            self.removal_action(a);
+        }
+        let remove_blocked = self.removal_blocked();
+        if !self.mode_open()
             && self.panel_open
             && let Some(d) = &self.detail
         {
@@ -1994,7 +2067,7 @@ impl MapCraftApp {
                         Some(Err(())) => PreviewFace::None,
                         None => PreviewFace::Loading(self.map.thumbnail(d.id)),
                     };
-                    panel_action = self.panel.show(ui, &p, d, face, &apps);
+                    panel_action = self.panel.show(ui, &p, d, face, &apps, remove_blocked);
                 });
             let r = shown.response.rect;
             ui.painter().vline(
@@ -2009,6 +2082,11 @@ impl MapCraftApp {
             Some(PanelAction::Open) => self.launch(Launch::Open),
             Some(PanelAction::PhotoCraft) => self.open_in_photocraft(),
             Some(PanelAction::LightCraft) => self.show_in_lightcraft(None, false),
+            Some(PanelAction::RemovePosition) => {
+                if let Some(id) = self.detail.as_ref().map(|d| d.id) {
+                    self.start_removal(id);
+                }
+            }
             None => {}
         }
 
@@ -2018,14 +2096,14 @@ impl MapCraftApp {
             .frame(Frame::NONE.fill(p.map_ref_land))
             .show(ui, |ui| {
                 let keys = !dialog_open && self.geo_work.is_none();
-                let (rect, action) = self.map.show(ui, &p, empty && self.geotag.is_none(), keys);
+                let (rect, action) = self.map.show(ui, &p, empty && !self.mode_open(), keys);
                 map_rect = rect;
                 map_action = action;
             });
         match map_action {
             Some(MapAction::Style(s)) => self.set_map_style(s, &ctx),
             Some(MapAction::MapSettings) => {
-                if self.geotag.is_none() {
+                if !self.mode_open() {
                     self.open_settings(&ctx);
                     if let Some(d) = &mut self.settings_dialog {
                         d.section = Section::Map;
@@ -2035,6 +2113,11 @@ impl MapCraftApp {
             Some(a) if self.geotag.is_some() => {
                 if self.geo_work.is_none() {
                     self.geotag_map(a);
+                }
+            }
+            Some(a) if self.removal.is_some() => {
+                if self.geo_work.is_none() {
+                    self.removal_map(a);
                 }
             }
             Some(MapAction::AddFolder) => self.folder_dialog = Some(FolderDialog::add()),
@@ -2067,7 +2150,7 @@ impl MapCraftApp {
         }
         // The active filters over the map, and the card when they hide everything.
         let on_map = self.counts.with_position.max(0) as usize;
-        let tagging = self.geotag.is_some();
+        let tagging = self.mode_open();
         let mut filter_action = if tagging {
             None
         } else {
@@ -2131,6 +2214,10 @@ impl MapCraftApp {
                 self.toasts.replace(Vec::new());
                 self.undo_geotag();
             }
+            Some(ToastAction::UndoRemoval) => {
+                self.toasts.replace(Vec::new());
+                self.undo_journal(crate::geotag::journal::Kind::Remove);
+            }
             None => {}
         }
 
@@ -2145,6 +2232,8 @@ impl MapCraftApp {
         self.add_dialog(&ctx);
         self.geotag_confirm_dialog(&ctx);
         self.geotag_leave_dialog(&ctx);
+        self.removal_confirm_dialog(&ctx);
+        self.removal_leave_dialog(&ctx);
 
         if let Some((since, total, frames)) = &mut self.perf {
             *total += started.elapsed();
@@ -2174,6 +2263,7 @@ mod tests {
     use egui_kittest::kittest::{NodeT, Queryable};
 
     use super::*;
+    use crate::library::PlacedIn;
     use crate::thumbs;
 
     /// The whole app, headless: no tiles, no network, a temp data folder.
@@ -3934,5 +4024,199 @@ owhere\lightcraft.exe",
         h.run_steps(3);
         assert_eq!(style(&h), (Style::Standard, Style::Standard));
         assert_eq!(h.state().as_ref().unwrap().settings.map.key(), None);
+    }
+
+    /// One folder for removing positions (design.md §2.9(n)): four photos placed by their
+    /// sidecar (R_01's also has a rating), one by its file only, one by both (the sidecar
+    /// wins), and a photo in another folder.
+    fn removal_library(dir: &Path) -> PathBuf {
+        use crate::geotag::sidecar::{Gps, create, merge};
+        let photos = dir.join("photos");
+        let trip = photos.join("trip");
+        std::fs::create_dir_all(&trip).unwrap();
+        std::fs::create_dir_all(photos.join("other")).unwrap();
+        let gps = |lat: f64| Gps {
+            lat,
+            lon: 8.0,
+            alt: None,
+            time: 1.7e9,
+        };
+        for i in 0..4 {
+            let jpeg = crate::demo::photo_with(0.0, 0.0, "2025:06:12 10:00:00", 0.2, None);
+            std::fs::write(trip.join(format!("R_{i:02}.jpg")), jpeg).unwrap();
+            std::fs::write(
+                trip.join(format!("R_{i:02}.xmp")),
+                create(&gps(47.0 + 0.02 * f64::from(i))),
+            )
+            .unwrap();
+        }
+        let rated = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF \
+             xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description \
+             rdf:about=\"\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" xmp:Rating=\"4\"/>\
+             </rdf:RDF></x:xmpmeta>";
+        std::fs::write(trip.join("R_01.xmp"), merge(rated, &gps(47.02)).unwrap()).unwrap();
+        let in_file = crate::demo::photo_with_gps(46.9, 8.1, "2025:06:12 11:00:00", 0.5);
+        std::fs::write(trip.join("FILE.jpg"), &in_file).unwrap();
+        std::fs::write(trip.join("BOTH.jpg"), &in_file).unwrap();
+        std::fs::write(trip.join("BOTH.xmp"), create(&gps(47.2))).unwrap();
+        let elsewhere = crate::demo::photo_with(0.0, 0.0, "2025:06:13 10:00:00", 0.8, None);
+        std::fs::write(photos.join("other").join("O_00.jpg"), elsewhere).unwrap();
+        std::fs::write(photos.join("other").join("O_00.xmp"), create(&gps(45.0))).unwrap();
+        let mut lib = Library::open(&dir.join("library.sqlite")).unwrap();
+        let src = lib
+            .add_source(&photos, None, "Trip", &Scope::all())
+            .unwrap();
+        crate::import::run(&mut lib, src, &Default::default(), 2, |_| {}).unwrap();
+        trip
+    }
+
+    #[test]
+    fn removing_positions_strips_sidecars_and_undo_puts_them_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let trip = removal_library(dir.path());
+        let read = |n: &str| std::fs::read_to_string(trip.join(n)).ok();
+        let originals: Vec<(&str, Option<String>)> =
+            ["R_00.xmp", "R_01.xmp", "R_02.xmp", "R_03.xmp", "BOTH.xmp"]
+                .into_iter()
+                .map(|n| (n, read(n)))
+                .collect();
+        let mut h = harness(dir.path());
+        step_until(&mut h, "the thumbnails", |h| {
+            h.state().as_ref().unwrap().thumbs.is_none()
+        });
+        let id_of = |h: &Harness<'static, Option<MapCraftApp>>, name: &str| {
+            let lib = h.state().as_ref().unwrap().lib.as_ref().unwrap();
+            let all = lib.placed(PlacedIn::Shown(&Filter::default())).unwrap();
+            all.iter().find(|p| p.original_name == name).map(|p| p.id)
+        };
+
+        // A photo whose position is inside its file: the button is off.
+        let file = id_of(&h, "FILE.jpg").unwrap();
+        h.state_mut().as_mut().unwrap().select(Some(file));
+        h.run_steps(3);
+        assert!(disabled(&h, "Remove position…"));
+
+        // From R_00: removal mode with the folder's photos, R_00 ticked.
+        let r00 = id_of(&h, "R_00.jpg").unwrap();
+        h.state_mut().as_mut().unwrap().select(Some(r00));
+        h.run_steps(3);
+        h.get_by_label("Remove position…").click();
+        h.run_steps(3);
+        h.get_by_label("Remove positions");
+        h.get_by_label("1 ticked of 5 with a position from a sidecar");
+        h.get_by_label_contains("1 more has its position inside the photo file");
+        assert!(
+            h.query_by_label("Photo details").is_none(),
+            "the panel steps aside"
+        );
+        h.get_by_label("Tick all").click();
+        h.run_steps(3);
+        h.get_by_label("5 ticked of 5 with a position from a sidecar");
+
+        // Zoomed in, each photo has its own marker: FILE.jpg has no tick; untick R_02.
+        settled(&mut h);
+        h.state_mut().as_mut().unwrap().map.set_zoom(13.0);
+        step_until(&mut h, "the ticks' names", |h| {
+            h.query_by_label("Untick R_02.jpg").is_some()
+        });
+        h.get_by_label("Untick R_02.jpg").click();
+        h.run_steps(3);
+        h.get_by_label("4 ticked of 5 with a position from a sidecar");
+        // FILE.jpg's marker is there, faded, but has no tick.
+        h.state_mut().as_mut().unwrap().map.center_at(46.9, 8.1);
+        step_until(&mut h, "FILE.jpg's marker", |h| {
+            h.query_by_label("Photo FILE.jpg").is_some()
+        });
+        assert!(h.query_by_label("Tick FILE.jpg").is_none());
+        assert!(h.query_by_label("Untick FILE.jpg").is_none());
+
+        // Remove: the confirmation, then the sidecars.
+        h.get_by_label("Remove positions from 4 photos…").click();
+        h.run_steps(3);
+        h.get_by_label("Remove positions from 4 photos?");
+        // The dialog's button (the panel's title reads the same).
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Remove positions")
+            .click();
+        step_until(&mut h, "the removal", |h| {
+            let app = h.state().as_ref().unwrap();
+            app.geo_work.is_none() && app.removal.is_none()
+        });
+        h.get_by_label("Positions removed from 4 photos");
+        h.get_by_label_contains("1 sidecar changed, 3 sidecars deleted");
+        h.get_by_label_contains("1 photo now shows the position saved in its own file.");
+        assert!(read("R_00.xmp").is_none() && read("R_03.xmp").is_none());
+        let r01 = read("R_01.xmp").unwrap();
+        assert!(r01.contains("xmp:Rating=\"4\"") && !r01.contains("GPS"));
+        assert_eq!(read("R_02.xmp"), originals[2].1, "unticked");
+        assert!(read("BOTH.xmp").is_none());
+
+        // The library: BOTH shows its file's position, the others none; a rescan agrees.
+        let mut lib = Library::open(&dir.path().join("library.sqlite")).unwrap();
+        let state = |lib: &Library| {
+            let mut v: Vec<_> = lib
+                .placed(PlacedIn::Shown(&Filter::default()))
+                .unwrap()
+                .into_iter()
+                .map(|p| (p.original_name, p.gps_source, p.sidecar_name))
+                .collect();
+            v.sort();
+            v
+        };
+        let after = state(&lib);
+        let names: Vec<&str> = after.iter().map(|v| v.0.as_str()).collect();
+        assert_eq!(names, ["BOTH.jpg", "FILE.jpg", "O_00.jpg", "R_02.jpg"]);
+        assert_eq!(after[0].1.as_deref(), Some("exif"));
+        assert_eq!(after[0].2, None, "its sidecar is gone");
+        let src = lib.sources().unwrap()[0].id;
+        crate::import::run(&mut lib, src, &Default::default(), 2, |_| {}).unwrap();
+        assert_eq!(state(&lib), after, "a rescan reads the same");
+
+        // Undo puts every sidecar and the library back.
+        h.get_by_label("Undo").click();
+        step_until(&mut h, "the undo", |h| {
+            h.state().as_ref().unwrap().geo_work.is_none()
+                && h.query_by_label("Removal undone").is_some()
+        });
+        for (n, before) in &originals {
+            assert_eq!(&read(n), before, "{n}");
+        }
+        assert_eq!(lib.counts().unwrap().with_position, 7);
+        assert!(h.state().as_ref().unwrap().rm_last.is_none());
+    }
+
+    #[test]
+    fn leaving_removal_mode_asks_after_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        removal_library(dir.path());
+        let mut h = harness(dir.path());
+        step_until(&mut h, "the thumbnails", |h| {
+            h.state().as_ref().unwrap().thumbs.is_none()
+        });
+        let id = {
+            let lib = h.state().as_ref().unwrap().lib.as_ref().unwrap();
+            let all = lib.placed(PlacedIn::Shown(&Filter::default())).unwrap();
+            all.iter()
+                .find(|p| p.original_name == "R_01.jpg")
+                .unwrap()
+                .id
+        };
+        h.state_mut().as_mut().unwrap().start_removal(id);
+        h.run_steps(3);
+        // The scope: the whole map adds the other folder's photo.
+        h.get_by_label("On the map now").click();
+        h.run_steps(3);
+        h.get_by_label("1 ticked of 6 with a position from a sidecar");
+        h.get_by_label("Untick all").click();
+        h.run_steps(3);
+        // Esc: the selection first, then (with changes) the question.
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        h.get_by_label("Leave removal mode?");
+        h.get_by_label("Leave").click();
+        h.run_steps(3);
+        assert!(h.state().as_ref().unwrap().removal.is_none());
+        h.get_by_label("Tag photos from a GPS track…");
     }
 }

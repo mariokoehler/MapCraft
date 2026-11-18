@@ -369,6 +369,189 @@ pub fn content(before: Option<&[u8]>, g: &Gps) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// The document without its GPS properties (design.md §2.9(n)): every property of the EXIF
+/// namespace whose name starts with `GPS`, as an attribute or an element (with all it holds),
+/// in every `rdf:Description`. Everything else stays byte for byte. `None`: nothing would be
+/// left but the wrapper, so the sidecar can go. `Ok(Some(doc))` unchanged if it held no GPS.
+pub fn strip(doc: &str) -> Result<Option<String>, String> {
+    struct Tag {
+        span: (usize, usize),
+        attrs: Vec<Attr>,
+    }
+    let mut reader = Reader::from_str(doc);
+    let mut tags: Vec<Tag> = Vec::new();
+    // Elements by (qualified name, whole span); `open` is the GPS element being read, with its
+    // name, start and the depth it opened at (so its nested content goes with it).
+    let mut elems: Vec<(String, (usize, usize))> = Vec::new();
+    let mut open: Option<(String, usize, usize)> = None;
+    let mut depth = 0usize;
+    loop {
+        let before = reader.buffer_position() as usize;
+        let ev = reader.read_event().map_err(|e| e.to_string())?;
+        let after = reader.buffer_position() as usize;
+        match ev {
+            Event::Start(e) | Event::Empty(e) => {
+                let empty = doc[before..after].ends_with("/>");
+                let text = &doc[before..after];
+                tags.push(Tag {
+                    span: (before, after),
+                    attrs: attrs(text)?,
+                });
+                let name = e.name().as_ref().to_owned();
+                if open.is_none() && split(&name).1.starts_with("GPS") {
+                    if empty {
+                        elems.push((name, (before, after)));
+                    } else {
+                        open = Some((name, before, depth));
+                    }
+                }
+                if !empty {
+                    depth += 1;
+                }
+            }
+            Event::End(_) => {
+                depth = depth.checked_sub(1).ok_or("unbalanced XML")?;
+                if let Some((name, start, d)) = &open
+                    && *d == depth
+                {
+                    elems.push((name.clone(), (*start, after)));
+                    open = None;
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    if open.is_some() || depth != 0 {
+        return Err("unterminated element".to_owned());
+    }
+    let prefixes: Vec<String> = tags
+        .iter()
+        .flat_map(|t| {
+            t.attrs.iter().filter_map(|a| {
+                let p = a.name.strip_prefix("xmlns:")?;
+                (&doc[t.span.0 + a.value.0..t.span.0 + a.value.1] == EXIF_NS).then(|| p.to_owned())
+            })
+        })
+        .collect();
+    let is_gps = |name: &str| {
+        let (p, l) = split(name);
+        l.starts_with("GPS") && prefixes.iter().any(|x| x == p)
+    };
+    let mut cuts: Vec<(usize, usize)> = Vec::new();
+    for t in &tags {
+        for a in &t.attrs {
+            if is_gps(&a.name) {
+                cuts.push((t.span.0 + a.lead, t.span.0 + a.end));
+            }
+        }
+    }
+    let bytes = doc.as_bytes();
+    for (name, (a, b)) in &elems {
+        if is_gps(name) {
+            // The element with the indentation before it and its line end, if it has a line
+            // of its own: no blank lines are left behind.
+            let mut s = *a;
+            while s > 0 && matches!(bytes[s - 1], b' ' | b'\t') {
+                s -= 1;
+            }
+            let own_line = s == 0 || bytes[s - 1] == b'\n';
+            let mut e = *b;
+            if own_line {
+                if bytes.get(e) == Some(&b'\r') {
+                    e += 1;
+                }
+                if bytes.get(e) == Some(&b'\n') {
+                    e += 1;
+                }
+            } else {
+                s = *a;
+            }
+            cuts.push((s, e));
+        }
+    }
+    // An attribute inside a removed element is already gone with it.
+    cuts.sort();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for c in cuts {
+        match merged.last_mut() {
+            Some(last) if c.0 < last.1 => last.1 = last.1.max(c.1),
+            _ => merged.push(c),
+        }
+    }
+    let mut out = doc.to_owned();
+    for (a, b) in merged.into_iter().rev() {
+        out.replace_range(a..b, "");
+    }
+    if only_wrapper(&out)? {
+        return Ok(None);
+    }
+    Ok(Some(out))
+}
+
+/// Whether a document holds nothing but the XMP wrapper (`x:xmpmeta`, `rdf:RDF`,
+/// `rdf:Description` with only `rdf:about`, `x:xmptk` and namespace declarations), processing
+/// instructions, comments and whitespace. Anything else means it's kept.
+fn only_wrapper(doc: &str) -> Result<bool, String> {
+    let mut reader = Reader::from_str(doc);
+    loop {
+        match reader.read_event().map_err(|e| e.to_string())? {
+            Event::Start(e) | Event::Empty(e) => {
+                let name = e.name().as_ref().to_owned();
+                if !matches!(
+                    split(&name).1,
+                    "xmpmeta" | "xapmeta" | "RDF" | "Description"
+                ) {
+                    return Ok(false);
+                }
+                for a in e.attributes() {
+                    let a = a.map_err(|e| e.to_string())?;
+                    let key = a.key.as_ref().to_owned();
+                    let ok = key == "xmlns"
+                        || key.starts_with("xmlns:")
+                        || matches!(split(&key).1, "about" | "xmptk");
+                    if !ok {
+                        return Ok(false);
+                    }
+                }
+            }
+            Event::Text(t) => {
+                if !t.xml10_content().trim().is_empty() {
+                    return Ok(false);
+                }
+            }
+            Event::CData(_) | Event::GeneralRef(_) => return Ok(false),
+            Event::Eof => return Ok(true),
+            _ => {}
+        }
+    }
+}
+
+/// What a sidecar becomes without its GPS (design.md §2.9(n)): `Ok(None)` to delete it, else
+/// its new bytes (the BOM kept). Checked: no position may read back afterwards, so a GPS
+/// property under another namespace leaves the sidecar alone. `Err` too when it held no GPS
+/// to remove (nothing to write).
+pub fn stripped(before: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    let (bom, rest) = match before.strip_prefix(BOM) {
+        Some(r) => (BOM, r),
+        None => (&before[..0], before),
+    };
+    let text = std::str::from_utf8(rest).map_err(|_| "the sidecar isn't UTF-8")?;
+    let Some(out) = strip(text)? else {
+        return Ok(None);
+    };
+    if xmp::read_gps(&out)?.is_some() {
+        return Err("a position remains that MapCraft can’t remove".to_owned());
+    }
+    if out == text {
+        return Err(NO_GPS.to_owned());
+    }
+    Ok(Some([bom, out.as_bytes()].concat()))
+}
+
+/// `stripped`'s answer for a sidecar without GPS properties.
+pub const NO_GPS: &str = "the sidecar holds no position";
+
 /// The temporary file beside `path` that is renamed over it; the scan ignores it (it doesn't
 /// end in `.xmp`).
 fn temp_path(path: &Path) -> PathBuf {
@@ -504,6 +687,63 @@ mod tests {
             content(Some(b"<x:xmpmeta/>"), &g(None)).is_err(),
             "no Description"
         );
+    }
+
+    #[test]
+    fn stripping_our_own_sidecar_leaves_nothing() {
+        let ours = create(&g(Some(12.0)));
+        assert_eq!(strip(&ours).unwrap(), None);
+        assert_eq!(stripped(ours.as_bytes()).unwrap(), None);
+    }
+
+    #[test]
+    fn stripping_keeps_every_other_byte() {
+        // Lightroom's form with a position merged in: stripping gives back the original.
+        let tagged = merge(LR, &g(Some(5.0))).unwrap();
+        let out = strip(&tagged).unwrap().unwrap();
+        let expected = LR.replace(
+            "crs:Exposure2012=\"+0.35\">",
+            "crs:Exposure2012=\"+0.35\"\r\n   xmlns:exif=\"http://ns.adobe.com/exif/1.0/\">",
+        );
+        assert_eq!(out, expected, "only the namespace declaration stays");
+        assert!(xmp::read_gps(&out).unwrap().is_none());
+        // A BOM is kept.
+        let with_bom = [BOM, tagged.as_bytes()].concat();
+        assert!(stripped(&with_bom).unwrap().unwrap().starts_with(BOM));
+    }
+
+    /// An older tool's form: other property names, another prefix, elements with nested
+    /// content, a packet wrapper. Made up for the test (no real file's content).
+    const OLD: &str = "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"Old Tool 1.0\">\n <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n  <rdf:Description rdf:about=\"\" xmlns:e=\"http://ns.adobe.com/exif/1.0/\"\n    e:GPSVersionId=\"2.2.0.0\"\n    e:GPSMapDatum=\"WGS-84\"\n    e:GPSLatitude=\"53,37.40N\">\n   <e:GPSLongitude>11,24.90E</e:GPSLongitude>\n   <e:GPSAltitude>1200/100</e:GPSAltitude>\n   <e:GPSDestBearing><rdf:Alt><rdf:li>12/1</rdf:li></rdf:Alt></e:GPSDestBearing>\n  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>";
+
+    #[test]
+    fn an_older_tools_sidecar_is_emptied_and_deleted() {
+        assert!(xmp::read_gps(OLD).unwrap().is_some());
+        assert_eq!(strip(OLD).unwrap(), None, "nothing but the wrapper is left");
+        // With one other property, it's kept, without any GPS.
+        let rated = OLD.replace(
+            "xmlns:e=",
+            "xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" xmp:Rating=\"2\" xmlns:e=",
+        );
+        let out = strip(&rated).unwrap().unwrap();
+        assert!(!out.contains("GPS"), "{out}");
+        assert!(out.contains("xmp:Rating=\"2\""));
+        assert!(
+            out.contains("e:GPS") || !out.contains("\n\n"),
+            "no blank lines left"
+        );
+        assert!(out.starts_with("<?xpacket") && out.ends_with("<?xpacket end=\"w\"?>"));
+    }
+
+    #[test]
+    fn other_namespaces_and_sidecars_without_gps() {
+        // A `GPSLatitude` under another namespace: our reader would still see a position, so
+        // the sidecar is left alone.
+        let other = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"\" xmlns:o=\"http://example.com/other/\" o:GPSLatitude=\"1,0.0N\" o:GPSLongitude=\"2,0.0E\"/></rdf:RDF></x:xmpmeta>";
+        assert!(stripped(other.as_bytes()).is_err());
+        assert_eq!(stripped(LR.as_bytes()).unwrap_err(), NO_GPS);
+        assert!(stripped(b"\xff\xfe junk").is_err());
+        assert!(stripped(b"<x:xmpmeta><rdf:RDF>").is_err());
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! Lucide icons (ISC licence, `assets/icons/`, from lucide-static 1.65.0), embedded in the exe.
 //! `list-filter.svg` was written by hand from Lucide's three paths (`M3 6h18`, `M7 12h10`,
 //! `M10 18h4`), as the design system's mockups draw it; `info.svg` likewise (a circle,
-//! `M12 16v-4`, `M12 8h.01`).
+//! `M12 16v-4`, `M12 8h.01`), and `map-pin-off.svg` (Lucide's five paths, as the canvas
+//! `MapCraft — Remove position` draws it).
 //!
 //! The files draw with `currentColor`, which an SVG renderer paints black, and black can't be
 //! tinted to another colour. So each icon is turned white once, then tinted per widget state
@@ -60,6 +61,7 @@ icons! {
     Brush => "brush",
     Sliders => "sliders-horizontal",
     MapPin => "map-pin",
+    MapPinOff => "map-pin-off",
     Download => "download",
     Filter => "list-filter",
     Info => "info",

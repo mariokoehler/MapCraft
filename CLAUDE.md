@@ -34,8 +34,8 @@ tests the update 0.1.0 → 0.2.0. M6
 (companion apps) awaits the user's try. M5 is done (tried by the user).
 **v0.5.0 released (2026-11-17)**: geotagging reads NMEA logs too (the user's old Sony
 logger files; altitude off by default for them), `design.md` §2.9(b); awaits the user's try.
-**M11 proposed (2026-11-18)**: removing positions from sidecars, `design.md` §2.9(n), canvas
-`MapCraft — Remove position`; awaits the user's review.
+**M11 built (2026-11-18), not released**: removing positions from sidecars, `design.md`
+§2.9(n), canvas `MapCraft — Remove position` (approved); awaits the user's try.
 **v0.4.0 released (2026-11-15)**: M10 (map styles: Standard, Topographic, MapTiler
 Satellite and Hybrid with the user's own key). v0.3.0 the same day: M9 (geotagging from GPX, `design.md` §2.9), from the
 canvas `MapCraft — Geotagging`; it awaits the user's try. It's the first feature that writes next to
@@ -83,6 +83,8 @@ photos (XMP sidecars only, after a confirmation, with undo): trials only on scra
   (`src/datafolder.rs`, `src/ui/data_dialogs.rs`, the Data folder section of Settings).
 - Geotagging from GPX tracks and NMEA logs: `src/geotag/` (readers, matching, sidecar writer, journal,
   session), `src/ui/geotag_panel.rs`, tagging mode in `src/ui/map_view.rs`, `src/app/geotag.rs`.
+- Removing positions (M11): `src/geotag/removal.rs`, `sidecar::strip`, the journal's `Kind`,
+  `src/ui/remove_panel.rs`, `src/app/removal.rs`, *Remove position…* in the detail panel.
 - Map styles (M10): `src/provider.rs` (`Style`, MapTiler key check), the style menu in
   `src/ui/map_view.rs`, *Settings → Map*.
 - Releases: the tag-triggered workflow (`.github/workflows/release.yml`), the exe's icon and
@@ -219,6 +221,8 @@ committed):
     YYYY:MM:DD HH:MM:SS>" <minutes apart> <n>` (imported with `--import`): Write positions
     writes sidecars into the photo folders. `gpx_probe -- <file.gpx|file.log>` prints a
     track's aggregates.
+  - `--open remove` starts removal mode from the first photo with a sidecar position. Try
+    removing only with `--data` scratch and generated photos: it changes sidecars.
   - `--open data` opens Settings on the Data folder section; `--open change-data=<folder>`
     opens the Change dialog as if that folder had been picked (no system picker needed).
   - `--update-from <base url>` checks a pretend GitHub (`<base>/latest`, `<base>/dl/…`) instead
@@ -248,7 +252,8 @@ committed):
 - `places_probe -- <cities500.zip> <admin1> <countryInfo> <out.sqlite> [queries…]` builds the
   place index from downloaded GeoNames files and times searches (public data only).
 - Probes (read-only, aggregates only): `cargo run --release --example exif_probe -- <list>`
-  (our reader against `kamadak-exif`), `xmp_probe -- <folder>`, `unc_check -- <path>`.
+  (our reader against `kamadak-exif`), `xmp_probe -- <folder>`, `unc_check -- <path>`,
+  `strip_probe -- <folder>` (what removing positions would do to its sidecars, in memory).
 - Pitfall: `kamadak-exif` reads a whole TIFF-based file (a 25 MB RAW) before parsing, and fails
   on a partial read. Use our `metadata` module for TIFF, DNG, CR2, JPEG and RAF.
 - Pitfall: on the NAS, time goes to each file's open and first read (about 40 ms), not to

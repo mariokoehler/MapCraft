@@ -862,6 +862,25 @@ feature that writes next to the user's photos (§1.1). The look is on the canvas
     - Placing a photo by hand (l).
 
     They are listed in §4.
+  - **As built (2026-11-18), where it differs from the above or adds to it:**
+    - A sidecar that turns out to hold no position when written to (the library was stale) is
+      left untouched and gets no journal entry; the photo is still read again, and the toast
+      counts it.
+    - The path is the library's `sidecar_name` only; a photo without one fails ("it has no
+      sidecar") rather than a guessed `name.xmp`.
+    - Re-reading uses the import's own code (`import::read_metadata`, shared with `read_photo`;
+      `import::position_of`), so the preview JPEG fallback is the same. A photo that can't be
+      read afterwards gets no position until the next rescan.
+    - The map reuses tagging mode's layer (`TagLayer`, without a track) with a new `locked`
+      set: a marker of only in-file photos is faded without a tick; in a mixed group the tick
+      sets only the removable ones. The strip does the same.
+    - Opening it zooms to the scope's photos, with room above the top ones for their markers.
+    - The panel's button is the design system's danger button (`widgets::danger`); the icon is
+      Lucide's `map-pin-off`.
+    - Dev flag `--open remove` opens it from the first photo with a sidecar position. Probe
+      `examples/strip_probe.rs` tells, read-only, what stripping a folder's sidecars would do.
+      On the folder that prompted M11 (2026-11-18): all 241 sidecars with a position would be
+      stripped and keep their other content; none refused, none deleted.
 
 ## 3. Architecture
 
@@ -1408,7 +1427,9 @@ Unconfirmed defaults awaiting review:
   settles; a new sidecar named `name.xmp`; the undo journal in the data folder. NMEA logs
   (§2.9(b), 2026-11-17): two-digit years 80–99 are 19xx; a log with only `GGA` is a track
   without times.
-- §2.9(n) / M11 (proposed): the scopes *This folder* (default) and *On the map now*; only the
+- §2.9(n) / M11: a rescan adopts `name.xmp` if `name.ext.xmp` was deleted beside it (the
+  removal doesn't look for a second sidecar);
+  the scopes *This folder* (default) and *On the map now*; only the
   selected photo starts ticked; every `exif:GPS*` property is removed; a sidecar left with
   nothing but its wrapper is deleted; changed photos are re-read on the writer thread; the
   journal's `kind` and the `"deleted"` marker; the later Undo only for the newest removal.
@@ -1659,8 +1680,9 @@ Milestones are rough and get refined as we go.
     Standard with the toast (no key in the log).
 
 - **M11 — Removing positions** (proposed 2026-11-18, the user's request; §2.9(n), canvas
-  `MapCraft — Remove position`, awaiting review). The reverse of M9: take a wrong position off
-  photos whose position comes from a sidecar, whoever wrote it.
+  `MapCraft — Remove position`, approved by the user the same day; built 2026-11-18, not yet
+  released, awaiting the user's try). The reverse of M9: take a wrong position off photos whose
+  position comes from a sidecar, whoever wrote it.
   - **Steps:**
     1. The sidecar side: `sidecar::strip` (every `exif:GPS*`, both forms, every
        `rdf:Description`; an emptied wrapper means delete). Unit tests on generated
@@ -1674,8 +1696,21 @@ Milestones are rough and get refined as we go.
        Undo, *Last removed · Undo it*.
     5. Headless UI tests, then a trial on generated photos in a scratch folder, then the
        user's try.
-  - **At release:** the README says MapCraft can also remove GPS from sidecars.
+  - **At release:** the README says MapCraft can also remove GPS from sidecars (done).
   - No migration is needed.
+  - **As built:** `geotag::sidecar::strip`/`stripped`, the journal's `Kind` (`journal::run`,
+    `latest` and `undo` take or handle it), `geotag::removal` (the session),
+    `library::placed`, `import::position_of`, `ui::remove_panel`, `app/removal.rs`; the map's
+    `TagLayer.locked`; *Remove position…* in `ui::details`.
+  - **Checked** by unit tests (stripping our form, Lightroom's, an older tool's with nested
+    elements and a packet wrapper, another namespace refused; the journal's removal, undo of a
+    deleted sidecar, one made again since left alone, a 0.5 journal without `kind`; the
+    session's ticks; a rescan agreeing after removal, with and without a position in the file),
+    headless UI tests (the button off for an in-file position; removal mode, Tick all, a
+    marker's tick, no tick for an in-file photo, the confirmation, the sidecars changed and
+    deleted, the library and a rescan, Undo; the scope; leaving with changes), a read-only probe
+    of the folder that prompted it, and a trial on generated photos in a scratch folder (the
+    release build, `--open remove`, a window capture compared with the canvas).
 
 **Later:** a keyed tile provider and offline PMTiles (§3.5(b); walkers has a `pmtiles`
 feature, and its vector rendering needs the wgpu renderer, which eframe uses by default), the

@@ -10,7 +10,7 @@ use std::sync::mpsc::{self, Receiver};
 use tracing::{error, info};
 
 use super::MapCraftApp;
-use crate::geotag::journal::{self, Prior, Report, Task, Undone};
+use crate::geotag::journal::{self, Kind, Prior, Report, Task, Undone};
 use crate::geotag::session::Session;
 use crate::geotag::{self, Track, gpx, time};
 use crate::import::reachable_root;
@@ -19,10 +19,12 @@ use crate::ui::map_view::TagLayer;
 use crate::ui::toasts::{self, ToastAction};
 use crate::ui::widgets::{self, Tone, thousands};
 
-/// What the geotag thread reports.
+/// What the geotag thread reports (tagging and removing positions share it).
 pub enum GeoEvent {
     Progress(usize, usize),
     Written(Report),
+    /// Positions removed, with what each changed photo reads as now (design.md §2.9(n)).
+    Removed(Report, Vec<(i64, Option<String>, super::removal::Reread)>),
     Undone(Result<Undone, String>),
 }
 
@@ -33,6 +35,8 @@ pub struct GeoWork {
     pub progress: Option<(usize, usize)>,
     /// An undo, not a write (the panel shows no progress for it).
     pub undo: bool,
+    /// Tagging or removing.
+    pub kind: Kind,
 }
 
 impl MapCraftApp {
@@ -56,6 +60,8 @@ impl MapCraftApp {
             Some("An import is running. Tag photos when it’s done.")
         } else if self.geo_work.is_some() {
             Some("Positions are being written")
+        } else if self.removal.is_some() {
+            Some("Removing positions is open")
         } else {
             None
         }
@@ -565,7 +571,7 @@ impl MapCraftApp {
                     tasks.push(Task {
                         photo: g.id,
                         path: base.join(&g.rel_dir).join(name),
-                        gps,
+                        gps: Some(gps),
                         prior: Prior {
                             lat: g.lat,
                             lon: g.lon,
@@ -579,7 +585,7 @@ impl MapCraftApp {
                     let _ = tx.send(GeoEvent::Progress(done, total));
                     ctx.request_repaint();
                 };
-                let mut report = journal::run(&tasks, &data, &progress, &flag);
+                let mut report = journal::run(Kind::Tag, &tasks, &data, &progress, &flag);
                 report.failed.extend(unreachable);
                 let _ = tx.send(GeoEvent::Written(report));
                 ctx.request_repaint();
@@ -590,15 +596,25 @@ impl MapCraftApp {
             cancel,
             progress: Some((0, 0)),
             undo: false,
+            kind: Kind::Tag,
         });
     }
 
     /// Undoes the last write (the result toast's Undo).
     pub(super) fn undo_geotag(&mut self) {
+        self.undo_journal(Kind::Tag);
+    }
+
+    /// Undoes the newest journal of this kind: the last tagging, or the last removal.
+    pub(super) fn undo_journal(&mut self, kind: Kind) {
         if self.geo_work.is_some() || self.job.is_some() {
             return; // the toast's Undo stays for later
         }
-        let Some((path, _)) = self.geo_last.take() else {
+        let last = match kind {
+            Kind::Tag => self.geo_last.take(),
+            Kind::Remove => self.rm_last.take(),
+        };
+        let Some((path, _)) = last else {
             return;
         };
         let (tx, rx) = mpsc::channel();
@@ -615,6 +631,7 @@ impl MapCraftApp {
             cancel: Arc::new(AtomicBool::new(false)),
             progress: None,
             undo: true,
+            kind,
         });
     }
 
@@ -632,9 +649,14 @@ impl MapCraftApp {
                 self.geo_work = None;
                 self.written(r);
             }
-            Some(GeoEvent::Undone(r)) => {
+            Some(GeoEvent::Removed(r, reread)) => {
                 self.geo_work = None;
-                self.undone(r);
+                self.removed(r, reread);
+            }
+            Some(GeoEvent::Undone(r)) => {
+                let kind = w.kind;
+                self.geo_work = None;
+                self.undone(r, kind);
             }
             _ => {}
         }
@@ -646,8 +668,8 @@ impl MapCraftApp {
             for w in &r.written {
                 if let Err(e) = lib.set_gps(
                     w.photo,
-                    Some((w.lat, w.lon)),
-                    w.alt,
+                    w.position.map(|g| (g.lat, g.lon)),
+                    w.position.and_then(|g| g.alt),
                     Some("xmp"),
                     Some(&w.sidecar_name),
                 ) {
@@ -704,7 +726,7 @@ impl MapCraftApp {
         if n > 0 {
             text.push_str(" Undo restores the sidecars as they were.");
         }
-        self.geo_last = journal::latest(&self.data_folder);
+        self.geo_last = journal::latest(&self.data_folder, Kind::Tag);
         let tone = if failed == 0 {
             Tone::Success
         } else {
@@ -716,7 +738,7 @@ impl MapCraftApp {
         self.leave_geotag();
     }
 
-    fn undone(&mut self, r: Result<Undone, String>) {
+    fn undone(&mut self, r: Result<Undone, String>, kind: Kind) {
         match r {
             Ok(u) => {
                 if let Some(lib) = &self.lib {
@@ -753,14 +775,18 @@ impl MapCraftApp {
                         }
                     ));
                 }
-                self.geo_last = journal::latest(&self.data_folder);
+                self.geo_last = journal::latest(&self.data_folder, Kind::Tag);
+                self.rm_last = journal::latest(&self.data_folder, Kind::Remove);
                 self.toasts.replace(vec![toasts::note(
                     if u.skipped.is_empty() {
                         Tone::Success
                     } else {
                         Tone::Warning
                     },
-                    "Geotagging undone",
+                    match kind {
+                        Kind::Tag => "Geotagging undone",
+                        Kind::Remove => "Removal undone",
+                    },
                     &text,
                     None,
                 )]);

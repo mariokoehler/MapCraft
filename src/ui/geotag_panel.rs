@@ -33,7 +33,7 @@ pub enum GeoAction {
 /// How many "outside the track" photos are listed by name.
 const OUTSIDE_ROWS: usize = 6;
 
-fn section(ui: &mut Ui, p: &Palette, title: &str, body: impl FnOnce(&mut Ui)) {
+pub(crate) fn section(ui: &mut Ui, p: &Palette, title: &str, body: impl FnOnce(&mut Ui)) {
     Frame::NONE
         .inner_margin(Margin {
             left: p.space_3 as i8,
@@ -55,7 +55,7 @@ fn section(ui: &mut Ui, p: &Palette, title: &str, body: impl FnOnce(&mut Ui)) {
     );
 }
 
-fn weak(ui: &mut Ui, p: &Palette, text: &str) {
+pub(crate) fn weak(ui: &mut Ui, p: &Palette, text: &str) {
     ui.add(egui::Label::new(RichText::new(text).small().color(p.text_weak)).wrap());
 }
 

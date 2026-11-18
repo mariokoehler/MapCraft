@@ -17,6 +17,7 @@ and merges nearby photos into groups that split as you zoom in.
 - [Getting started](#getting-started)
 - [Map styles](#map-styles)
 - [Geotagging from a GPS track](#geotagging-from-a-gps-track)
+- [Removing wrong positions](#removing-wrong-positions)
 - [Updates](#updates)
 - [Privacy](#privacy)
 - [Companion apps](#companion-apps)
@@ -29,9 +30,9 @@ and merges nearby photos into groups that split as you zoom in.
 
 - **Your photos stay where they are.** MapCraft only records their paths, on local drives or
   network shares (SMB), and keeps a small thumbnail of each in its own data folder. It never
-  copies, moves, renames or writes to your photos. The one exception is geotagging, and only
-  when you confirm it: it writes GPS positions into XMP sidecar files next to the photos,
-  never into the photos themselves, and can undo that.
+  copies, moves, renames or writes to your photos. The one exception is geotagging and
+  removing positions, and only when you confirm it: they change GPS positions in XMP sidecar
+  files next to the photos, never in the photos themselves, and can undo that.
 - **Thumbnails on the map.** Photos close to each other merge into a group with a count; zoom
   in and the groups split. Click a group to zoom to it, or to see its photos in a strip when
   they were all taken at the same spot.
@@ -43,6 +44,7 @@ and merges nearby photos into groups that split as you zoom in.
 - **Geotagging from a GPS track** (GPX or NMEA log): photos without a position that were taken while a track
   was recorded appear along it; adjust the time shift until they sit where they were taken,
   untick the ones you don't want, and write the positions to XMP sidecars.
+- **Removing wrong positions** from XMP sidecars, whichever program wrote them.
 - **Search** for places (an offline index of towns and cities from GeoNames, downloaded once on
   request) or for photos by file name, folder, date or camera.
 - **Filters** by date (with a histogram), source folder, camera and file type (RAW, DNG, TIFF,
@@ -169,6 +171,31 @@ Good to know:
   and only for camera RAW files: for JPEG, TIFF and DNG it reads the file's own metadata, not
   the sidecar. **LightCraft** may overwrite the sidecars if it writes its own.
 - Try it on a copy of a folder first if you like: the photos' folders must be writable.
+
+## Removing wrong positions
+
+A photo sits in the wrong place because a sidecar holds a wrong position (written by MapCraft,
+Lightroom or an old GPS tool)? Take it off again:
+
+1. Click the photo, then **Remove position…** under *Location* in its details.
+2. The photos of its folder appear with a tick each; only the one you clicked is ticked.
+   **Tick** the others that are wrong too (a group's tick sets all its photos), or switch to
+   **On the map now** for every photo the filters let through.
+3. Click **Remove positions…** and confirm. MapCraft removes the GPS properties from each
+   ticked photo's sidecar and keeps everything else in it; a sidecar left with nothing else is
+   deleted.
+
+**Undo** is in the result's message, and under *Last removed* the next time you remove
+positions.
+
+Good to know:
+
+- **Only positions from a sidecar can be removed.** A position the camera or phone wrote into
+  the photo file itself stays, since MapCraft never changes photo files; such photos are shown
+  faded, without a tick.
+- A photo whose file holds a position of its own shows that one once the sidecar's is gone.
+- **Lightroom Classic's catalogue** may still hold the old position, and **LightCraft** may write
+  it back if it writes its own sidecars.
 
 ## Updates
 

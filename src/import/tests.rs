@@ -98,6 +98,81 @@ fn first_import_reads_positions_pairs_and_sidecars() {
     assert_eq!(lib.counts().unwrap().with_position, 2);
 }
 
+/// Removing a sidecar's GPS (design.md §2.9(n)): what `position_of` reads is what a rescan
+/// records, for a photo whose file has a position of its own, one without, and one whose
+/// emptied sidecar was deleted.
+#[test]
+fn a_rescan_agrees_with_the_position_read_after_removing() {
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path());
+    let trip = dir.path().join("trip");
+    // F: its own position in the file and another in the sidecar (beside other content).
+    fs::write(
+        trip.join("F.jpg"),
+        jpeg_with_gps(40.0, 5.0, "2024:03:04 05:06:07"),
+    )
+    .unwrap();
+    let rated = XMP_GPS.replace(
+        "xmlns:exif=",
+        "xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" xmp:Rating=\"3\" xmlns:exif=",
+    );
+    fs::write(trip.join("F.xmp"), &rated).unwrap();
+    // G: only the sidecar has a position, and the sidecar has nothing else.
+    fs::write(
+        trip.join("G.jpg"),
+        jpeg_with_gps(0.0, 0.0, "2024:03:04 05:06:07"),
+    )
+    .unwrap();
+    fs::write(trip.join("G.xmp"), XMP_GPS).unwrap();
+    let mut lib = Library::open_in_memory().unwrap();
+    let src = lib
+        .add_source(dir.path(), None, "test", &scope::Scope::all())
+        .unwrap();
+    import(&mut lib, src);
+    let detail = |lib: &Library, stem: &str| {
+        let d = lib
+            .photo_detail(photo(lib, stem).unwrap().id)
+            .unwrap()
+            .unwrap();
+        (d.lat, d.lon, d.gps_source)
+    };
+    assert_eq!(detail(&lib, "F").2.as_deref(), Some("xmp"));
+
+    // Remove the GPS of B, F and G as the app does, and record what `position_of` reads.
+    let mut read = Vec::new();
+    for (stem, original, preview, sidecar) in [
+        ("B", "B.dng", Some("B.jpg"), "B.xmp"),
+        ("F", "F.jpg", None, "F.xmp"),
+        ("G", "G.jpg", None, "G.xmp"),
+    ] {
+        let path = trip.join(sidecar);
+        let before = fs::read(&path).unwrap();
+        let after = crate::geotag::sidecar::stripped(&before).unwrap();
+        crate::geotag::sidecar::replace(&path, Some(&before), after.as_deref()).unwrap();
+        let kept = after.is_some().then_some(sidecar);
+        let (gps, from) = position_of(&trip, original, preview, kept).unwrap();
+        let id = photo(&lib, stem).unwrap().id;
+        lib.set_gps(
+            id,
+            gps.map(|g| (g.lat, g.lon)),
+            gps.and_then(|g| g.alt),
+            from,
+            kept,
+        )
+        .unwrap();
+        read.push((stem, detail(&lib, stem)));
+    }
+    assert!(!trip.join("G.xmp").exists(), "emptied, so deleted");
+    assert_eq!(read[1].1, (Some(40.0), Some(5.0), Some("exif".to_owned())));
+    assert_eq!(read[2].1, (None, None, None));
+
+    // A rescan finds the same for each.
+    import(&mut lib, src);
+    for (stem, before) in read {
+        assert_eq!(detail(&lib, stem), before, "{stem}");
+    }
+}
+
 #[test]
 fn rescan_skips_unchanged_and_finds_moves_and_missing() {
     let dir = tempfile::tempdir().unwrap();
